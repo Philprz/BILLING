@@ -1,0 +1,51 @@
+# Dépendances
+node_modules/
+.pnp
+.pnp.js
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Environnement — NE JAMAIS COMMITTER .env
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Éditeurs
+.vscode/settings.json
+.idea/
+.claude/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Vite
+apps/web/.vite/
+
+# Fichiers générés
+apps/web/dist/
+apps/api/dist/
+apps/worker/dist/
+packages/shared/dist/
+
+# Couverture de tests
+coverage/
+
+# Données runtime locales
+data/status-out/
+data/lot9-check/
+data/invoices/

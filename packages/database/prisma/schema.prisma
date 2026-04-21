@@ -1,0 +1,356 @@
+// ============================================================
+// PA-SAP Bridge — Schéma Prisma
+// CDC section 4 : 8 tables dans la base pa_sap_bridge
+// Schéma PostgreSQL : public (à migrer vers "pasap" si requis
+// via search_path dans DATABASE_URL)
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Énumérations
+// ============================================================
+
+/// Direction du document reçu de la PA
+enum InvoiceDirection {
+  INVOICE
+  CREDIT_NOTE
+}
+
+/// Format du document source reçu de la PA
+enum InvoiceFormat {
+  FACTUR_X
+  UBL
+  CII
+  PDF_ONLY
+  CSV
+  OTHER
+}
+
+/// Cycle de vie d'une facture dans la passerelle
+enum InvoiceStatus {
+  /// Reçue, pas encore analysée
+  NEW
+  /// Matching incomplet, nécessite revue utilisateur
+  TO_REVIEW
+  /// Prête pour intégration SAP B1
+  READY
+  /// Intégrée dans SAP B1
+  POSTED
+  /// Rejetée (motif dans status_reason)
+  REJECTED
+  /// Erreur technique lors de l'intégration
+  ERROR
+}
+
+/// Mode d'intégration SAP B1
+enum IntegrationMode {
+  SERVICE_INVOICE
+  JOURNAL_ENTRY
+}
+
+/// Type de fichier attaché à une facture
+enum FileKind {
+  PDF
+  XML
+  ATTACHMENT
+}
+
+/// Portée d'une règle de mappage
+enum MappingScope {
+  GLOBAL
+  SUPPLIER
+}
+
+/// Actions tracées dans le journal d'audit
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  FETCH_PA
+  VIEW_INVOICE
+  EDIT_MAPPING
+  APPROVE
+  REJECT
+  POST_SAP
+  SEND_STATUS_PA
+  SYSTEM_ERROR
+  CONFIG_CHANGE
+}
+
+/// Type d'entité référencée dans l'audit
+enum AuditEntityType {
+  INVOICE
+  RULE
+  CONFIG
+  SYSTEM
+  /// Ajouté : section 7.3 du CDC (upload de pièce jointe SAP)
+  ATTACHMENT
+}
+
+enum AuditOutcome {
+  OK
+  ERROR
+}
+
+/// Protocole du canal PA
+enum PaProtocol {
+  SFTP
+  API
+}
+
+/// Type d'authentification pour les canaux PA de type API
+enum PaAuthType {
+  BASIC
+  API_KEY
+  OAUTH2
+}
+
+// ============================================================
+// Table : invoices (CDC §4.1)
+// ============================================================
+model Invoice {
+  id                      String           @id @default(uuid()) @db.Uuid
+  /// Identifiant unique du message dans la PA (idempotence)
+  paMessageId             String           @unique @map("pa_message_id")
+  /// Nom/identifiant du canal PA source
+  paSource                String           @map("pa_source")
+  direction               InvoiceDirection
+  format                  InvoiceFormat
+  receivedAt              DateTime         @default(now()) @map("received_at") @db.Timestamptz(6)
+  /// SIREN / SIRET / TVA intracommunautaire reçu de la PA
+  supplierPaIdentifier    String           @map("supplier_pa_identifier")
+  supplierNameRaw         String           @map("supplier_name_raw")
+  /// CardCode SAP B1 après matching (null si non résolu)
+  supplierB1Cardcode      String?          @map("supplier_b1_cardcode")
+  /// Score de matching fournisseur 0-100
+  supplierMatchConfidence Int              @default(0) @map("supplier_match_confidence")
+  docNumberPa             String           @map("doc_number_pa")
+  docDate                 DateTime         @db.Date @map("doc_date")
+  dueDate                 DateTime?        @db.Date @map("due_date")
+  /// ISO 4217 (ex. EUR)
+  currency                String           @db.Char(3)
+  totalExclTax            Decimal          @db.Decimal(19, 4) @map("total_excl_tax")
+  totalTax                Decimal          @db.Decimal(19, 4) @map("total_tax")
+  totalInclTax            Decimal          @db.Decimal(19, 4) @map("total_incl_tax")
+  status                  InvoiceStatus    @default(NEW)
+  statusReason            String?          @map("status_reason")
+  integrationMode         IntegrationMode? @map("integration_mode")
+  /// DocEntry SAP B1 après intégration
+  sapDocEntry             Int?             @map("sap_doc_entry")
+  /// DocNum SAP B1 lisible (numéro de document)
+  sapDocNum               Int?             @map("sap_doc_num")
+  /// AbsoluteEntry de la pièce jointe SAP B1
+  sapAttachmentEntry      Int?             @map("sap_attachment_entry")
+  sapAttachmentUploadedAt DateTime?        @map("sap_attachment_uploaded_at") @db.Timestamptz(6)
+  /// Horodatage d'envoi du statut vers la PA
+  paStatusSentAt          DateTime?        @map("pa_status_sent_at") @db.Timestamptz(6)
+  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  lines InvoiceLine[]
+  files InvoiceFile[]
+
+  @@index([status], name: "idx_invoices_status")
+  @@index([paSource], name: "idx_invoices_pa_source")
+  @@index([docDate], name: "idx_invoices_doc_date")
+  @@index([supplierB1Cardcode], name: "idx_invoices_cardcode")
+  @@index([receivedAt], name: "idx_invoices_received_at")
+  @@map("invoices")
+}
+
+// ============================================================
+// Table : invoice_lines (CDC §4.2)
+// ============================================================
+model InvoiceLine {
+  id          String  @id @default(uuid()) @db.Uuid
+  invoiceId   String  @map("invoice_id") @db.Uuid
+  /// Numéro d'ordre de la ligne dans le document
+  lineNo      Int     @map("line_no")
+  description String
+  quantity    Decimal @db.Decimal(19, 4)
+  unitPrice   Decimal @db.Decimal(19, 4) @map("unit_price")
+  amountExclTax Decimal @db.Decimal(19, 4) @map("amount_excl_tax")
+  /// Code TVA tel que reçu de la PA (peut être null pour PDF_ONLY)
+  taxCode     String? @map("tax_code")
+  /// Taux de TVA en pourcentage (ex. 20.00)
+  taxRate     Decimal? @db.Decimal(5, 2) @map("tax_rate")
+  taxAmount   Decimal @db.Decimal(19, 4) @map("tax_amount")
+  amountInclTax Decimal @db.Decimal(19, 4) @map("amount_incl_tax")
+  /// Compte SAP suggéré par le moteur de règles
+  suggestedAccountCode       String? @map("suggested_account_code")
+  /// Score de la suggestion 0-100
+  suggestedAccountConfidence Int     @default(0) @map("suggested_account_confidence")
+  suggestedCostCenter        String? @map("suggested_cost_center")
+  /// Code TVA SAP B1 suggéré par le moteur de règles
+  suggestedTaxCodeB1         String? @map("suggested_tax_code_b1")
+  /// Explication lisible de la suggestion (règle appliquée, critères)
+  suggestionSource           String? @map("suggestion_source")
+  /// Compte SAP retenu après revue utilisateur
+  chosenAccountCode          String? @map("chosen_account_code")
+  chosenCostCenter           String? @map("chosen_cost_center")
+  /// Code TVA SAP B1 retenu (ex. S1, S3)
+  chosenTaxCodeB1            String? @map("chosen_tax_code_b1")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId], name: "idx_invoice_lines_invoice_id")
+  @@map("invoice_lines")
+}
+
+// ============================================================
+// Table : invoice_files (CDC §4.3)
+// ============================================================
+model InvoiceFile {
+  id        String   @id @default(uuid()) @db.Uuid
+  invoiceId String   @map("invoice_id") @db.Uuid
+  kind      FileKind
+  /// Chemin absolu sur le disque (FILE_STORAGE_PATH + sous-chemin)
+  path      String
+  sizeBytes BigInt   @map("size_bytes")
+  /// SHA-256 du contenu pour contrôle d'intégrité
+  sha256    String
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId], name: "idx_invoice_files_invoice_id")
+  @@map("invoice_files")
+}
+
+// ============================================================
+// Table : suppliers_cache (CDC §4.4)
+// Cache local des BP SAP B1 pour matching rapide
+// ============================================================
+model SupplierCache {
+  id           String   @id @default(uuid()) @db.Uuid
+  /// CardCode SAP B1 (identifiant unique BP)
+  cardcode     String   @unique
+  cardname     String
+  /// NIF / SIREN (FederalTaxID dans SAP B1)
+  federaltaxid String?
+  /// Numéro de TVA intracommunautaire
+  vatregnum    String?
+  /// Dernière synchronisation depuis SAP B1
+  syncAt       DateTime @default(now()) @map("sync_at") @db.Timestamptz(6)
+
+  @@index([cardname], name: "idx_suppliers_cache_cardname")
+  @@index([federaltaxid], name: "idx_suppliers_cache_taxid")
+  @@map("suppliers_cache")
+}
+
+// ============================================================
+// Table : mapping_rules (CDC §4.5)
+// Cœur du moteur d'apprentissage des comptes comptables
+// ============================================================
+model MappingRule {
+  id               String       @id @default(uuid()) @db.Uuid
+  scope            MappingScope
+  /// Null si scope = GLOBAL
+  supplierCardcode String?      @map("supplier_cardcode")
+  /// Mot-clé recherché dans la description (ILIKE)
+  matchKeyword     String?      @map("match_keyword")
+  /// Taux de TVA ciblé (ex. 20.00)
+  matchTaxRate     Decimal?     @db.Decimal(5, 2) @map("match_tax_rate")
+  matchAmountMin   Decimal?     @db.Decimal(19, 4) @map("match_amount_min")
+  matchAmountMax   Decimal?     @db.Decimal(19, 4) @map("match_amount_max")
+  /// Compte SAP B1 à appliquer (AcctCode)
+  accountCode      String       @map("account_code")
+  costCenter       String?      @map("cost_center")
+  /// Code TVA SAP B1 à appliquer (ex. S1)
+  taxCodeB1        String?      @map("tax_code_b1")
+  /// Score de confiance 0-100 (évolue par apprentissage)
+  confidence       Int          @default(60)
+  usageCount       Int          @default(0) @map("usage_count")
+  lastUsedAt       DateTime?    @map("last_used_at") @db.Timestamptz(6)
+  createdByUser    String       @map("created_by_user")
+  active           Boolean      @default(true)
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([scope, active], name: "idx_mapping_rules_scope_active")
+  @@index([supplierCardcode], name: "idx_mapping_rules_cardcode")
+  @@index([confidence], name: "idx_mapping_rules_confidence")
+  @@map("mapping_rules")
+}
+
+// ============================================================
+// Table : audit_log (CDC §4.6)
+// Journal immuable — pas de UPDATE/DELETE depuis l'app
+// ============================================================
+model AuditLog {
+  id         String          @id @default(uuid()) @db.Uuid
+  occurredAt DateTime        @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  /// Utilisateur SAP B1 ayant déclenché l'action (null = système)
+  sapUser    String?         @map("sap_user")
+  action     AuditAction
+  entityType AuditEntityType @map("entity_type")
+  /// UUID ou identifiant texte de l'entité concernée (polymorphe)
+  entityId   String?         @map("entity_id")
+  /// État avant modification (pour diff JSON)
+  payloadBefore Json?        @map("payload_before") @db.JsonB
+  /// État après modification
+  payloadAfter  Json?        @map("payload_after") @db.JsonB
+  ipAddress  String?         @map("ip_address")
+  userAgent  String?         @map("user_agent")
+  outcome    AuditOutcome    @default(OK)
+  errorMessage String?       @map("error_message")
+
+  @@index([occurredAt], name: "idx_audit_log_occurred_at")
+  @@index([sapUser], name: "idx_audit_log_sap_user")
+  @@index([action], name: "idx_audit_log_action")
+  @@index([entityId], name: "idx_audit_log_entity_id")
+  @@map("audit_log")
+}
+
+// ============================================================
+// Table : pa_channels (CDC §4.7 + §9)
+// Configurations des sources PA (SFTP ou API)
+// ============================================================
+model PaChannel {
+  id      String     @id @default(uuid()) @db.Uuid
+  name    String     @unique
+  protocol PaProtocol
+  // -- Champs SFTP --
+  host    String?
+  port    Int?
+  user    String?
+  /// Mot de passe chiffré (AES-GCM, clé = SESSION_ENC_KEY)
+  passwordEncrypted   String? @map("password_encrypted")
+  remotePathIn        String? @map("remote_path_in")
+  remotePathProcessed String? @map("remote_path_processed")
+  /// Chemin de dépôt des fichiers de statut retour (CDC §9)
+  remotePathOut       String? @map("remote_path_out")
+  // -- Champs API --
+  apiBaseUrl             String?     @map("api_base_url")
+  apiAuthType            PaAuthType? @map("api_auth_type")
+  /// Credentials API chiffrés (AES-GCM)
+  apiCredentialsEncrypted String?   @map("api_credentials_encrypted")
+  // -- Commun --
+  pollIntervalSeconds Int     @default(60) @map("poll_interval_seconds")
+  active              Boolean @default(true)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("pa_channels")
+}
+
+// ============================================================
+// Table : settings (CDC §4.8)
+// Clés/valeurs de configuration applicative (jsonb pour
+// supporter des valeurs simples ET des objets complexes)
+// ============================================================
+model Setting {
+  /// Clé unique identifiant le paramètre (ex. AUTO_VALIDATION_THRESHOLD)
+  key       String   @id
+  /// Valeur JSON — nombre, chaîne, objet ou tableau selon la clé
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+}

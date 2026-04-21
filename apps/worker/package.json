@@ -1,0 +1,22 @@
+{
+  "name": "@pa-sap-bridge/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "ingest:once": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pa-sap-bridge/database": "*",
+    "dotenv": "^16.4.7",
+    "fast-xml-parser": "^5.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.4",
+    "typescript": "*"
+  }
+}
