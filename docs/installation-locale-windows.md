@@ -78,8 +78,12 @@ npm run local:prepare
 Ce script :
 
 - valide `.env`
-- génère Prisma
 - applique les migrations
+
+Remarque :
+
+- `npm install` déclenche déjà `prisma generate`
+- si vous devez relancer manuellement `npm run db:generate`, arrêtez d’abord API/worker/web sous Windows pour éviter les verrous sur le moteur Prisma
 
 ## Lancement
 

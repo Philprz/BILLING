@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { FileText, LayoutDashboard, LogOut, Building2, ScrollText } from 'lucide-react';
+import { FileText, LayoutDashboard, LogOut, Building2, ScrollText, FlaskConical } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { cn } from '../../lib/utils';
 
@@ -7,6 +7,7 @@ const NAV = [
   { to: '/', label: 'Tableau de bord', icon: LayoutDashboard, end: true },
   { to: '/invoices', label: 'Factures', icon: FileText, end: false },
   { to: '/audit', label: 'Audit', icon: ScrollText, end: false },
+  { to: '/invoice-generator', label: 'Générateur de test', icon: FlaskConical, end: false },
 ];
 
 export function AppLayout() {

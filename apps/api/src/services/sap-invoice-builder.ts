@@ -114,7 +114,7 @@ export function buildPurchaseDocPayload(
 
 /**
  * Journal Entry : une ligne de débit par ligne de facture + une ligne de crédit
- * globale sur le compte fournisseur (401000 par défaut, configurable).
+ * globale sur le fournisseur SAP B1.
  *
  * Pour les avoir (CREDIT_NOTE), les débits et crédits sont inversés.
  */
@@ -123,7 +123,6 @@ export function buildJournalEntryPayload(
   lines:           LineData[],
   attachmentEntry: number,
   taxRateMap:      Record<string, string>,
-  apAccount:       string,   // compte fournisseur, ex. "40100000"
 ): BuildResult {
 
   const skippedLines: number[] = [];
@@ -154,10 +153,11 @@ export function buildJournalEntryPayload(
     jeLines.push(entry);
   }
 
-  // Ligne de contrepartie fournisseur (crédit pour facture, débit pour avoir)
+  // Ligne de contrepartie fournisseur.
+  // Sur SAP B1, une écriture manuelle vers un tiers se poste via ShortName=CardCode.
   if (totalTtc > 0) {
     jeLines.push({
-      AccountCode: apAccount,
+      ShortName:   invoice.supplierB1Cardcode,
       Debit:       isCreditNote ? totalTtc : 0,
       Credit:      isCreditNote ? 0 : totalTtc,
       LineMemo:    `${invoice.supplierNameRaw} — ${invoice.docNumberPa}`,
@@ -169,7 +169,7 @@ export function buildJournalEntryPayload(
     ReferenceDate:   toISODate(invoice.docDate),
     DueDate:         toISODate(invoice.dueDate ?? invoice.docDate),
     AttachmentEntry: attachmentEntry,
-    JournalEntries_Lines: jeLines,
+    JournalEntryLines: jeLines,
   };
 
   return { payload, skippedLines };

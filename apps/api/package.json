@@ -9,11 +9,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@pa-sap-bridge/database": "*",
     "@fastify/cookie": "^10.0.0",
     "@fastify/cors": "^10.0.2",
+    "@pa-sap-bridge/database": "*",
+    "@types/pdfkit": "^0.17.6",
     "dotenv": "^16.4.7",
-    "fastify": "^5.3.2"
+    "fastify": "^5.3.2",
+    "pdfkit": "^0.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

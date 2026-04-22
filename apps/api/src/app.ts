@@ -8,6 +8,7 @@ import { invoiceRoutes } from './routes/invoices';
 import { supplierRoutes } from './routes/suppliers';
 import { settingRoutes } from './routes/settings';
 import { auditRoutes } from './routes/audit';
+import { invoiceGeneratorRoutes } from './routes/invoice-generator';
 import { SAP_IGNORE_SSL } from './config';
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
@@ -50,6 +51,7 @@ export function buildApp(): FastifyInstance {
   app.register(supplierRoutes);
   app.register(settingRoutes);
   app.register(auditRoutes);
+  app.register(invoiceGeneratorRoutes);
 
   app.get('/api/health', async (_req, reply) => {
     let dbStatus: 'ok' | 'error' = 'error';

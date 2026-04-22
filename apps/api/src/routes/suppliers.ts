@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { findSuppliers } from '../repositories/supplier.repository';
+import { requireSession } from '../middleware/require-session';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -18,6 +19,7 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Querystring: SupplierListQuery }>(
     '/api/suppliers-cache',
     {
+      preHandler: requireSession,
       schema: {
         querystring: {
           type: 'object',

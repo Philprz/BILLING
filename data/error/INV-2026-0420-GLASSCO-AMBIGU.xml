@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017</cbc:CustomizationID>
+  <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
+  <cbc:ID>INV-2026-0420-GLASSCO-AMBIGU</cbc:ID>
+  <cbc:IssueDate>2026-04-20</cbc:IssueDate>
+  <cbc:DueDate>2026-05-20</cbc:DueDate>
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cbc:BuyerReference>AP-DEMO-2026</cbc:BuyerReference>
+  <cbc:Note>Demo case - supplier name intentionally generic to test ambiguity handling</cbc:Note>
+
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cac:PartyName>
+        <cbc:Name>GLASSCO INDUSTRIES</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>15 Industrial Zone</cbc:StreetName>
+        <cbc:CityName>Sofia</cbc:CityName>
+        <cbc:PostalZone>1592</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>BG</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>BG204556781</cbc:CompanyID>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>GLASSCO INDUSTRIES</cbc:RegistrationName>
+        <cbc:CompanyID>BG204556781</cbc:CompanyID>
+      </cac:PartyLegalEntity>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+
+  <cac:AccountingCustomerParty>
+    <cac:Party>
+      <cac:PartyName>
+        <cbc:Name>DEMO INDUSTRIE SAS</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>18 Rue des Ateliers</cbc:StreetName>
+        <cbc:CityName>Lille</cbc:CityName>
+        <cbc:PostalZone>59000</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>FR26552100554</cbc:CompanyID>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>DEMO INDUSTRIE SAS</cbc:RegistrationName>
+        <cbc:CompanyID>552100554</cbc:CompanyID>
+      </cac:PartyLegalEntity>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">380.00</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">1900.00</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">380.00</cbc:TaxAmount>
+      <cac:TaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>20.00</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="EUR">1900.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">1900.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">2280.00</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="EUR">2280.00</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+
+    <cac:InvoiceLine>
+      <cbc:ID>1</cbc:ID>
+      <cbc:InvoicedQuantity unitCode="EA">1</cbc:InvoicedQuantity>
+      <cbc:LineExtensionAmount currencyID="EUR">1480.00</cbc:LineExtensionAmount>
+      <cac:Item>
+        <cbc:Name>Servo motor replacement for line 4</cbc:Name>
+      </cac:Item>
+      <cac:Price>
+        <cbc:PriceAmount currencyID="EUR">1480.00</cbc:PriceAmount>
+      </cac:Price>
+      <cac:TaxTotal>
+        <cbc:TaxAmount currencyID="EUR">296.00</cbc:TaxAmount>
+        <cac:TaxSubtotal>
+          <cbc:TaxableAmount currencyID="EUR">1480.00</cbc:TaxableAmount>
+          <cbc:TaxAmount currencyID="EUR">296.00</cbc:TaxAmount>
+          <cac:TaxCategory>
+            <cbc:ID>S</cbc:ID>
+            <cbc:Percent>20.00</cbc:Percent>
+            <cac:TaxScheme>
+              <cbc:ID>VAT</cbc:ID>
+            </cac:TaxScheme>
+          </cac:TaxCategory>
+        </cac:TaxSubtotal>
+      </cac:TaxTotal>
+    </cac:InvoiceLine>
+    <cac:InvoiceLine>
+      <cbc:ID>2</cbc:ID>
+      <cbc:InvoicedQuantity unitCode="EA">1</cbc:InvoicedQuantity>
+      <cbc:LineExtensionAmount currencyID="EUR">420.00</cbc:LineExtensionAmount>
+      <cac:Item>
+        <cbc:Name>On-site commissioning support</cbc:Name>
+      </cac:Item>
+      <cac:Price>
+        <cbc:PriceAmount currencyID="EUR">420.00</cbc:PriceAmount>
+      </cac:Price>
+      <cac:TaxTotal>
+        <cbc:TaxAmount currencyID="EUR">84.00</cbc:TaxAmount>
+        <cac:TaxSubtotal>
+          <cbc:TaxableAmount currencyID="EUR">420.00</cbc:TaxableAmount>
+          <cbc:TaxAmount currencyID="EUR">84.00</cbc:TaxAmount>
+          <cac:TaxCategory>
+            <cbc:ID>S</cbc:ID>
+            <cbc:Percent>20.00</cbc:Percent>
+            <cac:TaxScheme>
+              <cbc:ID>VAT</cbc:ID>
+            </cac:TaxScheme>
+          </cac:TaxCategory>
+        </cac:TaxSubtotal>
+      </cac:TaxTotal>
+    </cac:InvoiceLine>
+</Invoice>

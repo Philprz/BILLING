@@ -69,22 +69,21 @@ describe('sap-invoice-builder', () => {
       [lineWithAccount],
       321,
       { '20.00': 'S1' },
-      '40100000',
     );
 
-    const payload = result.payload as { JournalEntries_Lines: Array<Record<string, unknown>>; AttachmentEntry: number };
+    const payload = result.payload as { JournalEntryLines: Array<Record<string, unknown>>; AttachmentEntry: number };
 
     expect(result.skippedLines).toEqual([]);
     expect(payload.AttachmentEntry).toBe(321);
-    expect(payload.JournalEntries_Lines).toHaveLength(2);
-    expect(payload.JournalEntries_Lines[0]).toMatchObject({
+    expect(payload.JournalEntryLines).toHaveLength(2);
+    expect(payload.JournalEntryLines[0]).toMatchObject({
       AccountCode: '601000',
       Debit: 100,
       Credit: 0,
       TaxCode: 'S1',
     });
-    expect(payload.JournalEntries_Lines[1]).toMatchObject({
-      AccountCode: '40100000',
+    expect(payload.JournalEntryLines[1]).toMatchObject({
+      ShortName: 'F_TEST',
       Debit: 0,
       Credit: 120,
     });

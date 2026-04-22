@@ -3,5 +3,6 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "exclude": ["node_modules", "dist", "apps", "packages"]
+  "files": [],
+  "exclude": ["node_modules", "dist", "coverage", "apps", "packages", "scripts", "tests"]
 }

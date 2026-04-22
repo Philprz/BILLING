@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, XCircle, Clock, FileText, Tag, AlertCircle, Paperclip, Send, Ban, ScrollText } from 'lucide-react';
-import { apiGetInvoice, apiPostInvoice, apiRejectInvoice, apiSendStatus } from '../api/invoices.api';
+import { ArrowLeft, CheckCircle2, XCircle, Clock, FileText, Tag, AlertCircle, Paperclip, Send, Ban, ScrollText, Pencil, X, Check } from 'lucide-react';
+import { apiGetInvoice, apiPostInvoice, apiRejectInvoice, apiSendStatus, apiUpdateSupplier, apiUpdateLine, apiResetInvoice } from '../api/invoices.api';
+import { apiGetSuppliers, type SupplierCache } from '../api/suppliers.api';
 import { apiGetAudit } from '../api/audit.api';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { StatusBadge } from '../components/ui/badge';
@@ -12,6 +13,7 @@ import type { InvoiceDetail, InvoiceLine, AuditEntry, AuditAction } from '../api
 
 type TabId = 'lines' | 'files' | 'audit';
 type IntegrationMode = 'SERVICE_INVOICE' | 'JOURNAL_ENTRY';
+const TERMINAL_STATUSES_UI = new Set(['POSTED', 'REJECTED', 'ERROR']);
 
 const ACTION_LABELS: Record<AuditAction, string> = {
   LOGIN: 'Connexion', LOGOUT: 'Déconnexion', FETCH_PA: 'Ingestion PA',
@@ -41,10 +43,57 @@ function ConfidenceBar({ value }: { value: number }) {
   );
 }
 
-function LinesTab({ lines }: { lines: InvoiceLine[] }) {
+interface EditingLine {
+  chosenAccountCode: string;
+  chosenCostCenter: string;
+  chosenTaxCodeB1: string;
+}
+
+function LinesTab({
+  lines,
+  invoiceId,
+  editable,
+  onSaved,
+}: {
+  lines: InvoiceLine[];
+  invoiceId: string;
+  editable: boolean;
+  onSaved: (updated: InvoiceDetail) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<EditingLine>({ chosenAccountCode: '', chosenCostCenter: '', chosenTaxCodeB1: '' });
+  const [saving, setSaving] = useState(false);
+
+  function startEdit(l: InvoiceLine) {
+    setEditingId(l.id);
+    setDraft({
+      chosenAccountCode: l.chosenAccountCode ?? l.suggestedAccountCode ?? '',
+      chosenCostCenter:  l.chosenCostCenter  ?? l.suggestedCostCenter  ?? '',
+      chosenTaxCodeB1:   l.chosenTaxCodeB1   ?? l.suggestedTaxCodeB1   ?? '',
+    });
+  }
+
+  function cancelEdit() { setEditingId(null); }
+
+  async function saveLine(lineId: string) {
+    setSaving(true);
+    try {
+      const updated = await apiUpdateLine(invoiceId, lineId, {
+        chosenAccountCode: draft.chosenAccountCode.trim() || null,
+        chosenCostCenter:  draft.chosenCostCenter.trim()  || null,
+        chosenTaxCodeB1:   draft.chosenTaxCodeB1.trim()   || null,
+      });
+      onSaved(updated);
+      setEditingId(null);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (lines.length === 0) {
     return <p className="py-8 text-center text-sm text-muted-foreground">Aucune ligne de facture.</p>;
   }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -53,64 +102,126 @@ function LinesTab({ lines }: { lines: InvoiceLine[] }) {
             <th className="text-left px-3 py-2 font-medium">#</th>
             <th className="text-left px-3 py-2 font-medium">Description</th>
             <th className="text-right px-3 py-2 font-medium">Qté</th>
-            <th className="text-right px-3 py-2 font-medium">P.U. HT</th>
             <th className="text-right px-3 py-2 font-medium">Montant HT</th>
             <th className="text-right px-3 py-2 font-medium">TVA</th>
-            <th className="text-right px-3 py-2 font-medium">Montant TTC</th>
-            <th className="text-left px-3 py-2 font-medium">Compte suggéré</th>
+            <th className="text-right px-3 py-2 font-medium">TTC</th>
+            <th className="text-left px-3 py-2 font-medium">Compte</th>
+            <th className="text-left px-3 py-2 font-medium">Centre</th>
+            <th className="text-left px-3 py-2 font-medium">Code TVA B1</th>
+            {editable && <th className="px-3 py-2" />}
           </tr>
         </thead>
         <tbody className="divide-y">
-          {lines.map((l) => (
-            <tr key={l.id} className="hover:bg-muted/30">
-              <td className="px-3 py-2 text-muted-foreground">{l.lineNo}</td>
-              <td className="px-3 py-2 max-w-[200px]">
-                <span className="line-clamp-2">{l.description}</span>
-              </td>
-              <td className="px-3 py-2 text-right">{l.quantity}</td>
-              <td className="px-3 py-2 text-right">{formatAmount(l.unitPrice)}</td>
-              <td className="px-3 py-2 text-right font-medium">{formatAmount(l.amountExclTax)}</td>
-              <td className="px-3 py-2 text-right text-muted-foreground">
-                {l.taxRate != null ? `${l.taxRate}%` : l.taxCode ?? '—'}
-              </td>
-              <td className="px-3 py-2 text-right font-medium">{formatAmount(l.amountInclTax)}</td>
-              <td className="px-3 py-2 min-w-[180px]">
-                {l.suggestedAccountCode ? (
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-mono text-xs font-semibold">
-                        {l.chosenAccountCode ?? l.suggestedAccountCode}
+          {lines.map((l) => {
+            const isEditing = editingId === l.id;
+            const displayAccount = l.chosenAccountCode ?? l.suggestedAccountCode;
+            const isChosen = !!l.chosenAccountCode;
+            return (
+              <tr key={l.id} className={`hover:bg-muted/30 ${isEditing ? 'bg-blue-50/40' : ''}`}>
+                <td className="px-3 py-2 text-muted-foreground">{l.lineNo}</td>
+                <td className="px-3 py-2 max-w-[180px]">
+                  <span className="line-clamp-2">{l.description}</span>
+                </td>
+                <td className="px-3 py-2 text-right">{l.quantity}</td>
+                <td className="px-3 py-2 text-right font-medium">{formatAmount(l.amountExclTax)}</td>
+                <td className="px-3 py-2 text-right text-muted-foreground">
+                  {l.taxRate != null ? `${l.taxRate}%` : l.taxCode ?? '—'}
+                </td>
+                <td className="px-3 py-2 text-right font-medium">{formatAmount(l.amountInclTax)}</td>
+
+                {/* Compte comptable */}
+                <td className="px-3 py-2 min-w-[130px]">
+                  {isEditing ? (
+                    <input
+                      className="w-full border rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                      value={draft.chosenAccountCode}
+                      onChange={(e) => setDraft((d) => ({ ...d, chosenAccountCode: e.target.value }))}
+                      placeholder={l.suggestedAccountCode ?? ''}
+                      autoFocus
+                    />
+                  ) : displayAccount ? (
+                    <div className="space-y-0.5">
+                      <span className={`font-mono text-xs font-semibold ${isChosen ? 'text-green-700' : ''}`}>
+                        {displayAccount}
                       </span>
-                      {l.suggestedTaxCodeB1 && (
-                        <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded px-1">
-                          {l.suggestedTaxCodeB1}
-                        </span>
-                      )}
+                      {!isChosen && <ConfidenceBar value={l.suggestedAccountConfidence} />}
                     </div>
-                    {!l.chosenAccountCode && (
-                      <ConfidenceBar value={l.suggestedAccountConfidence} />
+                  ) : (
+                    <span className="text-xs text-amber-600 font-medium">Non défini</span>
+                  )}
+                </td>
+
+                {/* Centre de coût */}
+                <td className="px-3 py-2 min-w-[90px]">
+                  {isEditing ? (
+                    <input
+                      className="w-full border rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                      value={draft.chosenCostCenter}
+                      onChange={(e) => setDraft((d) => ({ ...d, chosenCostCenter: e.target.value }))}
+                      placeholder={l.suggestedCostCenter ?? ''}
+                    />
+                  ) : (
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {l.chosenCostCenter ?? l.suggestedCostCenter ?? '—'}
+                    </span>
+                  )}
+                </td>
+
+                {/* Code TVA B1 */}
+                <td className="px-3 py-2 min-w-[90px]">
+                  {isEditing ? (
+                    <input
+                      className="w-full border rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                      value={draft.chosenTaxCodeB1}
+                      onChange={(e) => setDraft((d) => ({ ...d, chosenTaxCodeB1: e.target.value }))}
+                      placeholder={l.suggestedTaxCodeB1 ?? ''}
+                    />
+                  ) : (
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {l.chosenTaxCodeB1 ?? l.suggestedTaxCodeB1 ?? '—'}
+                    </span>
+                  )}
+                </td>
+
+                {editable && (
+                  <td className="px-2 py-2 text-right whitespace-nowrap">
+                    {isEditing ? (
+                      <span className="flex items-center gap-1 justify-end">
+                        <button
+                          onClick={() => saveLine(l.id)}
+                          disabled={saving}
+                          className="p-1 rounded hover:bg-green-100 text-green-600 disabled:opacity-50"
+                          title="Valider"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={cancelEdit}
+                          disabled={saving}
+                          className="p-1 rounded hover:bg-muted text-muted-foreground"
+                          title="Annuler"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => startEdit(l)}
+                        className="p-1 rounded hover:bg-muted text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Modifier"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                     )}
-                    {l.suggestionSource && !l.chosenAccountCode && (
-                      <p className="text-[10px] text-muted-foreground leading-tight line-clamp-2" title={l.suggestionSource}>
-                        {l.suggestionSource}
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <div>
-                    <span className="text-muted-foreground">—</span>
-                    {l.suggestionSource && (
-                      <p className="text-[10px] text-amber-600 mt-0.5">{l.suggestionSource}</p>
-                    )}
-                  </div>
+                  </td>
                 )}
-              </td>
-            </tr>
-          ))}
+              </tr>
+            );
+          })}
         </tbody>
         <tfoot className="border-t bg-muted/30">
           <tr>
-            <td colSpan={4} />
+            <td colSpan={3} />
             <td className="px-3 py-2 text-right text-xs text-muted-foreground">
               {formatAmount(lines.reduce((s, l) => s + l.amountExclTax, 0))}
             </td>
@@ -120,7 +231,7 @@ function LinesTab({ lines }: { lines: InvoiceLine[] }) {
             <td className="px-3 py-2 text-right font-semibold">
               {formatAmount(lines.reduce((s, l) => s + l.amountInclTax, 0))}
             </td>
-            <td />
+            <td colSpan={editable ? 4 : 3} />
           </tr>
         </tfoot>
       </table>
@@ -225,7 +336,7 @@ export default function InvoiceDetailPage() {
   const [activeTab, setActiveTab] = useState<TabId>('lines');
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
-  const [postResult, setPostResult] = useState<{ sapDocEntry: number; sapDocNum: number; simulate: boolean } | null>(null);
+  const [postResult, setPostResult] = useState<{ sapDocEntry: number; sapDocNum: number; simulate: boolean; attachmentWarning: string | null } | null>(null);
   const [integrationMode, setIntegrationMode] = useState<IntegrationMode>('SERVICE_INVOICE');
   const [simulate, setSimulate] = useState(false);
   // Reject
@@ -236,6 +347,13 @@ export default function InvoiceDetailPage() {
   // Send status PA
   const [sendingStatus, setSendingStatus] = useState(false);
   const [sendStatusError, setSendStatusError] = useState<string | null>(null);
+  // Reset from ERROR
+  const [resetting, setResetting] = useState(false);
+  // Supplier picker
+  const [editingSupplier, setEditingSupplier] = useState(false);
+  const [supplierList, setSupplierList] = useState<SupplierCache[]>([]);
+  const [selectedCardcode, setSelectedCardcode] = useState<string>('');
+  const [savingSupplier, setSavingSupplier] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -259,7 +377,7 @@ export default function InvoiceDetailPage() {
     setPostResult(null);
     try {
       const result = await apiPostInvoice(id, { integrationMode, simulate });
-      setPostResult({ sapDocEntry: result.sapDocEntry, sapDocNum: result.sapDocNum, simulate: result.simulate });
+      setPostResult({ sapDocEntry: result.sapDocEntry, sapDocNum: result.sapDocNum, simulate: result.simulate, attachmentWarning: result.attachmentWarning ?? null });
       await reloadInvoice();
     } catch (err: unknown) {
       setPostError(err instanceof Error ? err.message : 'Erreur lors de l\'intégration');
@@ -281,6 +399,40 @@ export default function InvoiceDetailPage() {
       setRejectError(err instanceof Error ? err.message : 'Erreur lors du rejet');
     } finally {
       setRejecting(false);
+    }
+  }
+
+  async function handleReset() {
+    if (!id) return;
+    setResetting(true);
+    try {
+      const updated = await apiResetInvoice(id);
+      setInvoice(updated);
+      setPostError(null);
+      setPostResult(null);
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  async function openSupplierPicker() {
+    setEditingSupplier(true);
+    setSelectedCardcode(invoice?.supplierB1Cardcode ?? '');
+    if (supplierList.length === 0) {
+      const res = await apiGetSuppliers();
+      setSupplierList(res.items);
+    }
+  }
+
+  async function saveSupplier() {
+    if (!id) return;
+    setSavingSupplier(true);
+    try {
+      const updated = await apiUpdateSupplier(id, selectedCardcode || null);
+      setInvoice(updated);
+      setEditingSupplier(false);
+    } finally {
+      setSavingSupplier(false);
     }
   }
 
@@ -316,6 +468,7 @@ export default function InvoiceDetailPage() {
 
   const isPosted = invoice.status === 'POSTED';
   const isError = invoice.status === 'ERROR';
+  const isEditable = !TERMINAL_STATUSES_UI.has(invoice.status);
 
   return (
     <div className="p-6 space-y-5">
@@ -449,6 +602,19 @@ export default function InvoiceDetailPage() {
                 </div>
               )}
 
+              {isError && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={handleReset}
+                  disabled={resetting}
+                >
+                  <ArrowLeft className="h-3.5 w-3.5 mr-1.5" />
+                  {resetting ? 'Remise en traitement…' : 'Remettre en traitement'}
+                </Button>
+              )}
+
               {/* Posting UI — visible only if READY and supplier resolved */}
               {(invoice.status === 'READY' || invoice.status === 'TO_REVIEW') && invoice.supplierB1Cardcode && !postResult && (
                 <div className="pt-2 space-y-3 border-t mt-2">
@@ -494,13 +660,20 @@ export default function InvoiceDetailPage() {
 
               {/* Success banner */}
               {postResult && (
-                <div className="rounded-md bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-800 space-y-0.5">
-                  <p className="font-semibold flex items-center gap-1">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    {postResult.simulate ? 'Simulation réussie' : 'Intégrée dans SAP B1'}
-                  </p>
-                  <p>DocEntry : <span className="font-mono">{postResult.sapDocEntry}</span></p>
-                  <p>DocNum : <span className="font-mono">{postResult.sapDocNum}</span></p>
+                <div className="space-y-2">
+                  <div className="rounded-md bg-green-50 border border-green-200 px-3 py-2 text-xs text-green-800 space-y-0.5">
+                    <p className="font-semibold flex items-center gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {postResult.simulate ? 'Simulation réussie' : 'Intégrée dans SAP B1'}
+                    </p>
+                    <p>DocEntry : <span className="font-mono">{postResult.sapDocEntry}</span></p>
+                    <p>DocNum : <span className="font-mono">{postResult.sapDocNum}</span></p>
+                  </div>
+                  {postResult.attachmentWarning && (
+                    <div className="rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                      ⚠ {postResult.attachmentWarning}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -536,13 +709,55 @@ export default function InvoiceDetailPage() {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Matching fournisseur</CardTitle>
             </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-2">Score de confiance</p>
-              <ConfidenceBar value={invoice.supplierMatchConfidence} />
-              {!invoice.supplierB1Cardcode && (
-                <p className="mt-3 text-xs text-amber-600 bg-amber-50 rounded-md px-2 py-1.5 border border-amber-200">
-                  Fournisseur non résolu dans SAP B1
-                </p>
+            <CardContent className="space-y-3">
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Score de confiance</p>
+                <ConfidenceBar value={invoice.supplierMatchConfidence} />
+              </div>
+
+              {editingSupplier ? (
+                <div className="space-y-2">
+                  <select
+                    className="w-full text-xs border rounded-md px-2 py-1.5 bg-background"
+                    value={selectedCardcode}
+                    onChange={(e) => setSelectedCardcode(e.target.value)}
+                    disabled={savingSupplier}
+                  >
+                    <option value="">— Aucun fournisseur —</option>
+                    {supplierList.map((s) => (
+                      <option key={s.cardcode} value={s.cardcode}>
+                        {s.cardcode} — {s.cardname}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex gap-2">
+                    <Button size="sm" className="flex-1" onClick={saveSupplier} disabled={savingSupplier}>
+                      <Check className="h-3.5 w-3.5 mr-1" />
+                      {savingSupplier ? 'Enregistrement…' : 'Valider'}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setEditingSupplier(false)} disabled={savingSupplier}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {invoice.supplierB1Cardcode ? (
+                    <div className="rounded-md bg-green-50 border border-green-200 px-2 py-1.5 text-xs text-green-800 font-mono">
+                      {invoice.supplierB1Cardcode}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-600 bg-amber-50 rounded-md px-2 py-1.5 border border-amber-200">
+                      Fournisseur non résolu dans SAP B1
+                    </p>
+                  )}
+                  {!TERMINAL_STATUSES_UI.has(invoice.status) && (
+                    <Button size="sm" variant="outline" className="w-full text-xs" onClick={openSupplierPicker}>
+                      <Pencil className="h-3 w-3 mr-1.5" />
+                      {invoice.supplierB1Cardcode ? 'Changer de fournisseur' : 'Associer un fournisseur'}
+                    </Button>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>
@@ -573,7 +788,14 @@ export default function InvoiceDetailPage() {
           </nav>
         </div>
         <div>
-          {activeTab === 'lines' && <LinesTab lines={invoice.lines} />}
+          {activeTab === 'lines' && (
+            <LinesTab
+              lines={invoice.lines}
+              invoiceId={invoice.id}
+              editable={isEditable}
+              onSaved={setInvoice}
+            />
+          )}
           {activeTab === 'files' && <FilesTab files={invoice.files} />}
           {activeTab === 'audit' && id && <AuditTab invoiceId={id} />}
         </div>

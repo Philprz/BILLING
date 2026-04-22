@@ -5,14 +5,14 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "db:generate": "prisma generate",
-    "db:migrate:dev": "prisma migrate dev",
-    "db:migrate:deploy": "prisma migrate deploy",
-    "db:migrate:reset": "prisma migrate reset --force",
+    "db:generate": "node scripts/run-prisma.cjs generate",
+    "db:migrate:dev": "node scripts/run-prisma.cjs migrate dev",
+    "db:migrate:deploy": "node scripts/run-prisma.cjs migrate deploy",
+    "db:migrate:reset": "node scripts/run-prisma.cjs migrate reset --force",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio",
+    "db:studio": "node scripts/run-prisma.cjs studio",
     "typecheck": "tsc --noEmit",
-    "postinstall": "prisma generate"
+    "postinstall": "node scripts/run-prisma.cjs generate"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",

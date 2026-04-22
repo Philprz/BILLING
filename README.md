@@ -31,7 +31,7 @@ Applications en local :
 ### Développement
 
 - `npm run local:env:check` : vérifie `.env` et les répertoires critiques
-- `npm run local:prepare` : vérifie l’env, génère Prisma et applique les migrations
+- `npm run local:prepare` : vérifie l’env et applique les migrations
 - `npm run local:dev` : lance API + worker + front Vite
 
 ### Exécution locale stabilisée
@@ -90,3 +90,4 @@ Variables clés :
 - Le retour de statut PA reste simulé par fichier JSON.
 - Le front de type "prod locale" repose sur `vite preview`, utile pour exploitation interne mais pas encore durci comme un vrai serveur frontal.
 - Les tests n’incluent pas encore d’automatisation navigateur Playwright.
+- `npm run db:generate` peut échouer sous Windows si un process Node garde le moteur Prisma verrouillé. Dans ce cas, arrêter API/worker/web puis relancer la commande.

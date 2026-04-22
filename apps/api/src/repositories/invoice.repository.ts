@@ -27,6 +27,7 @@ export interface InvoiceSummaryDto {
   integrationMode: string | null;
   sapDocEntry: number | null;
   sapDocNum: number | null;
+  paStatusSentAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -92,6 +93,7 @@ function mapSummary(inv: {
   totalTax: import('@prisma/client').Prisma.Decimal; totalInclTax: import('@prisma/client').Prisma.Decimal;
   status: string; statusReason: string | null; integrationMode: string | null;
   sapDocEntry: number | null; sapDocNum: number | null;
+  paStatusSentAt: Date | null;
   createdAt: Date; updatedAt: Date;
 }): InvoiceSummaryDto {
   return {
@@ -117,6 +119,7 @@ function mapSummary(inv: {
     integrationMode: inv.integrationMode,
     sapDocEntry: inv.sapDocEntry,
     sapDocNum: inv.sapDocNum,
+    paStatusSentAt: inv.paStatusSentAt ? inv.paStatusSentAt.toISOString() : null,
     createdAt: inv.createdAt.toISOString(),
     updatedAt: inv.updatedAt.toISOString(),
   };

@@ -1,0 +1,10 @@
+{
+  "paMessageId": "LOCAL:TEST-UBL-001.xml",
+  "docNumberPa": "TEST-UBL-001",
+  "paSource": "LOCAL_DEV",
+  "outcome": "REJECTED",
+  "reason": "Test pre-recette: rejet pour test send-status",
+  "sapDocEntry": null,
+  "sapDocNum": null,
+  "sentAt": "2026-04-22T07:05:15.092Z"
+}

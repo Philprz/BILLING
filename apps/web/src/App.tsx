@@ -7,6 +7,7 @@ import DashboardPage from './pages/DashboardPage';
 import InvoiceListPage from './pages/InvoiceListPage';
 import InvoiceDetailPage from './pages/InvoiceDetailPage';
 import AuditPage from './pages/AuditPage';
+import InvoiceGeneratorPage from './pages/InvoiceGeneratorPage';
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/invoices" element={<InvoiceListPage />} />
             <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
             <Route path="/audit" element={<AuditPage />} />
+            <Route path="/invoice-generator" element={<InvoiceGeneratorPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

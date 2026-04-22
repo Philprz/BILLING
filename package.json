@@ -24,7 +24,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\" --ignore-path .gitignore",
     "typecheck": "npm run typecheck -w packages/shared && npm run typecheck -w packages/database && npm run typecheck -w apps/api && npm run typecheck -w apps/worker && npm run typecheck -w apps/web",
     "local:env:check": "tsx scripts/check-env.ts",
-    "local:prepare": "npm run local:env:check && npm run db:generate && npm run db:migrate:deploy",
+    "local:prepare": "npm run local:env:check && npm run db:migrate:deploy",
     "local:dev": "npm run local:env:check && npm run dev",
     "local:prod": "npm run local:env:check && npm run build && npm run start:local",
     "local:smoke": "npm run local:env:check && npm run test && npm run build",
@@ -48,7 +48,10 @@
     "ingest:once": "npm run ingest:once -w apps/worker",
     "seed:matching": "tsx scripts/seed-matching.ts",
     "test:matching": "tsx scripts/test-rule-engine.ts",
-    "check:lot9": "tsx scripts/check-lot9.ts"
+    "check:lot9": "tsx scripts/check-lot9.ts",
+    "seed:test": "tsx scripts/seed-test-invoices.ts",
+    "sync:suppliers": "tsx scripts/sync-suppliers-sap.ts",
+    "launch": "start lancer.bat"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.32.0",

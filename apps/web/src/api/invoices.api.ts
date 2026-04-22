@@ -43,10 +43,11 @@ export interface PostInvoiceParams {
 export interface PostInvoiceResult {
   sapDocEntry:        number;
   sapDocNum:          number;
-  sapAttachmentEntry: number;
+  sapAttachmentEntry: number | null;
   integrationMode:    string;
   simulate:           boolean;
   status:             string;
+  attachmentWarning:  string | null;
 }
 
 export async function apiPostInvoice(id: string, params: PostInvoiceParams): Promise<PostInvoiceResult> {
@@ -73,5 +74,31 @@ export interface SendStatusResult {
 export async function apiSendStatus(id: string): Promise<SendStatusResult> {
   return apiFetch<SendStatusResult>(`/api/invoices/${id}/send-status`, {
     method: 'POST',
+  });
+}
+
+export async function apiResetInvoice(id: string): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/reset`, { method: 'POST' });
+}
+
+export async function apiUpdateSupplier(invoiceId: string, supplierB1Cardcode: string | null): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${invoiceId}/supplier`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ supplierB1Cardcode }),
+  });
+}
+
+export interface PatchLineParams {
+  chosenAccountCode?: string | null;
+  chosenCostCenter?: string | null;
+  chosenTaxCodeB1?: string | null;
+}
+
+export async function apiUpdateLine(invoiceId: string, lineId: string, data: PatchLineParams): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${invoiceId}/lines/${lineId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
   });
 }
