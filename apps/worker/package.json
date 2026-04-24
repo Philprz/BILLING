@@ -12,10 +12,12 @@
   "dependencies": {
     "@pa-sap-bridge/database": "*",
     "dotenv": "^16.4.7",
-    "fast-xml-parser": "^5.7.1"
+    "fast-xml-parser": "^5.7.1",
+    "ssh2-sftp-client": "^12.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "@types/ssh2-sftp-client": "^9.0.6",
     "tsx": "^4.19.4",
     "typescript": "*"
   }

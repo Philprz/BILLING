@@ -7,23 +7,13 @@ export interface SupplierCacheDto {
   federaltaxid: string | null;
   vatregnum: string | null;
   syncAt: string;
+  invoiceCount: number;
 }
 
 export interface FindSuppliersParams {
   page: number;
   limit: number;
   search?: string;
-}
-
-function mapSupplier(s: {
-  id: string; cardcode: string; cardname: string;
-  federaltaxid: string | null; vatregnum: string | null; syncAt: Date;
-}): SupplierCacheDto {
-  return {
-    id: s.id, cardcode: s.cardcode, cardname: s.cardname,
-    federaltaxid: s.federaltaxid, vatregnum: s.vatregnum,
-    syncAt: s.syncAt.toISOString(),
-  };
 }
 
 export async function findSuppliers(
@@ -42,12 +32,23 @@ export async function findSuppliers(
       }
     : {};
 
-  const [items, total] = await Promise.all([
-    prisma.supplierCache.findMany({
-      where, skip, take: limit, orderBy: { cardname: 'asc' },
-    }),
+  const [suppliers, total, countByCardcode] = await Promise.all([
+    prisma.supplierCache.findMany({ where, skip, take: limit, orderBy: { cardname: 'asc' } }),
     prisma.supplierCache.count({ where }),
+    prisma.invoice.groupBy({ by: ['supplierB1Cardcode'], _count: { id: true } }),
   ]);
 
-  return { items: items.map(mapSupplier), total };
+  const countMap = new Map(countByCardcode.map((r) => [r.supplierB1Cardcode, r._count.id]));
+
+  const items: SupplierCacheDto[] = suppliers.map((s) => ({
+    id: s.id,
+    cardcode: s.cardcode,
+    cardname: s.cardname,
+    federaltaxid: s.federaltaxid,
+    vatregnum: s.vatregnum,
+    syncAt: s.syncAt.toISOString(),
+    invoiceCount: countMap.get(s.cardcode) ?? 0,
+  }));
+
+  return { items, total };
 }

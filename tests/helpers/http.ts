@@ -8,8 +8,10 @@ export async function buildAuthenticatedApp(user = 'vitest.user') {
 
   const session = createSession({
     b1Session: 'VITEST-B1SESSION',
+    sapCookieHeader: 'B1SESSION=VITEST-B1SESSION; ROUTEID=.node1',
     companyDb: 'VITEST_DB',
     sapUser: user,
+    sessionTimeoutMinutes: 30,
     expiresAt: new Date(Date.now() + 30 * 60_000),
   });
 

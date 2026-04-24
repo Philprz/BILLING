@@ -1,0 +1,95 @@
+version: '3.9'
+
+services:
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-pa_sap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB:       ${POSTGRES_DB:-pa_sap_bridge}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pa_sap}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Migrations (job, exits after completion) ─────────────────────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: build
+    command: >
+      sh -c "npx prisma migrate deploy --schema=packages/database/prisma/schema.prisma"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pa_sap}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-pa_sap_bridge}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── API ──────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV:              production
+      DATABASE_URL:          postgresql://${POSTGRES_USER:-pa_sap}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-pa_sap_bridge}
+      API_PORT:              3001
+      APP_HOST:              0.0.0.0
+      CORS_ORIGIN:           ${CORS_ORIGIN:-http://localhost:4173}
+      SESSION_COOKIE_SECRET: ${SESSION_COOKIE_SECRET:?SESSION_COOKIE_SECRET is required}
+      SAP_BASE_URL:          ${SAP_BASE_URL:?SAP_BASE_URL is required}
+      SAP_COMPANY_DB:        ${SAP_COMPANY_DB:?SAP_COMPANY_DB is required}
+      SAP_IGNORE_SSL:        ${SAP_IGNORE_SSL:-false}
+      FILE_STORAGE_PATH:     /data
+    volumes:
+      - invoice_data:/data
+    ports:
+      - "${API_PORT:-3001}:3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # ── Worker ───────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV:          production
+      DATABASE_URL:      postgresql://${POSTGRES_USER:-pa_sap}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-pa_sap_bridge}
+      INBOX_PATH:        /data/inbox
+      FILE_STORAGE_PATH: /data
+      POLL_INTERVAL_MS:  ${POLL_INTERVAL_MS:-30000}
+      SAP_BASE_URL:      ${SAP_BASE_URL:?SAP_BASE_URL is required}
+      SAP_COMPANY_DB:    ${SAP_COMPANY_DB:?SAP_COMPANY_DB is required}
+      SAP_IGNORE_SSL:    ${SAP_IGNORE_SSL:-false}
+    volumes:
+      - invoice_data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # ── Web (Nginx serving the Vite build) ───────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-4173}:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  invoice_data:

@@ -1,17 +1,13 @@
 import { prisma } from './client';
-import type {
-  AuditAction,
-  AuditEntityType,
-  AuditOutcome,
-  Prisma,
-} from '@prisma/client';
+import type { AuditAction, AuditEntityType, AuditOutcome, Prisma } from '@prisma/client';
 
 const MAX_STRING_LENGTH = 300;
 const MAX_ARRAY_ITEMS = 20;
 const MAX_OBJECT_KEYS = 20;
 const MAX_DEPTH = 5;
 const REDACTED = '[REDACTED]';
-const SENSITIVE_KEY = /pass(word)?|secret|token|authorization|cookie|session|credential|api[-_]?key/i;
+const SENSITIVE_KEY =
+  /pass(word)?|secret|token|authorization|cookie|session|credential|api[-_]?key/i;
 
 export interface CreateAuditLogInput {
   sapUser?: string | null;
@@ -49,9 +45,7 @@ function sanitizeValue(value: unknown, depth = 0): Prisma.InputJsonValue | null 
   if (value instanceof Date) return value.toISOString();
 
   if (Array.isArray(value)) {
-    const items = value
-      .slice(0, MAX_ARRAY_ITEMS)
-      .map((item) => sanitizeValue(item, depth + 1));
+    const items = value.slice(0, MAX_ARRAY_ITEMS).map((item) => sanitizeValue(item, depth + 1));
     if (value.length > MAX_ARRAY_ITEMS) {
       items.push(`[+${value.length - MAX_ARRAY_ITEMS} more items]`);
     }
@@ -64,9 +58,7 @@ function sanitizeValue(value: unknown, depth = 0): Prisma.InputJsonValue | null 
 
     const sanitizedObject: Record<string, Prisma.InputJsonValue | null> = {};
     for (const [key, raw] of limitedEntries) {
-      sanitizedObject[key] = SENSITIVE_KEY.test(key)
-        ? REDACTED
-        : sanitizeValue(raw, depth + 1);
+      sanitizedObject[key] = SENSITIVE_KEY.test(key) ? REDACTED : sanitizeValue(raw, depth + 1);
     }
 
     if (entries.length > MAX_OBJECT_KEYS) {
@@ -84,7 +76,9 @@ function sanitizeText(value?: string | null): string | null {
   return truncateString(value);
 }
 
-function toNullableJsonInput(value: unknown): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined {
+function toNullableJsonInput(
+  value: unknown,
+): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined {
   const sanitized = sanitizeValue(value);
   return sanitized === null ? undefined : sanitized;
 }
@@ -114,19 +108,13 @@ export async function createAuditLogBestEffort(input: CreateAuditLogInput): Prom
   }
 }
 
-function readString(
-  source: unknown,
-  key: string,
-): string | null {
+function readString(source: unknown, key: string): string | null {
   if (!source || typeof source !== 'object') return null;
   const value = (source as Record<string, unknown>)[key];
   return typeof value === 'string' ? value : null;
 }
 
-function readNumber(
-  source: unknown,
-  key: string,
-): number | null {
+function readNumber(source: unknown, key: string): number | null {
   if (!source || typeof source !== 'object') return null;
   const value = (source as Record<string, unknown>)[key];
   return typeof value === 'number' ? value : null;
@@ -134,6 +122,7 @@ function readNumber(
 
 export function buildAuditSummary(input: AuditSummaryInput): string {
   const { action, outcome, payloadAfter, payloadBefore, errorMessage } = input;
+  const stage = readString(payloadAfter, 'stage');
 
   if (outcome === 'ERROR') {
     const attempt = readNumber(payloadAfter, 'attempt');
@@ -143,6 +132,15 @@ export function buildAuditSummary(input: AuditSummaryInput): string {
       const retryPart = maxRetries ? `tentative ${attempt}/${maxRetries}` : `tentative ${attempt}`;
       const nextPart = nextRetryAt ? `, prochain essai ${nextRetryAt}` : '';
       return `Envoi statut PA en erreur (${retryPart}${nextPart})`;
+    }
+    if (stage === 'SAP_VALIDATION_ERROR') {
+      return errorMessage ?? 'Validation SAP en erreur';
+    }
+    if (stage === 'ATTACHMENT_UPLOAD_ERROR') {
+      return errorMessage ?? 'Upload pièce jointe SAP en erreur';
+    }
+    if (stage === 'SAP_POST_DISABLED_BY_POLICY') {
+      return 'Intégration SAP désactivée par politique';
     }
     return errorMessage ?? `${action} en erreur`;
   }
@@ -160,16 +158,35 @@ export function buildAuditSummary(input: AuditSummaryInput): string {
       const integrationMode = readString(payloadAfter, 'integrationMode');
       const sapDocNum = readNumber(payloadAfter, 'sapDocNum');
       const docPart = sapDocNum ? `, DocNum ${sapDocNum}` : '';
-      return `Validation ${afterStatus ?? 'OK'}${integrationMode ? ` via ${integrationMode}` : ''}${docPart}`;
+      const simulated = (payloadAfter as Record<string, unknown> | null)?.simulate === true;
+      return `Validation ${afterStatus ?? 'OK'}${simulated ? ' simulée' : ''}${integrationMode ? ` via ${integrationMode}` : ''}${docPart}`;
     }
     case 'REJECT': {
       const reason = readString(payloadAfter, 'reason');
       return reason ? `Rejet: ${reason}` : 'Rejet manuel';
     }
     case 'POST_SAP': {
+      if (stage === 'SAP_VALIDATION_OK') {
+        return 'Validation SAP OK';
+      }
+      if (stage === 'ATTACHMENT_UPLOAD_OK') {
+        return 'Pièce jointe SAP uploadée';
+      }
+      if (stage === 'ATTACHMENT_UPLOAD_WARNING') {
+        return 'Upload pièce jointe SAP en warning';
+      }
+      if (stage === 'ATTACHMENT_POLICY_BYPASS') {
+        return 'Pièce jointe SAP ignorée par politique';
+      }
+      if (stage === 'ATTACHMENT_SKIPPED_SIMULATE') {
+        return 'Pièce jointe SAP ignorée (mode simulé)';
+      }
       const integrationMode = readString(payloadAfter, 'integrationMode');
       const sapDocNum = readNumber(payloadAfter, 'sapDocNum');
-      return `Intégration SAP${integrationMode ? ` (${integrationMode})` : ''}${sapDocNum ? `, DocNum ${sapDocNum}` : ''}`;
+      const simulated = (payloadAfter as Record<string, unknown> | null)?.simulate === true;
+      const label =
+        stage === 'SAP_POST_SIMULATED' || simulated ? 'Intégration SAP simulée' : 'Intégration SAP';
+      return `${label}${integrationMode ? ` (${integrationMode})` : ''}${sapDocNum ? `, DocNum ${sapDocNum}` : ''}`;
     }
     case 'SEND_STATUS_PA': {
       const deliveryMode = readString(payloadAfter, 'deliveryMode');
@@ -185,9 +202,10 @@ export function buildAuditSummary(input: AuditSummaryInput): string {
       return parts.join(' · ');
     }
     case 'FETCH_PA': {
-      const created = typeof (payloadAfter as Record<string, unknown> | null)?.created === 'boolean'
-        ? (payloadAfter as Record<string, unknown>).created
-        : null;
+      const created =
+        typeof (payloadAfter as Record<string, unknown> | null)?.created === 'boolean'
+          ? (payloadAfter as Record<string, unknown>).created
+          : null;
       const filename = readString(payloadAfter, 'filename');
       if (filename) {
         return `${created === false ? 'Doublon ignoré' : 'Ingestion'} ${filename}`;

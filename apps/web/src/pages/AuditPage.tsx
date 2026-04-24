@@ -4,46 +4,60 @@ import { CheckCircle2, XCircle, ChevronLeft, ChevronRight, Filter } from 'lucide
 import { apiGetAudit, type GetAuditParams } from '../api/audit.api';
 import type { AuditEntry, AuditAction, AuditOutcome } from '../api/types';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Select } from '../components/ui/select';
 import { PageLoader } from '../components/ui/spinner';
 import { formatDate } from '../lib/utils';
 
 const ACTION_LABELS: Record<AuditAction, string> = {
-  LOGIN:          'Connexion',
-  LOGOUT:         'Déconnexion',
-  FETCH_PA:       'Ingestion PA',
-  VIEW_INVOICE:   'Consultation',
-  EDIT_MAPPING:   'Modif. règle',
-  APPROVE:        'Approbation',
-  REJECT:         'Rejet',
-  POST_SAP:       'Intégration SAP',
+  LOGIN: 'Connexion',
+  LOGOUT: 'Déconnexion',
+  FETCH_PA: 'Ingestion PA',
+  VIEW_INVOICE: 'Consultation',
+  EDIT_MAPPING: 'Modif. règle',
+  APPROVE: 'Approbation',
+  REJECT: 'Rejet',
+  POST_SAP: 'Intégration SAP',
   SEND_STATUS_PA: 'Retour statut PA',
-  SYSTEM_ERROR:   'Erreur système',
-  CONFIG_CHANGE:  'Config. modifiée',
+  SYSTEM_ERROR: 'Erreur système',
+  CONFIG_CHANGE: 'Config. modifiée',
 };
 
 const ACTION_COLOR: Record<AuditAction, string> = {
-  LOGIN:          'bg-blue-50 text-blue-700 border-blue-200',
-  LOGOUT:         'bg-slate-50 text-slate-600 border-slate-200',
-  FETCH_PA:       'bg-purple-50 text-purple-700 border-purple-200',
-  VIEW_INVOICE:   'bg-slate-50 text-slate-600 border-slate-200',
-  EDIT_MAPPING:   'bg-amber-50 text-amber-700 border-amber-200',
-  APPROVE:        'bg-green-50 text-green-700 border-green-200',
-  REJECT:         'bg-red-50 text-red-700 border-red-200',
-  POST_SAP:       'bg-indigo-50 text-indigo-700 border-indigo-200',
-  SEND_STATUS_PA: 'bg-teal-50 text-teal-700 border-teal-200',
-  SYSTEM_ERROR:   'bg-red-50 text-red-700 border-red-200',
-  CONFIG_CHANGE:  'bg-orange-50 text-orange-700 border-orange-200',
+  LOGIN: 'border-primary/25 bg-primary/10 text-primary',
+  LOGOUT: 'border-border bg-muted/60 text-muted-foreground',
+  FETCH_PA: 'border-secondary/25 bg-secondary/10 text-secondary',
+  VIEW_INVOICE: 'border-border bg-muted/60 text-muted-foreground',
+  EDIT_MAPPING: 'border-warning/25 bg-warning/10 text-warning',
+  APPROVE: 'border-success/25 bg-success/10 text-success',
+  REJECT: 'border-destructive/25 bg-destructive/10 text-destructive',
+  POST_SAP: 'border-info/25 bg-info/10 text-info',
+  SEND_STATUS_PA: 'border-info/25 bg-info/10 text-info',
+  SYSTEM_ERROR: 'border-destructive/25 bg-destructive/10 text-destructive',
+  CONFIG_CHANGE: 'border-warning/25 bg-warning/10 text-warning',
 };
 
 const AUDIT_ACTIONS: AuditAction[] = [
-  'LOGIN', 'LOGOUT', 'FETCH_PA', 'VIEW_INVOICE', 'EDIT_MAPPING',
-  'APPROVE', 'REJECT', 'POST_SAP', 'SEND_STATUS_PA', 'SYSTEM_ERROR', 'CONFIG_CHANGE',
+  'LOGIN',
+  'LOGOUT',
+  'FETCH_PA',
+  'VIEW_INVOICE',
+  'EDIT_MAPPING',
+  'APPROVE',
+  'REJECT',
+  'POST_SAP',
+  'SEND_STATUS_PA',
+  'SYSTEM_ERROR',
+  'CONFIG_CHANGE',
 ];
 
 function ActionBadge({ action }: { action: AuditAction }) {
   return (
-    <span className={`inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded border ${ACTION_COLOR[action] ?? 'bg-muted text-muted-foreground border-border'}`}>
-      {ACTION_LABELS[action] ?? action}
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] ${ACTION_COLOR[action]}`}
+    >
+      {ACTION_LABELS[action]}
     </span>
   );
 }
@@ -51,13 +65,13 @@ function ActionBadge({ action }: { action: AuditAction }) {
 export default function AuditPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [page, setPage]       = useState(1);
+  const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [total, setTotal]     = useState(0);
+  const [total, setTotal] = useState(0);
 
-  const [filterAction,  setFilterAction]  = useState<AuditAction | ''>('');
+  const [filterAction, setFilterAction] = useState<AuditAction | ''>('');
   const [filterOutcome, setFilterOutcome] = useState<AuditOutcome | ''>('');
-  const [filterEntity,  setFilterEntity]  = useState('');
+  const [filterEntity, setFilterEntity] = useState('');
 
   const LIMIT = 50;
 
@@ -65,9 +79,9 @@ export default function AuditPage() {
     setLoading(true);
     try {
       const params: GetAuditParams = { page, limit: LIMIT };
-      if (filterAction)  params.action   = filterAction;
-      if (filterOutcome) params.outcome  = filterOutcome;
-      if (filterEntity)  params.entityId = filterEntity;
+      if (filterAction) params.action = filterAction;
+      if (filterOutcome) params.outcome = filterOutcome;
+      if (filterEntity) params.entityId = filterEntity;
       const result = await apiGetAudit(params);
       setEntries(result.items);
       setTotal(result.total);
@@ -79,7 +93,9 @@ export default function AuditPage() {
     }
   }, [page, filterAction, filterOutcome, filterEntity]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   function applyFilters() {
     setPage(1);
@@ -87,137 +103,183 @@ export default function AuditPage() {
   }
 
   return (
-    <div className="p-6 space-y-5">
-      <div className="flex items-center justify-between">
+    <div className="app-page">
+      <section className="page-header">
         <div>
-          <h1 className="text-xl font-bold">Journal d'audit</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{total} entrée{total !== 1 ? 's' : ''}</p>
+          <p className="page-eyebrow">Traçabilité</p>
+          <h2 className="page-title">Journal d’audit</h2>
+          <p className="page-subtitle">
+            Historique opérationnel des actions utilisateurs et systèmes. Les états OK / erreur
+            restent immédiatement repérables sans sacrifier la densité métier.
+          </p>
         </div>
-      </div>
+        <div className="rounded-2xl border border-border/80 bg-card-muted/70 px-4 py-3 text-right shadow-soft">
+          <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Entrées</p>
+          <p className="font-display text-2xl uppercase tracking-[0.1em] text-foreground">
+            {total}
+          </p>
+        </div>
+      </section>
 
-      {/* Filtres */}
-      <Card>
+      <Card className="panel-surface-muted">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm flex items-center gap-2"><Filter className="h-4 w-4" /> Filtres</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-sm uppercase tracking-[0.16em] text-muted-foreground">
+            <Filter className="h-4 w-4 text-primary" />
+            Filtres
+          </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-wrap gap-3 items-end">
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Action</label>
-              <select
-                className="text-xs border rounded-md px-2 py-1.5 bg-background w-44"
-                value={filterAction}
-                onChange={(e) => setFilterAction(e.target.value as AuditAction | '')}
-              >
-                <option value="">Toutes</option>
-                {AUDIT_ACTIONS.map((a) => (
-                  <option key={a} value={a}>{ACTION_LABELS[a]}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Résultat</label>
-              <select
-                className="text-xs border rounded-md px-2 py-1.5 bg-background w-32"
-                value={filterOutcome}
-                onChange={(e) => setFilterOutcome(e.target.value as AuditOutcome | '')}
-              >
-                <option value="">Tous</option>
-                <option value="OK">OK</option>
-                <option value="ERROR">Erreur</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Entité (UUID / ID)</label>
-              <input
-                type="text"
-                className="text-xs border rounded-md px-2 py-1.5 bg-background w-64 font-mono"
-                placeholder="ex. 3f2504e0-4f89-..."
-                value={filterEntity}
-                onChange={(e) => setFilterEntity(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-              />
-            </div>
-            <button
-              className="text-xs px-3 py-1.5 rounded-md border bg-primary text-primary-foreground hover:bg-primary/90"
-              onClick={applyFilters}
+          <div className="grid gap-3 xl:grid-cols-[220px_180px_minmax(0,1fr)_auto_auto] xl:items-end">
+            <Select
+              label="Action"
+              value={filterAction}
+              onChange={(e) => setFilterAction(e.target.value as AuditAction | '')}
             >
-              Appliquer
-            </button>
-            <button
-              className="text-xs px-3 py-1.5 rounded-md border hover:bg-muted"
-              onClick={() => { setFilterAction(''); setFilterOutcome(''); setFilterEntity(''); setPage(1); }}
+              <option value="">Toutes</option>
+              {AUDIT_ACTIONS.map((action) => (
+                <option key={action} value={action}>
+                  {ACTION_LABELS[action]}
+                </option>
+              ))}
+            </Select>
+
+            <Select
+              label="Résultat"
+              value={filterOutcome}
+              onChange={(e) => setFilterOutcome(e.target.value as AuditOutcome | '')}
+            >
+              <option value="">Tous</option>
+              <option value="OK">OK</option>
+              <option value="ERROR">Erreur</option>
+            </Select>
+
+            <Input
+              label="Entité (UUID / ID)"
+              type="text"
+              className="font-mono"
+              placeholder="ex. 3f2504e0-4f89-..."
+              value={filterEntity}
+              onChange={(e) => setFilterEntity(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') applyFilters();
+              }}
+            />
+
+            <Button onClick={applyFilters}>Appliquer</Button>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setFilterAction('');
+                setFilterOutcome('');
+                setFilterEntity('');
+                setPage(1);
+              }}
             >
               Réinitialiser
-            </button>
+            </Button>
           </div>
         </CardContent>
       </Card>
 
-      {/* Table */}
       <Card>
         {loading ? (
           <PageLoader />
         ) : entries.length === 0 ? (
-          <p className="py-12 text-center text-sm text-muted-foreground">Aucune entrée d'audit.</p>
+          <p className="px-6 py-12 text-center text-sm text-muted-foreground">
+            Aucune entrée d’audit.
+          </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-muted-foreground">
+            <table className="data-table">
+              <thead>
                 <tr>
-                  <th className="text-left px-3 py-2 font-medium">Date</th>
-                  <th className="text-left px-3 py-2 font-medium">Action</th>
-                  <th className="text-left px-3 py-2 font-medium">Utilisateur</th>
-                  <th className="text-left px-3 py-2 font-medium">Entité</th>
-                  <th className="text-left px-3 py-2 font-medium">Résultat</th>
-                  <th className="text-left px-3 py-2 font-medium">Détail</th>
+                  <th>Date</th>
+                  <th>Action</th>
+                  <th>Utilisateur</th>
+                  <th>Entité</th>
+                  <th>Résultat</th>
+                  <th>Détail</th>
                 </tr>
               </thead>
-              <tbody className="divide-y">
-                {entries.map((e) => (
-                  <tr key={e.id} className={`hover:bg-muted/20 ${e.outcome === 'ERROR' ? 'bg-red-50/40' : ''}`}>
-                    <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap font-mono">
-                      {formatDate(e.occurredAt)}
+              <tbody>
+                {entries.map((entry) => (
+                  <tr
+                    key={entry.id}
+                    className={entry.outcome === 'ERROR' ? 'bg-destructive/5' : ''}
+                  >
+                    <td className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                      {formatDate(entry.occurredAt)}
                     </td>
-                    <td className="px-3 py-2">
-                      <ActionBadge action={e.action} />
+                    <td>
+                      <ActionBadge action={entry.action} />
                     </td>
-                    <td className="px-3 py-2 text-xs">{e.sapUser ?? <span className="text-muted-foreground">système</span>}</td>
-                    <td className="px-3 py-2 text-xs font-mono">
-                      {e.entityId
-                        ? e.entityType === 'INVOICE'
-                          ? <Link to={`/invoices/${e.entityId}`} className="text-primary hover:underline truncate block max-w-[120px]" title={e.entityId}>{e.entityId.slice(0, 8)}…</Link>
-                          : <span className="text-muted-foreground truncate block max-w-[120px]" title={e.entityId}>{e.entityId.slice(0, 8)}…</span>
-                        : <span className="text-muted-foreground">—</span>
-                      }
+                    <td className="text-xs text-foreground">
+                      {entry.sapUser ?? <span className="text-muted-foreground">système</span>}
                     </td>
-                    <td className="px-3 py-2">
-                      {e.outcome === 'OK'
-                        ? <CheckCircle2 className="h-4 w-4 text-green-500" />
-                        : <XCircle className="h-4 w-4 text-destructive" />
-                      }
+                    <td className="font-mono text-xs">
+                      {entry.entityId ? (
+                        entry.entityType === 'INVOICE' ? (
+                          <Link
+                            to={`/invoices/${entry.entityId}`}
+                            className="block max-w-[140px] truncate text-primary transition-colors hover:text-primary/80"
+                            title={entry.entityId}
+                          >
+                            {entry.entityId.slice(0, 8)}…
+                          </Link>
+                        ) : (
+                          <span
+                            className="block max-w-[140px] truncate text-muted-foreground"
+                            title={entry.entityId}
+                          >
+                            {entry.entityId.slice(0, 8)}…
+                          </span>
+                        )
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
                     </td>
-                    <td className="px-3 py-2 text-xs text-muted-foreground max-w-[280px]">
+                    <td>
+                      {entry.outcome === 'OK' ? (
+                        <CheckCircle2 className="h-4 w-4 text-success" />
+                      ) : (
+                        <XCircle className="h-4 w-4 text-destructive" />
+                      )}
+                    </td>
+                    <td className="max-w-[320px] text-xs text-muted-foreground">
                       <div className="space-y-1">
-                        <p className={e.outcome === 'ERROR' ? 'text-destructive line-clamp-2' : 'line-clamp-2 text-foreground'}>
-                          {e.summary}
+                        <p
+                          className={
+                            entry.outcome === 'ERROR'
+                              ? 'line-clamp-2 text-destructive'
+                              : 'line-clamp-2 text-foreground'
+                          }
+                        >
+                          {entry.summary}
                         </p>
-                        {(Boolean(e.payloadBefore) || Boolean(e.payloadAfter)) && (
-                          <details className="text-[10px] font-mono">
-                            <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                        {(Boolean(entry.payloadBefore) || Boolean(entry.payloadAfter)) && (
+                          <details className="font-mono text-[10px]">
+                            <summary className="cursor-pointer text-muted-foreground transition-colors hover:text-foreground">
                               Voir les détails
                             </summary>
-                            <div className="mt-1 rounded border bg-muted/30 p-2 space-y-2">
-                              {Boolean(e.payloadBefore) && (
-                                <div>
-                                  <p className="text-[9px] uppercase tracking-wide text-muted-foreground mb-1">Avant</p>
-                                  <pre className="whitespace-pre-wrap break-words">{String(JSON.stringify(e.payloadBefore, null, 2))}</pre>
+                            <div className="mt-2 rounded-2xl border border-border/70 bg-card-muted/60 p-3">
+                              {Boolean(entry.payloadBefore) && (
+                                <div className="mb-3">
+                                  <p className="mb-1 text-[9px] uppercase tracking-[0.18em] text-muted-foreground">
+                                    Avant
+                                  </p>
+                                  <pre className="whitespace-pre-wrap break-words">
+                                    {String(JSON.stringify(entry.payloadBefore, null, 2))}
+                                  </pre>
                                 </div>
                               )}
-                              {Boolean(e.payloadAfter) && (
+                              {Boolean(entry.payloadAfter) && (
                                 <div>
-                                  <p className="text-[9px] uppercase tracking-wide text-muted-foreground mb-1">Après</p>
-                                  <pre className="whitespace-pre-wrap break-words">{String(JSON.stringify(e.payloadAfter, null, 2))}</pre>
+                                  <p className="mb-1 text-[9px] uppercase tracking-[0.18em] text-muted-foreground">
+                                    Après
+                                  </p>
+                                  <pre className="whitespace-pre-wrap break-words">
+                                    {String(JSON.stringify(entry.payloadAfter, null, 2))}
+                                  </pre>
                                 </div>
                               )}
                             </div>
@@ -232,25 +294,28 @@ export default function AuditPage() {
           </div>
         )}
 
-        {/* Pagination */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t text-xs text-muted-foreground">
-            <span>Page {page} / {totalPages}</span>
-            <div className="flex gap-1">
-              <button
+          <div className="flex items-center justify-between border-t border-border/70 px-4 py-3 text-xs text-muted-foreground">
+            <span>
+              Page {page} / {totalPages}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={page <= 1}
-                onClick={() => setPage((p) => p - 1)}
-                className="p-1 rounded hover:bg-muted disabled:opacity-40"
+                onClick={() => setPage((current) => current - 1)}
               >
                 <ChevronLeft className="h-4 w-4" />
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={page >= totalPages}
-                onClick={() => setPage((p) => p + 1)}
-                className="p-1 rounded hover:bg-muted disabled:opacity-40"
+                onClick={() => setPage((current) => current + 1)}
               >
                 <ChevronRight className="h-4 w-4" />
-              </button>
+              </Button>
             </div>
           </div>
         )}

@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import type { FastifyInstance } from 'fastify';
 import {
   findInvoices,
@@ -6,9 +8,18 @@ import {
   type FindInvoicesParams,
 } from '../repositories/invoice.repository';
 import { requireSession } from '../middleware/require-session';
-import { uploadAttachment, createPurchaseDoc, createJournalEntry, SapSlError } from '../services/sap-sl.service';
+import {
+  uploadAttachment,
+  createPurchaseDoc,
+  createJournalEntry,
+  SapSlError,
+} from '../services/sap-sl.service';
 import { buildPurchaseDocPayload, buildJournalEntryPayload } from '../services/sap-invoice-builder';
 import { sendPaStatus } from '../services/pa-status.service';
+import { resolveSapExecutionPolicy } from '../services/sap-policy.service';
+import { validateInvoiceForSapPost } from '../services/sap-validation.service';
+import { applyLearningAfterPost } from '../services/learning.service';
+import { enrichInvoiceById, enrichPendingInvoices } from '../services/enrichment.service';
 import {
   buildPaStatusPayload,
   computeNextRetryAt,
@@ -53,8 +64,15 @@ interface InvoiceListQuery {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  direction?: string;
+  amountMin?: number;
+  amountMax?: number;
   sortBy?: string;
   sortDir?: string;
+}
+
+interface BulkPostBody {
+  ids: string[];
 }
 
 function getRequestMeta(request: { ip: string; headers: Record<string, unknown> }): {
@@ -66,6 +84,20 @@ function getRequestMeta(request: { ip: string; headers: Record<string, unknown> 
     ipAddress: request.ip,
     userAgent: typeof userAgentHeader === 'string' ? userAgentHeader : null,
   };
+}
+
+function buildValidationErrorMessage(validationReport: {
+  issues: Array<{ message: string }>;
+}): string {
+  if (validationReport.issues.length === 0) {
+    return 'Validation SAP impossible';
+  }
+
+  if (validationReport.issues.length === 1) {
+    return validationReport.issues[0].message;
+  }
+
+  return `${validationReport.issues[0].message} (+${validationReport.issues.length - 1} autre(s) erreur(s))`;
 }
 
 export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
@@ -82,16 +114,19 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         querystring: {
           type: 'object',
           properties: {
-            page:              { type: 'integer', minimum: 1, default: 1 },
-            limit:             { type: 'integer', minimum: 1, maximum: MAX_LIMIT, default: DEFAULT_LIMIT },
-            status:            { type: 'string', enum: [...INVOICE_STATUSES] },
-            paSource:          { type: 'string', maxLength: 100 },
-            supplierCardcode:  { type: 'string', maxLength: 50 },
-            dateFrom:          { type: 'string', format: 'date' },
-            dateTo:            { type: 'string', format: 'date' },
-            search:            { type: 'string', maxLength: 100 },
-            sortBy:            { type: 'string', enum: [...SORT_FIELDS] },
-            sortDir:           { type: 'string', enum: ['asc', 'desc'] },
+            page: { type: 'integer', minimum: 1, default: 1 },
+            limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, default: DEFAULT_LIMIT },
+            status: { type: 'string', enum: [...INVOICE_STATUSES] },
+            paSource: { type: 'string', maxLength: 100 },
+            supplierCardcode: { type: 'string', maxLength: 50 },
+            dateFrom: { type: 'string', format: 'date' },
+            dateTo: { type: 'string', format: 'date' },
+            search: { type: 'string', maxLength: 100 },
+            direction: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE'] },
+            amountMin: { type: 'number', minimum: 0 },
+            amountMax: { type: 'number', minimum: 0 },
+            sortBy: { type: 'string', enum: [...SORT_FIELDS] },
+            sortDir: { type: 'string', enum: ['asc', 'desc'] },
           },
         },
       },
@@ -102,13 +137,17 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       const limit = Math.min(q.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
 
       const params: FindInvoicesParams = {
-        page, limit,
+        page,
+        limit,
         status: q.status as FindInvoicesParams['status'],
         paSource: q.paSource,
         supplierCardcode: q.supplierCardcode,
         dateFrom: q.dateFrom,
         dateTo: q.dateTo,
         search: q.search,
+        direction: q.direction as FindInvoicesParams['direction'],
+        amountMin: q.amountMin,
+        amountMax: q.amountMax,
         sortBy: q.sortBy as FindInvoicesParams['sortBy'],
         sortDir: q.sortDir as FindInvoicesParams['sortDir'],
       };
@@ -120,6 +159,311 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         success: true,
         data: { items, total, page, limit, totalPages },
       });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // GET /api/invoices/export.csv
+  // Exporte toutes les factures filtrées au format CSV (UTF-8 BOM).
+  // ────────────────────────────────────────────────────────────────────────────
+  app.get<{ Querystring: Omit<InvoiceListQuery, 'page' | 'limit' | 'sortBy' | 'sortDir'> }>(
+    '/api/invoices/export.csv',
+    { preHandler: requireSession },
+    async (request, reply) => {
+      const q = request.query;
+      const { items } = await findInvoices({
+        page: 1,
+        limit: 5000,
+        status: q.status as FindInvoicesParams['status'],
+        paSource: q.paSource,
+        supplierCardcode: q.supplierCardcode,
+        dateFrom: q.dateFrom,
+        dateTo: q.dateTo,
+        search: q.search,
+        sortBy: 'docDate',
+        sortDir: 'desc',
+      });
+
+      const csvEsc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+      const header =
+        'Date,Numero,Fournisseur,CardCode SAP,Montant HT,TVA,TTC,Devise,Statut,Source PA\r\n';
+      const rows = items
+        .map((inv) =>
+          [
+            inv.docDate,
+            csvEsc(inv.docNumberPa),
+            csvEsc(inv.supplierNameRaw),
+            inv.supplierB1Cardcode ?? '',
+            inv.totalExclTax,
+            inv.totalTax,
+            inv.totalInclTax,
+            inv.currency,
+            inv.status,
+            inv.paSource,
+          ].join(','),
+        )
+        .join('\r\n');
+
+      reply.header('Content-Type', 'text/csv; charset=utf-8');
+      reply.header('Content-Disposition', 'attachment; filename="factures.csv"');
+      return reply.send('﻿' + header + rows);
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // GET /api/invoices/stats/daily
+  // Retourne les 30 derniers jours : nombre de factures reçues et intégrées.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.get('/api/invoices/stats/daily', { preHandler: requireSession }, async (_request, reply) => {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const invoices = await prisma.invoice.findMany({
+      where: { receivedAt: { gte: cutoff } },
+      select: { receivedAt: true, status: true },
+    });
+
+    const byDay = new Map<string, { received: number; posted: number }>();
+    for (const inv of invoices) {
+      const day = inv.receivedAt.toISOString().slice(0, 10);
+      const existing = byDay.get(day) ?? { received: 0, posted: 0 };
+      existing.received++;
+      if (inv.status === 'POSTED') existing.posted++;
+      byDay.set(day, existing);
+    }
+
+    // Fill all 30 days (including zero-count days)
+    const days: { date: string; received: number; posted: number }[] = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+      const day = d.toISOString().slice(0, 10);
+      const data = byDay.get(day) ?? { received: 0, posted: 0 };
+      days.push({ date: day, ...data });
+    }
+
+    return reply.send({ success: true, data: { days } });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/bulk-post
+  // Intègre en masse les factures READY (mode SERVICE_INVOICE, sans simulation).
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Body: BulkPostBody }>(
+    '/api/invoices/bulk-post',
+    {
+      preHandler: requireSession,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['ids'],
+          properties: {
+            ids: { type: 'array', items: { type: 'string', format: 'uuid' }, maxItems: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { ids } = request.body;
+      const { sapUser, sapCookieHeader } = request.sapSession!;
+      const requestMeta = getRequestMeta(request);
+      const results: { id: string; ok: boolean; error?: string; sapDocNum?: number }[] = [];
+
+      // Load settings once for the whole batch
+      const [taxMapSetting] = await Promise.all([
+        prisma.setting.findUnique({ where: { key: 'TAX_RATE_MAPPING' } }),
+      ]);
+      const taxRateMap = (taxMapSetting?.value ?? {}) as Record<string, string>;
+
+      for (const id of ids) {
+        const invoice = await prisma.invoice.findUnique({
+          where: { id },
+          include: { files: true, lines: { orderBy: { lineNo: 'asc' } } },
+        });
+        if (!invoice || invoice.status !== 'READY' || !invoice.supplierB1Cardcode) {
+          const reason = !invoice
+            ? 'Introuvable'
+            : !invoice.supplierB1Cardcode
+              ? 'Fournisseur SAP non résolu'
+              : `Statut "${invoice.status}" non traitable`;
+          results.push({ id, ok: false, error: reason });
+          continue;
+        }
+
+        try {
+          const executionPolicy = resolveSapExecutionPolicy({ simulate: false });
+
+          const validationReport = await validateInvoiceForSapPost(
+            invoice,
+            'SERVICE_INVOICE',
+            sapCookieHeader,
+            taxRateMap,
+          );
+
+          const hardErrors = validationReport.issues.filter((i) => i.code !== 'INVALID_TAX_CODE');
+          if (hardErrors.length > 0) {
+            results.push({ id, ok: false, error: buildValidationErrorMessage(validationReport) });
+            continue;
+          }
+
+          let sapDocEntry: number;
+          let sapDocNum: number;
+
+          if (executionPolicy.effectivePostPolicy === 'simulate') {
+            sapDocEntry = 99900 + Math.floor(Math.random() * 99);
+            sapDocNum = sapDocEntry;
+          } else {
+            const docType =
+              invoice.direction === 'CREDIT_NOTE' ? 'PurchaseCreditNotes' : 'PurchaseInvoices';
+            const { payload, skippedLines } = buildPurchaseDocPayload(
+              {
+                docNumberPa: invoice.docNumberPa,
+                paSource: invoice.paSource,
+                paMessageId: invoice.paMessageId,
+                direction: invoice.direction,
+                supplierB1Cardcode: invoice.supplierB1Cardcode!,
+                docDate: invoice.docDate,
+                dueDate: invoice.dueDate,
+                currency: invoice.currency,
+                supplierNameRaw: invoice.supplierNameRaw,
+              },
+              invoice.lines,
+              0,
+              taxRateMap,
+            );
+            if (skippedLines.length > 0) {
+              results.push({
+                id,
+                ok: false,
+                error: `Lignes sans compte comptable : ${skippedLines.join(', ')}`,
+              });
+              continue;
+            }
+            const doc = await createPurchaseDoc(sapCookieHeader, docType, payload);
+            sapDocEntry = doc.docEntry;
+            sapDocNum = doc.docNum;
+          }
+
+          await prisma.invoice.update({
+            where: { id },
+            data: { status: 'POSTED', sapDocEntry, sapDocNum, integrationMode: 'SERVICE_INVOICE' },
+          });
+
+          applyLearningAfterPost({
+            supplierB1Cardcode: invoice.supplierB1Cardcode,
+            lines: invoice.lines,
+            sapUser,
+          }).catch(() => {});
+
+          await createAuditLogBestEffort({
+            action: 'POST_SAP',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'OK',
+            payloadBefore: { status: 'READY' },
+            payloadAfter: { status: 'POSTED', sapDocEntry, sapDocNum, bulkAction: true },
+            ...requestMeta,
+          });
+
+          results.push({ id, ok: true, sapDocNum });
+        } catch (err) {
+          const message =
+            err instanceof SapSlError
+              ? err.sapDetail
+              : err instanceof Error
+                ? err.message
+                : String(err);
+          await prisma.invoice
+            .update({ where: { id }, data: { status: 'ERROR', statusReason: message } })
+            .catch(() => {});
+          await createAuditLogBestEffort({
+            action: 'POST_SAP',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: message,
+            payloadBefore: { status: 'READY' },
+            payloadAfter: { bulkAction: true },
+            ...requestMeta,
+          });
+          results.push({ id, ok: false, error: message });
+        }
+      }
+
+      const succeeded = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok).length;
+      return reply.send({ success: true, data: { results, succeeded, failed } });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/bulk-send-status
+  // Renvoie le statut PA pour toutes les factures POSTED ou REJECTED sélectionnées.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Body: BulkPostBody }>(
+    '/api/invoices/bulk-send-status',
+    {
+      preHandler: requireSession,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['ids'],
+          properties: {
+            ids: { type: 'array', items: { type: 'string', format: 'uuid' }, maxItems: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { ids } = request.body;
+      const { sapUser } = request.sapSession!;
+      const requestMeta = getRequestMeta(request);
+      const results: { id: string; ok: boolean; error?: string }[] = [];
+
+      for (const id of ids) {
+        const invoice = await prisma.invoice.findUnique({ where: { id } });
+        if (!invoice || !['POSTED', 'REJECTED'].includes(invoice.status)) {
+          results.push({
+            id,
+            ok: false,
+            error: !invoice ? 'Introuvable' : `Statut "${invoice.status}" non éligible`,
+          });
+          continue;
+        }
+
+        try {
+          const sendResult = await sendPaStatus(invoice as Parameters<typeof sendPaStatus>[0]);
+          await prisma.invoice.update({
+            where: { id },
+            data: { paStatusSentAt: new Date() },
+          });
+          await createAuditLogBestEffort({
+            action: 'SEND_STATUS_PA',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'OK',
+            payloadAfter: { deliveryMode: sendResult.deliveryMode },
+            ...requestMeta,
+          });
+          results.push({ id, ok: true });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await createAuditLogBestEffort({
+            action: 'SEND_STATUS_PA',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: message,
+            ...requestMeta,
+          });
+          results.push({ id, ok: false, error: message });
+        }
+      }
+
+      const succeeded = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok).length;
+      return reply.send({ success: true, data: { results, succeeded, failed } });
     },
   );
 
@@ -186,6 +530,47 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── GET /api/invoices/:id/files/:fileId/content ────────────────────────────
+  // Sert le contenu brut d'un fichier (XML ou PDF) depuis le disque.
+  // Sécurité : vérifie que fileId appartient bien à l'invoice :id.
+  app.get<{ Params: { id: string; fileId: string } }>(
+    '/api/invoices/:id/files/:fileId/content',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'fileId'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            fileId: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id, fileId } = request.params;
+
+      const file = await prisma.invoiceFile.findFirst({
+        where: { id: fileId, invoiceId: id },
+      });
+      if (!file) return reply.code(404).send({ success: false, error: 'Fichier introuvable' });
+
+      const filePath = file.path;
+      if (!fs.existsSync(filePath)) {
+        return reply.code(404).send({ success: false, error: 'Fichier absent du disque' });
+      }
+
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = ext === '.pdf' ? 'application/pdf' : 'application/xml';
+      const filename = path.basename(filePath);
+
+      reply.header('Content-Type', contentType);
+      reply.header('Content-Disposition', `inline; filename="${filename}"`);
+      return reply.send(fs.createReadStream(filePath));
+    },
+  );
+
   // ────────────────────────────────────────────────────────────────────────────
   // POST /api/invoices/:id/post
   // Valide une facture READY et la crée dans SAP B1 :
@@ -211,7 +596,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           required: ['integrationMode'],
           properties: {
             integrationMode: { type: 'string', enum: ['SERVICE_INVOICE', 'JOURNAL_ENTRY'] },
-            simulate:        { type: 'boolean' },
+            simulate: { type: 'boolean' },
           },
         },
       },
@@ -219,8 +604,9 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params;
       const { integrationMode, simulate = false } = request.body;
-      const { b1Session, sapUser, companyDb } = request.sapSession!;
+      const { sapCookieHeader, sapUser, companyDb } = request.sapSession!;
       const requestMeta = getRequestMeta(request);
+      const executionPolicy = resolveSapExecutionPolicy({ simulate });
 
       // ── 1. Charger la facture complète ──────────────────────────────────────
       const invoice = await prisma.invoice.findUnique({
@@ -240,111 +626,298 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const allowedStatuses = ['READY', 'TO_REVIEW'];
-      if (!allowedStatuses.includes(invoice.status)) {
-        return reply.code(422).send({
-          success: false,
-          error: `Intégration impossible depuis le statut "${invoice.status}". Statuts acceptés : READY, TO_REVIEW.`,
-        });
-      }
-
-      if (invoice.files.length === 0) {
-        return reply.code(422).send({
-          success: false,
-          error: 'Aucune pièce jointe associée à cette facture. Upload obligatoire avant intégration.',
-        });
-      }
-
-      if (integrationMode === 'SERVICE_INVOICE' && !invoice.supplierB1Cardcode) {
-        return reply.code(422).send({
-          success: false,
-          error: 'Fournisseur non résolu dans SAP B1 (CardCode manquant). Résolvez le matching avant d\'intégrer.',
-        });
-      }
-
-      // ── 3. Charger le TAX_RATE_MAPPING depuis les settings ─────────────────
-      const taxMapSetting = await prisma.setting.findUnique({ where: { key: 'TAX_RATE_MAPPING' } });
-      const taxRateMap   = (taxMapSetting?.value ?? {}) as Record<string, string>;
-
-      // ── 4. Fichier à uploader (premier fichier de la facture) ───────────────
-      const fileToUpload = invoice.files[0];
-
-      // ── 5. Simulation ou appel réel ─────────────────────────────────────────
-      let sapAttachmentEntry: number;
-      let sapDocEntry: number;
-      let sapDocNum: number;
+      // ── 2. Charger les settings puis valider contre SAP ──────────────────
+      const [taxMapSetting, taxAcctSetting] = await Promise.all([
+        prisma.setting.findUnique({ where: { key: 'TAX_RATE_MAPPING' } }),
+        prisma.setting.findUnique({ where: { key: 'AP_TAX_ACCOUNT_MAP' } }),
+      ]);
+      const taxRateMap = (taxMapSetting?.value ?? {}) as Record<string, string>;
+      const apTaxAcctMap = (taxAcctSetting?.value ?? {}) as Record<string, string>;
       let attachmentWarning: string | null = null;
 
+      const validationReport = await validateInvoiceForSapPost(
+        invoice,
+        integrationMode,
+        sapCookieHeader,
+        taxRateMap,
+      );
+
+      await createAuditLogBestEffort({
+        action: 'POST_SAP',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: validationReport.ok ? 'OK' : 'ERROR',
+        errorMessage: validationReport.ok ? null : buildValidationErrorMessage(validationReport),
+        payloadBefore: {
+          status: invoice.status,
+          integrationMode: invoice.integrationMode,
+        },
+        payloadAfter: {
+          stage: validationReport.ok ? 'SAP_VALIDATION_OK' : 'SAP_VALIDATION_ERROR',
+          integrationMode,
+          companyDb,
+          policy: executionPolicy,
+          validationReport,
+        },
+        ...requestMeta,
+      });
+
+      // Les codes TVA invalides sont non-bloquants : on retire le code du payload
+      // plutôt que de bloquer l'intégration. Les autres erreurs (supplier, compte) restent bloquantes.
+      const hardErrors = validationReport.issues.filter((i) => i.code !== 'INVALID_TAX_CODE');
+      const invalidTaxCodes = new Set(
+        validationReport.issues
+          .filter((i) => i.code === 'INVALID_TAX_CODE' && i.value)
+          .map((i) => i.value as string),
+      );
+
+      if (hardErrors.length > 0) {
+        return reply.code(422).send({
+          success: false,
+          error: buildValidationErrorMessage(validationReport),
+          data: {
+            validationReport,
+            policy: executionPolicy,
+          },
+        });
+      }
+
+      // Lignes avec codes TVA invalides neutralisés (chosenTaxCodeB1 et suggestedTaxCodeB1 → null)
+      const cleanedLines =
+        invalidTaxCodes.size > 0
+          ? invoice.lines.map((l) => ({
+              ...l,
+              chosenTaxCodeB1:
+                l.chosenTaxCodeB1 && invalidTaxCodes.has(l.chosenTaxCodeB1)
+                  ? null
+                  : l.chosenTaxCodeB1,
+              suggestedTaxCodeB1:
+                l.suggestedTaxCodeB1 && invalidTaxCodes.has(l.suggestedTaxCodeB1)
+                  ? null
+                  : l.suggestedTaxCodeB1,
+            }))
+          : invoice.lines;
+
+      if (invalidTaxCodes.size > 0) {
+        attachmentWarning = `Code(s) TVA ignoré(s) car introuvable(s) dans SAP : ${[...invalidTaxCodes].join(', ')}`;
+        app.log.warn(
+          { invoiceId: id, invalidTaxCodes: [...invalidTaxCodes] },
+          'Codes TVA invalides ignorés',
+        );
+      }
+
+      if (executionPolicy.effectivePostPolicy === 'disabled') {
+        await createAuditLogBestEffort({
+          action: 'POST_SAP',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: "Intégration SAP désactivée par la politique d'environnement",
+          payloadBefore: {
+            status: invoice.status,
+            integrationMode: invoice.integrationMode,
+          },
+          payloadAfter: {
+            stage: 'SAP_POST_DISABLED_BY_POLICY',
+            integrationMode,
+            companyDb,
+            policy: executionPolicy,
+            validationReport,
+          },
+          ...requestMeta,
+        });
+
+        return reply.code(409).send({
+          success: false,
+          error: "Intégration SAP désactivée par la politique d'environnement.",
+          data: {
+            validationReport,
+            policy: executionPolicy,
+          },
+        });
+      }
+
+      // ── 3. Fichier à uploader (premier fichier de la facture) ───────────────
+      const fileToUpload = invoice.files[0];
+
+      // ── 4. Simulation ou appel réel ─────────────────────────────────────────
+      let sapAttachmentEntry = 0;
+      let sapDocEntry: number;
+      let sapDocNum: number;
+
       try {
-        if (simulate) {
-          // Mode simulation : on génère des numéros factices
+        if (executionPolicy.effectivePostPolicy === 'simulate') {
+          await createAuditLogBestEffort({
+            action: 'POST_SAP',
+            entityType: 'ATTACHMENT',
+            entityId: fileToUpload.id,
+            sapUser,
+            outcome: 'OK',
+            payloadAfter: {
+              stage: 'ATTACHMENT_SKIPPED_SIMULATE',
+              invoiceId: id,
+              filePath: fileToUpload.path,
+              policy: executionPolicy,
+            },
+            ...requestMeta,
+          });
+
           sapAttachmentEntry = 9990 + Math.floor(Math.random() * 9);
-          sapDocEntry        = 99900 + Math.floor(Math.random() * 99);
-          sapDocNum          = sapDocEntry;
+          sapDocEntry = 99900 + Math.floor(Math.random() * 99);
+          sapDocNum = sapDocEntry;
         } else {
-          // ── 5a. Upload pièce jointe — best-effort, non bloquant ───────────
-          try {
-            sapAttachmentEntry = await uploadAttachment(b1Session, fileToUpload.path);
-          } catch (uploadErr) {
-            const msg = uploadErr instanceof SapSlError
-              ? uploadErr.sapDetail
-              : (uploadErr instanceof Error ? uploadErr.message : String(uploadErr));
-            app.log.warn({ invoiceId: id, error: msg }, 'Upload pièce jointe échoué — intégration continue sans pièce jointe');
-            sapAttachmentEntry = 0;
-            attachmentWarning  = `Pièce jointe non uploadée dans SAP : ${msg}`;
+          if (executionPolicy.attachmentPolicy === 'skip') {
+            attachmentWarning = "Upload pièce jointe SAP ignoré par la politique d'environnement.";
+
+            await createAuditLogBestEffort({
+              action: 'POST_SAP',
+              entityType: 'ATTACHMENT',
+              entityId: fileToUpload.id,
+              sapUser,
+              outcome: 'OK',
+              payloadAfter: {
+                stage: 'ATTACHMENT_POLICY_BYPASS',
+                invoiceId: id,
+                filePath: fileToUpload.path,
+                policy: executionPolicy,
+                bypassReason: 'SAP_ATTACHMENT_POLICY=skip',
+              },
+              ...requestMeta,
+            });
+          } else {
+            try {
+              sapAttachmentEntry = await uploadAttachment(sapCookieHeader, fileToUpload.path);
+
+              await createAuditLogBestEffort({
+                action: 'POST_SAP',
+                entityType: 'ATTACHMENT',
+                entityId: fileToUpload.id,
+                sapUser,
+                outcome: 'OK',
+                payloadAfter: {
+                  stage: 'ATTACHMENT_UPLOAD_OK',
+                  invoiceId: id,
+                  filePath: fileToUpload.path,
+                  sapAttachmentEntry,
+                  policy: executionPolicy,
+                },
+                ...requestMeta,
+              });
+            } catch (uploadErr) {
+              const msg =
+                uploadErr instanceof SapSlError
+                  ? uploadErr.sapDetail
+                  : uploadErr instanceof Error
+                    ? uploadErr.message
+                    : String(uploadErr);
+
+              await createAuditLogBestEffort({
+                action: 'POST_SAP',
+                entityType: 'ATTACHMENT',
+                entityId: fileToUpload.id,
+                sapUser,
+                outcome: 'ERROR',
+                errorMessage: msg,
+                payloadAfter: {
+                  stage:
+                    executionPolicy.attachmentPolicy === 'strict'
+                      ? 'ATTACHMENT_UPLOAD_ERROR'
+                      : 'ATTACHMENT_UPLOAD_WARNING',
+                  invoiceId: id,
+                  filePath: fileToUpload.path,
+                  policy: executionPolicy,
+                },
+                ...requestMeta,
+              });
+
+              if (executionPolicy.attachmentPolicy === 'strict') {
+                throw new SapSlError(`Échec upload pièce jointe : ${msg}`, 0, 422);
+              }
+
+              app.log.warn(
+                { invoiceId: id, error: msg },
+                'Upload pièce jointe échoué — poursuite autorisée par la politique',
+              );
+              attachmentWarning = `Pièce jointe non uploadée dans SAP : ${msg}`;
+            }
           }
 
-          // ── 5b. Construction du payload ───────────────────────────────────
+          // ── 4b. Construction du payload ───────────────────────────────────
           const invoiceData = {
-            docNumberPa:        invoice.docNumberPa,
-            direction:          invoice.direction,
+            docNumberPa: invoice.docNumberPa,
+            paSource: invoice.paSource,
+            paMessageId: invoice.paMessageId,
+            direction: invoice.direction,
             supplierB1Cardcode: invoice.supplierB1Cardcode!,
-            docDate:            invoice.docDate,
-            dueDate:            invoice.dueDate,
-            currency:           invoice.currency,
-            supplierNameRaw:    invoice.supplierNameRaw,
+            docDate: invoice.docDate,
+            dueDate: invoice.dueDate,
+            currency: invoice.currency,
+            supplierNameRaw: invoice.supplierNameRaw,
           };
 
           if (integrationMode === 'SERVICE_INVOICE') {
-            const docType = invoice.direction === 'CREDIT_NOTE'
-              ? 'PurchaseCreditNotes'
-              : 'PurchaseInvoices';
+            const docType =
+              invoice.direction === 'CREDIT_NOTE' ? 'PurchaseCreditNotes' : 'PurchaseInvoices';
 
             const { payload, skippedLines } = buildPurchaseDocPayload(
-              invoiceData, invoice.lines, sapAttachmentEntry, taxRateMap,
+              invoiceData,
+              cleanedLines,
+              sapAttachmentEntry,
+              taxRateMap,
             );
             if (skippedLines.length > 0) {
-              app.log.warn({ skippedLines, invoiceId: id }, 'Lignes sans compte comptable ignorées');
+              throw new SapSlError(
+                `Validation incohérente: lignes sans compte comptable (${skippedLines.join(', ')})`,
+                0,
+                422,
+              );
             }
 
-            const result = await createPurchaseDoc(b1Session, docType, payload);
-            sapDocEntry  = result.docEntry;
-            sapDocNum    = result.docNum;
-
+            const result = await createPurchaseDoc(sapCookieHeader, docType, payload);
+            sapDocEntry = result.docEntry;
+            sapDocNum = result.docNum;
           } else {
-            const { payload, skippedLines } = buildJournalEntryPayload(
-              invoiceData, invoice.lines, sapAttachmentEntry, taxRateMap,
+            const { payload, skippedLines, balanceWarning } = buildJournalEntryPayload(
+              invoiceData,
+              cleanedLines,
+              sapAttachmentEntry,
+              taxRateMap,
+              apTaxAcctMap,
             );
             if (skippedLines.length > 0) {
-              app.log.warn({ skippedLines, invoiceId: id }, 'Lignes sans compte comptable ignorées');
+              throw new SapSlError(
+                `Validation incohérente: lignes sans compte comptable (${skippedLines.join(', ')})`,
+                0,
+                422,
+              );
             }
 
-            const result = await createJournalEntry(b1Session, payload);
-            sapDocEntry  = result.docEntry;
-            sapDocNum    = result.docNum;
+            const result = await createJournalEntry(sapCookieHeader, payload);
+            sapDocEntry = result.docEntry;
+            sapDocNum = result.docNum;
+
+            if (balanceWarning) {
+              attachmentWarning = attachmentWarning
+                ? `${attachmentWarning} | ${balanceWarning}`
+                : balanceWarning;
+            }
           }
         }
       } catch (err) {
-        const isSapErr  = err instanceof SapSlError;
-        const message   = isSapErr ? err.sapDetail : (err instanceof Error ? err.message : String(err));
-        const httpCode  = isSapErr ? err.httpStatus : 502;
-        const sapCode   = isSapErr ? err.sapCode   : 0;
+        const isSapErr = err instanceof SapSlError;
+        const message = isSapErr ? err.sapDetail : err instanceof Error ? err.message : String(err);
+        const httpCode = isSapErr ? err.httpStatus : 502;
+        const sapCode = isSapErr ? err.sapCode : 0;
 
         // Stocker l'erreur en DB (status ERROR, statusReason = message SAP)
-        await prisma.invoice.update({
-          where: { id },
-          data:  { status: 'ERROR', statusReason: message },
-        }).catch(() => {});
+        await prisma.invoice
+          .update({
+            where: { id },
+            data: { status: 'ERROR', statusReason: message },
+          })
+          .catch(() => {});
 
         await createAuditLogBestEffort({
           action: 'APPROVE',
@@ -361,7 +934,9 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             attemptedStatus: 'POSTED',
             integrationMode,
             companyDb,
-            simulate,
+            simulate: executionPolicy.effectivePostPolicy === 'simulate',
+            policy: executionPolicy,
+            validationReport,
           },
           ...requestMeta,
         });
@@ -377,39 +952,62 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             status: invoice.status,
             integrationMode: invoice.integrationMode,
           },
-          payloadAfter: { integrationMode, sapCode, companyDb, simulate },
+          payloadAfter: {
+            stage: 'SAP_POST_ERROR',
+            integrationMode,
+            sapCode,
+            companyDb,
+            simulate: executionPolicy.effectivePostPolicy === 'simulate',
+            policy: executionPolicy,
+            validationReport,
+          },
           ...requestMeta,
         });
 
         return reply.code(httpCode).send({
-          success:  false,
-          error:    message,
+          success: false,
+          error: message,
           sapCode,
+          data: {
+            validationReport,
+            policy: executionPolicy,
+          },
         });
       }
 
-      // ── 6. Persistance en DB ─────────────────────────────────────────────────
+      // ── 5. Persistance en DB ─────────────────────────────────────────────────
       await prisma.invoice.update({
         where: { id },
         data: {
-          status:              'POSTED',
-          statusReason:        attachmentWarning,
+          status: 'POSTED',
+          statusReason: attachmentWarning,
           integrationMode,
           sapDocEntry,
           sapDocNum,
-          sapAttachmentEntry:      sapAttachmentEntry > 0 ? sapAttachmentEntry : null,
+          sapAttachmentEntry: sapAttachmentEntry > 0 ? sapAttachmentEntry : null,
           sapAttachmentUploadedAt: sapAttachmentEntry > 0 ? new Date() : null,
         },
       });
 
       // Mise à jour du fichier uploadé avec l'AbsoluteEntry
-      await prisma.invoiceFile.update({
-        where: { id: fileToUpload.id },
-        data:  {},   // AbsoluteEntry n'est pas sur InvoiceFile dans le schéma actuel
-      }).catch(() => {});
+      await prisma.invoiceFile
+        .update({
+          where: { id: fileToUpload.id },
+          data: {}, // AbsoluteEntry n'est pas sur InvoiceFile dans le schéma actuel
+        })
+        .catch(() => {});
 
-      // ── 7. Audit ─────────────────────────────────────────────────────────────
+      // ── A3 — Boucle d'apprentissage (best-effort, ne bloque pas la réponse) ──
+      applyLearningAfterPost({
+        supplierB1Cardcode: invoice.supplierB1Cardcode,
+        lines: cleanedLines,
+        sapUser,
+      }).catch((err) => app.log.warn({ err, invoiceId: id }, 'applyLearningAfterPost failed'));
+
+      // ── 6. Audit ─────────────────────────────────────────────────────────────
       const approvalPayloadAfter = {
+        stage:
+          executionPolicy.effectivePostPolicy === 'simulate' ? 'SAP_POST_SIMULATED' : 'SAP_POST_OK',
         status: 'POSTED',
         integrationMode,
         sapDocEntry,
@@ -417,7 +1015,9 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         sapAttachmentEntry: sapAttachmentEntry > 0 ? sapAttachmentEntry : null,
         attachmentWarning,
         companyDb,
-        simulate,
+        simulate: executionPolicy.effectivePostPolicy === 'simulate',
+        policy: executionPolicy,
+        validationReport,
       };
 
       await createAuditLogBestEffort({
@@ -455,9 +1055,11 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           sapDocNum,
           sapAttachmentEntry: sapAttachmentEntry > 0 ? sapAttachmentEntry : null,
           integrationMode,
-          simulate,
+          simulate: executionPolicy.effectivePostPolicy === 'simulate',
           status: 'POSTED',
           attachmentWarning,
+          validationReport,
+          policy: executionPolicy,
         },
       });
     },
@@ -494,7 +1096,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       const invoice = await prisma.invoice.findUnique({ where: { id } });
       if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
       if (TERMINAL_STATUSES.has(invoice.status)) {
-        return reply.code(422).send({ success: false, error: `Modification impossible au statut "${invoice.status}".` });
+        return reply
+          .code(422)
+          .send({
+            success: false,
+            error: `Modification impossible au statut "${invoice.status}".`,
+          });
       }
 
       await prisma.invoice.update({
@@ -536,7 +1143,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           type: 'object',
           required: ['id', 'lineId'],
           properties: {
-            id:     { type: 'string', format: 'uuid' },
+            id: { type: 'string', format: 'uuid' },
             lineId: { type: 'string', format: 'uuid' },
           },
         },
@@ -544,8 +1151,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           type: 'object',
           properties: {
             chosenAccountCode: { type: ['string', 'null'], maxLength: 20 },
-            chosenCostCenter:  { type: ['string', 'null'], maxLength: 20 },
-            chosenTaxCodeB1:   { type: ['string', 'null'], maxLength: 20 },
+            chosenCostCenter: { type: ['string', 'null'], maxLength: 20 },
+            chosenTaxCodeB1: { type: ['string', 'null'], maxLength: 20 },
           },
         },
       },
@@ -560,7 +1167,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
       if (TERMINAL_STATUSES.has(invoice.status)) {
-        return reply.code(422).send({ success: false, error: `Modification impossible au statut "${invoice.status}".` });
+        return reply
+          .code(422)
+          .send({
+            success: false,
+            error: `Modification impossible au statut "${invoice.status}".`,
+          });
       }
       const line = invoice.lines[0];
       if (!line) return reply.code(404).send({ success: false, error: 'Ligne introuvable' });
@@ -571,8 +1183,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         where: { id: lineId },
         data: {
           ...(chosenAccountCode !== undefined ? { chosenAccountCode } : {}),
-          ...(chosenCostCenter  !== undefined ? { chosenCostCenter  } : {}),
-          ...(chosenTaxCodeB1   !== undefined ? { chosenTaxCodeB1   } : {}),
+          ...(chosenCostCenter !== undefined ? { chosenCostCenter } : {}),
+          ...(chosenTaxCodeB1 !== undefined ? { chosenTaxCodeB1 } : {}),
         },
       });
 
@@ -587,11 +1199,69 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         payloadBefore: {
           lineNo: line.lineNo,
           chosenAccountCode: line.chosenAccountCode,
-          chosenCostCenter:  line.chosenCostCenter,
-          chosenTaxCodeB1:   line.chosenTaxCodeB1,
+          chosenCostCenter: line.chosenCostCenter,
+          chosenTaxCodeB1: line.chosenTaxCodeB1,
         },
         payloadAfter: { lineNo: line.lineNo, chosenAccountCode, chosenCostCenter, chosenTaxCodeB1 },
         ...getRequestMeta(request),
+      });
+
+      const updated = await findInvoiceById(id);
+      return reply.send({ success: true, data: updated });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // PATCH /api/invoices/:id/draft
+  // Sauvegarde les préférences d'intégration sans changer le statut (brouillon).
+  // ────────────────────────────────────────────────────────────────────────────
+  app.patch<{ Params: { id: string }; Body: { integrationMode?: string; sapSeries?: string } }>(
+    '/api/invoices/:id/draft',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            integrationMode: { type: 'string', enum: ['SERVICE_INVOICE', 'JOURNAL_ENTRY'] },
+            sapSeries: { type: ['string', 'null'], maxLength: 20 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { integrationMode } = request.body;
+
+      const invoice = await prisma.invoice.findUnique({
+        where: { id },
+        select: { id: true, status: true },
+      });
+      if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      if (TERMINAL_STATUSES.has(invoice.status)) {
+        return reply
+          .code(422)
+          .send({
+            success: false,
+            error: `Modification impossible au statut "${invoice.status}".`,
+          });
+      }
+
+      await prisma.invoice.update({
+        where: { id },
+        data: {
+          ...(integrationMode !== undefined
+            ? {
+                integrationMode:
+                  integrationMode as import('@pa-sap-bridge/database').IntegrationMode,
+              }
+            : {}),
+        },
       });
 
       const updated = await findInvoiceById(id);
@@ -633,13 +1303,13 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       await prisma.invoice.update({
         where: { id },
         data: {
-          status:                  'TO_REVIEW',
-          statusReason:            null,
-          sapDocEntry:             null,
-          sapDocNum:               null,
-          sapAttachmentEntry:      null,
+          status: 'TO_REVIEW',
+          statusReason: null,
+          sapDocEntry: null,
+          sapDocNum: null,
+          sapAttachmentEntry: null,
           sapAttachmentUploadedAt: null,
-          integrationMode:         null,
+          integrationMode: null,
         },
       });
 
@@ -653,7 +1323,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         sapUser,
         outcome: 'OK',
         payloadBefore: { status: 'ERROR', statusReason: invoice.statusReason },
-        payloadAfter:  { status: 'reset', note: 'Remise en traitement manuelle' },
+        payloadAfter: { status: 'reset', note: 'Remise en traitement manuelle' },
         ...getRequestMeta(request),
       });
 
@@ -693,7 +1363,9 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       const requestMeta = getRequestMeta(request);
 
       if (reason.length === 0) {
-        return reply.code(422).send({ success: false, error: 'Le motif de rejet est obligatoire.' });
+        return reply
+          .code(422)
+          .send({ success: false, error: 'Le motif de rejet est obligatoire.' });
       }
 
       const invoice = await prisma.invoice.findUnique({ where: { id } });
@@ -783,11 +1455,11 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
 
       try {
         const sent = await sendPaStatus(invoice);
-        const sentAt  = new Date();
+        const sentAt = new Date();
 
         await prisma.invoice.update({
           where: { id },
-          data:  { paStatusSentAt: sentAt },
+          data: { paStatusSentAt: sentAt },
         });
 
         await createAuditLog({
@@ -805,7 +1477,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             attempt: failedAttempts + 1,
             maxRetries: retryPolicy.maxRetries,
             deliveryMode: sent.deliveryMode,
-            targetFile: sent.targetFile,
+            target: sent.target,
           } satisfies Prisma.InputJsonObject,
           ...requestMeta,
         });
@@ -844,6 +1516,71 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       }
     },
   );
+
+  // ── POST /api/invoices/:id/re-enrich ───────────────────────────────────────
+  // Re-applique le moteur de matching (fournisseur + suggestions) sur une facture.
+  // Statuts autorisés : NEW, TO_REVIEW (les terminaux POSTED/REJECTED/ERROR sont ignorés).
+  app.post<{ Params: { id: string } }>(
+    '/api/invoices/:id/re-enrich',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { sapUser } = request.sapSession!;
+
+      const exists = await prisma.invoice.findUnique({
+        where: { id },
+        select: { id: true, status: true },
+      });
+      if (!exists) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+
+      await enrichInvoiceById(id);
+
+      await createAuditLogBestEffort({
+        action: 'EDIT_MAPPING',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadAfter: { stage: 'RE_ENRICH_OK' },
+        ...getRequestMeta(request),
+      });
+
+      const updated = await findInvoiceById(id);
+      return reply.send({ success: true, data: updated });
+    },
+  );
+
+  // ── POST /api/invoices/re-enrich-all ──────────────────────────────────────
+  // Batch : re-applique le matching sur toutes les factures NEW/TO_REVIEW.
+  app.post(
+    '/api/invoices/re-enrich-all',
+    { preHandler: requireSession },
+    async (request, reply) => {
+      const { sapUser } = request.sapSession!;
+      const result = await enrichPendingInvoices();
+
+      await createAuditLogBestEffort({
+        action: 'EDIT_MAPPING',
+        entityType: 'INVOICE',
+        entityId: 'BATCH',
+        sapUser,
+        outcome: 'OK',
+        payloadAfter: result,
+        ...getRequestMeta(request),
+      });
+
+      return reply.send({ success: true, data: result });
+    },
+  );
 }
 
 // ─── Helper : recalcul du statut après correction manuelle ────────────────────
@@ -865,13 +1602,18 @@ async function recalculateInvoiceStatus(invoiceId: string): Promise<void> {
   const parts: string[] = [];
   if (!hasSupplier) parts.push('fournisseur non résolu dans SAP B1');
   if (!allLinesHaveAccount)
-    parts.push(inv.lines.length === 0 ? 'aucune ligne structurée' : 'compte comptable manquant sur une ou plusieurs lignes');
+    parts.push(
+      inv.lines.length === 0
+        ? 'aucune ligne structurée'
+        : 'compte comptable manquant sur une ou plusieurs lignes',
+    );
 
   await prisma.invoice.update({
     where: { id: invoiceId },
     data: {
       status: newStatus,
-      statusReason: newStatus === 'TO_REVIEW' ? (parts.join(' ; ') || 'révision manuelle requise') : null,
+      statusReason:
+        newStatus === 'TO_REVIEW' ? parts.join(' ; ') || 'révision manuelle requise' : null,
     },
   });
 }

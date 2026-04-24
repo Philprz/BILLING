@@ -1,0 +1,79 @@
+{
+  "nav": {
+    "invoices": "Factures",
+    "suppliers": "Fournisseurs",
+    "mappingRules": "Règles de mappage",
+    "settings": "Paramètres",
+    "audit": "Audit",
+    "paChannels": "Canaux PA",
+    "workerStatus": "Worker",
+    "logout": "Déconnexion"
+  },
+  "common": {
+    "save": "Sauvegarder",
+    "cancel": "Annuler",
+    "close": "Fermer",
+    "confirm": "Confirmer",
+    "loading": "Chargement…",
+    "error": "Erreur",
+    "success": "Succès",
+    "refresh": "Actualiser",
+    "search": "Rechercher",
+    "noResults": "Aucun résultat",
+    "required": "Requis"
+  },
+  "login": {
+    "title": "Accès SAP",
+    "company": "Société SAP",
+    "username": "Utilisateur SAP",
+    "password": "Mot de passe",
+    "submit": "Se connecter",
+    "submitting": "Connexion…"
+  },
+  "invoices": {
+    "title": "Factures",
+    "status": {
+      "NEW": "Nouvelle",
+      "TO_REVIEW": "À réviser",
+      "READY": "Prête",
+      "POSTED": "Intégrée",
+      "REJECTED": "Rejetée",
+      "ERROR": "Erreur"
+    },
+    "postSap": "Valider dans SAP",
+    "reject": "Rejeter",
+    "sendStatus": "Retourner statut PA",
+    "rejectReason": "Motif du rejet",
+    "rejectConfirm": "Confirmer le rejet",
+    "bulkPost": "Valider SAP ({{count}})",
+    "bulkSendStatus": "Relancer statut PA ({{count}})"
+  },
+  "suppliers": {
+    "title": "Fournisseurs SAP",
+    "sync": "Synchroniser depuis SAP",
+    "syncing": "Synchronisation…",
+    "create": "Créer dans SAP B1",
+    "cardCode": "CardCode",
+    "cardName": "Nom",
+    "federalTaxId": "SIREN / FederalTaxID",
+    "vatRegNum": "N° TVA intracommunautaire",
+    "invoices": "Factures",
+    "lastSync": "Dernière sync"
+  },
+  "mappingRules": {
+    "title": "Règles de mappage",
+    "test": "Tester",
+    "exportCsv": "Export CSV",
+    "importCsv": "Import CSV",
+    "scope": {
+      "SUPPLIER": "Fournisseur",
+      "GLOBAL": "Global"
+    }
+  },
+  "settings": {
+    "title": "Paramètres",
+    "testSap": "Tester la connexion SAP B1",
+    "connectionOk": "Connexion OK ({{ms}} ms)",
+    "connectionFail": "SAP injoignable"
+  }
+}

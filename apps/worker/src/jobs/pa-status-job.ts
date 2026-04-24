@@ -1,17 +1,15 @@
 /**
- * Job de retour de statut vers la PA avec retry automatique.
+ * Job de retour de statut vers la PA avec retry automatique (CDC §9).
  *
- * Stratégie :
- * - Cherche toutes les factures POSTED ou REJECTED sans paStatusSentAt
- * - Vérifie le nombre de tentatives échouées dans l'audit log (max 3)
- * - Tente l'envoi ; sur erreur : crée un log ERROR et laisse pour le prochain cycle
- * - Après 3 échecs : abandonne silencieusement (laissé à la main de l'opérateur)
+ * Stratégie de livraison :
+ *   - Canal API  → POST HTTP vers {apiBaseUrl}/invoices/{paMessageId}/status
+ *   - Canal SFTP → dépôt JSON dans remotePathOut
+ *   - Pas de canal (MANUAL_UPLOAD, LOCAL_INBOX) → fichier local
  *
- * Les délais entre les tentatives résultent naturellement de POLL_INTERVAL_MS.
+ * Retry exponentiel via isPaStatusRetryDue (1 min, 5 min, 30 min, 2 h, 12 h).
+ * Abandon silencieux après maxRetries tentatives échouées.
  */
 
-import fs from 'fs';
-import path from 'path';
 import {
   buildPaStatusPayload,
   computeNextRetryAt,
@@ -20,44 +18,10 @@ import {
   isPaStatusRetryDue,
   prisma,
 } from '@pa-sap-bridge/database';
-
-// Même chemin que dans pa-status.service.ts (API), sans importer le service
-// car le worker n'a pas accès au module api.
-const REPO_ROOT     = path.resolve(__dirname, '..', '..', '..', '..');
+import { deliverPaStatus } from '../delivery/pa-status-delivery';
 
 function log(level: 'INFO' | 'WARN' | 'ERROR', msg: string): void {
   console.log(`[PaStatusJob][${new Date().toISOString()}][${level}] ${msg}`);
-}
-
-function getStatusOutPath(): string {
-  return process.env.STATUS_OUT_PATH
-    ? path.resolve(process.env.STATUS_OUT_PATH)
-    : path.join(REPO_ROOT, 'data', 'status-out');
-}
-
-async function writeStatusFile(invoice: {
-  paMessageId: string;
-  docNumberPa: string;
-  paSource:    string;
-  status:      string;
-  statusReason: string | null;
-  sapDocEntry:  number | null;
-  sapDocNum:    number | null;
-}): Promise<{ payload: ReturnType<typeof buildPaStatusPayload>; targetFile: string }> {
-  const statusOut = getStatusOutPath();
-
-  if (!fs.existsSync(statusOut)) {
-    fs.mkdirSync(statusOut, { recursive: true });
-  }
-
-  const payload = buildPaStatusPayload(invoice);
-
-  const safeMsgId = invoice.paMessageId.replace(/[^a-z0-9_-]/gi, '_').slice(0, 60);
-  const filename  = `status_${safeMsgId}_${Date.now()}.json`;
-  const targetFile = path.join(statusOut, filename);
-  fs.writeFileSync(targetFile, JSON.stringify(payload, null, 2), 'utf-8');
-
-  return { payload, targetFile };
 }
 
 export async function runPaStatusJob(): Promise<void> {
@@ -68,8 +32,14 @@ export async function runPaStatusJob(): Promise<void> {
       status: { in: ['POSTED', 'REJECTED'] },
     },
     select: {
-      id: true, paMessageId: true, docNumberPa: true, paSource: true,
-      status: true, statusReason: true, sapDocEntry: true, sapDocNum: true,
+      id: true,
+      paMessageId: true,
+      docNumberPa: true,
+      paSource: true,
+      status: true,
+      statusReason: true,
+      sapDocEntry: true,
+      sapDocNum: true,
     },
   });
 
@@ -78,35 +48,43 @@ export async function runPaStatusJob(): Promise<void> {
 
   for (const invoice of pending) {
     const failures = await prisma.auditLog.findMany({
-      where: {
-        entityId: invoice.id,
-        action:   'SEND_STATUS_PA',
-        outcome:  'ERROR',
-      },
+      where: { entityId: invoice.id, action: 'SEND_STATUS_PA', outcome: 'ERROR' },
       orderBy: { occurredAt: 'desc' },
       select: { occurredAt: true },
     });
 
     const failCount = failures.length;
-    const lastFailureAt = failures[0]?.occurredAt ?? null;
+    const lastFailAt = failures[0]?.occurredAt ?? null;
 
     if (failCount >= retryPolicy.maxRetries) {
-      log('WARN', `Facture ${invoice.id} : ${retryPolicy.maxRetries} tentatives épuisées — abandon.`);
+      log(
+        'WARN',
+        `Facture ${invoice.id} : ${retryPolicy.maxRetries} tentatives épuisées — abandon.`,
+      );
       continue;
     }
 
-    if (!isPaStatusRetryDue(failCount, lastFailureAt)) {
-      const nextRetryAt = computeNextRetryAt(failCount, lastFailureAt ?? new Date());
-      log('INFO', `Facture ${invoice.id} : retry différé jusqu'à ${nextRetryAt?.toISOString() ?? 'n/a'}.`);
+    if (!isPaStatusRetryDue(failCount, lastFailAt)) {
+      const next = computeNextRetryAt(failCount, lastFailAt ?? new Date());
+      log('INFO', `Facture ${invoice.id} : retry différé jusqu'à ${next?.toISOString() ?? 'n/a'}.`);
       continue;
     }
 
     try {
-      const sent = await writeStatusFile(invoice);
+      const result = await deliverPaStatus({
+        id: invoice.id,
+        paMessageId: invoice.paMessageId,
+        docNumberPa: invoice.docNumberPa,
+        paSource: invoice.paSource,
+        status: invoice.status,
+        statusReason: invoice.statusReason,
+        sapDocEntry: invoice.sapDocEntry,
+        sapDocNum: invoice.sapDocNum,
+      });
 
       await prisma.invoice.update({
         where: { id: invoice.id },
-        data:  { paStatusSentAt: new Date() },
+        data: { paStatusSentAt: new Date() },
       });
 
       await createAuditLogBestEffort({
@@ -114,24 +92,24 @@ export async function runPaStatusJob(): Promise<void> {
         entityType: 'INVOICE',
         entityId: invoice.id,
         outcome: 'OK',
-        payloadBefore: {
-          status: invoice.status,
-          paStatusSentAt: null,
-        },
+        payloadBefore: { status: invoice.status, paStatusSentAt: null },
         payloadAfter: {
-          ...sent.payload,
+          ...result.payload,
           attempt: failCount + 1,
           maxRetries: retryPolicy.maxRetries,
-          deliveryMode: 'FILE_STUB',
-          targetFile: sent.targetFile,
+          deliveryMode: result.mode,
+          target: result.target,
         },
       });
 
-      log('INFO', `Statut envoyé OK pour facture ${invoice.id} (tentative ${failCount + 1}).`);
+      log(
+        'INFO',
+        `Statut envoyé [${result.mode}] → ${result.target} (tentative ${failCount + 1}).`,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const attempt = failCount + 1;
-      const nextRetryAt = computeNextRetryAt(attempt, new Date());
+      const next = computeNextRetryAt(attempt, new Date());
 
       await createAuditLogBestEffort({
         action: 'SEND_STATUS_PA',
@@ -139,20 +117,20 @@ export async function runPaStatusJob(): Promise<void> {
         entityId: invoice.id,
         outcome: 'ERROR',
         errorMessage: message,
-        payloadBefore: {
-          status: invoice.status,
-          paStatusSentAt: null,
-        },
+        payloadBefore: { status: invoice.status, paStatusSentAt: null },
         payloadAfter: {
           ...buildPaStatusPayload(invoice),
           attempt,
           maxRetries: retryPolicy.maxRetries,
           retryScheduled: attempt < retryPolicy.maxRetries,
-          nextRetryAt: nextRetryAt?.toISOString() ?? null,
+          nextRetryAt: next?.toISOString() ?? null,
         },
       });
 
-      log('ERROR', `Facture ${invoice.id} : échec envoi statut (tentative ${attempt}/${retryPolicy.maxRetries}) — ${message}`);
+      log(
+        'ERROR',
+        `Facture ${invoice.id} : échec envoi (${attempt}/${retryPolicy.maxRetries}) — ${message}`,
+      );
     }
   }
 }

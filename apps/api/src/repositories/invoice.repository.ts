@@ -27,6 +27,7 @@ export interface InvoiceSummaryDto {
   integrationMode: string | null;
   sapDocEntry: number | null;
   sapDocNum: number | null;
+  sapAttachmentEntry: number | null;
   paStatusSentAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -64,6 +65,7 @@ export interface InvoiceFileDto {
 export interface InvoiceDetailDto extends InvoiceSummaryDto {
   lines: InvoiceLineDto[];
   files: InvoiceFileDto[];
+  supplierInCache: boolean | null; // null = pas de CardCode assigné
 }
 
 // ─── Params ──────────────────────────────────────────────────────────────────
@@ -77,6 +79,9 @@ export interface FindInvoicesParams {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  direction?: 'INVOICE' | 'CREDIT_NOTE';
+  amountMin?: number;
+  amountMax?: number;
   sortBy?: 'receivedAt' | 'docDate' | 'totalInclTax' | 'status' | 'supplierNameRaw';
   sortDir?: 'asc' | 'desc';
 }
@@ -84,17 +89,32 @@ export interface FindInvoicesParams {
 // ─── Mappers ─────────────────────────────────────────────────────────────────
 
 function mapSummary(inv: {
-  id: string; paMessageId: string; paSource: string;
-  direction: string; format: string; receivedAt: Date;
-  supplierPaIdentifier: string; supplierNameRaw: string;
-  supplierB1Cardcode: string | null; supplierMatchConfidence: number;
-  docNumberPa: string; docDate: Date; dueDate: Date | null;
-  currency: string; totalExclTax: import('@prisma/client').Prisma.Decimal;
-  totalTax: import('@prisma/client').Prisma.Decimal; totalInclTax: import('@prisma/client').Prisma.Decimal;
-  status: string; statusReason: string | null; integrationMode: string | null;
-  sapDocEntry: number | null; sapDocNum: number | null;
+  id: string;
+  paMessageId: string;
+  paSource: string;
+  direction: string;
+  format: string;
+  receivedAt: Date;
+  supplierPaIdentifier: string;
+  supplierNameRaw: string;
+  supplierB1Cardcode: string | null;
+  supplierMatchConfidence: number;
+  docNumberPa: string;
+  docDate: Date;
+  dueDate: Date | null;
+  currency: string;
+  totalExclTax: import('@prisma/client').Prisma.Decimal;
+  totalTax: import('@prisma/client').Prisma.Decimal;
+  totalInclTax: import('@prisma/client').Prisma.Decimal;
+  status: string;
+  statusReason: string | null;
+  integrationMode: string | null;
+  sapDocEntry: number | null;
+  sapDocNum: number | null;
+  sapAttachmentEntry: number | null;
   paStatusSentAt: Date | null;
-  createdAt: Date; updatedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
 }): InvoiceSummaryDto {
   return {
     id: inv.id,
@@ -119,6 +139,7 @@ function mapSummary(inv: {
     integrationMode: inv.integrationMode,
     sapDocEntry: inv.sapDocEntry,
     sapDocNum: inv.sapDocNum,
+    sapAttachmentEntry: inv.sapAttachmentEntry,
     paStatusSentAt: inv.paStatusSentAt ? inv.paStatusSentAt.toISOString() : null,
     createdAt: inv.createdAt.toISOString(),
     updatedAt: inv.updatedAt.toISOString(),
@@ -126,24 +147,35 @@ function mapSummary(inv: {
 }
 
 function mapLine(l: {
-  id: string; lineNo: number; description: string;
+  id: string;
+  lineNo: number;
+  description: string;
   quantity: import('@prisma/client').Prisma.Decimal;
   unitPrice: import('@prisma/client').Prisma.Decimal;
   amountExclTax: import('@prisma/client').Prisma.Decimal;
-  taxCode: string | null; taxRate: import('@prisma/client').Prisma.Decimal | null;
+  taxCode: string | null;
+  taxRate: import('@prisma/client').Prisma.Decimal | null;
   taxAmount: import('@prisma/client').Prisma.Decimal;
   amountInclTax: import('@prisma/client').Prisma.Decimal;
-  suggestedAccountCode: string | null; suggestedAccountConfidence: number;
-  suggestedCostCenter: string | null; suggestedTaxCodeB1: string | null;
+  suggestedAccountCode: string | null;
+  suggestedAccountConfidence: number;
+  suggestedCostCenter: string | null;
+  suggestedTaxCodeB1: string | null;
   suggestionSource: string | null;
   chosenAccountCode: string | null;
-  chosenCostCenter: string | null; chosenTaxCodeB1: string | null;
+  chosenCostCenter: string | null;
+  chosenTaxCodeB1: string | null;
 }): InvoiceLineDto {
   return {
-    id: l.id, lineNo: l.lineNo, description: l.description,
-    quantity: dec(l.quantity), unitPrice: dec(l.unitPrice),
-    amountExclTax: dec(l.amountExclTax), taxCode: l.taxCode,
-    taxRate: decOrNull(l.taxRate), taxAmount: dec(l.taxAmount),
+    id: l.id,
+    lineNo: l.lineNo,
+    description: l.description,
+    quantity: dec(l.quantity),
+    unitPrice: dec(l.unitPrice),
+    amountExclTax: dec(l.amountExclTax),
+    taxCode: l.taxCode,
+    taxRate: decOrNull(l.taxRate),
+    taxAmount: dec(l.taxAmount),
     amountInclTax: dec(l.amountInclTax),
     suggestedAccountCode: l.suggestedAccountCode,
     suggestedAccountConfidence: l.suggestedAccountConfidence,
@@ -157,7 +189,11 @@ function mapLine(l: {
 }
 
 function mapFile(f: {
-  id: string; kind: string; path: string; sizeBytes: bigint; sha256: string;
+  id: string;
+  kind: string;
+  path: string;
+  sizeBytes: bigint;
+  sha256: string;
 }): InvoiceFileDto {
   return { id: f.id, kind: f.kind, path: f.path, sizeBytes: bigInt(f.sizeBytes), sha256: f.sha256 };
 }
@@ -165,20 +201,46 @@ function mapFile(f: {
 // ─── Requêtes ─────────────────────────────────────────────────────────────────
 
 const SORT_FIELDS = {
-  receivedAt: 'receivedAt', docDate: 'docDate',
-  totalInclTax: 'totalInclTax', status: 'status', supplierNameRaw: 'supplierNameRaw',
+  receivedAt: 'receivedAt',
+  docDate: 'docDate',
+  totalInclTax: 'totalInclTax',
+  status: 'status',
+  supplierNameRaw: 'supplierNameRaw',
 } as const;
 
 export async function findInvoices(
   params: FindInvoicesParams,
 ): Promise<{ items: InvoiceSummaryDto[]; total: number }> {
-  const { page, limit, status, paSource, supplierCardcode, dateFrom, dateTo, search, sortBy = 'receivedAt', sortDir = 'desc' } = params;
+  const {
+    page,
+    limit,
+    status,
+    paSource,
+    supplierCardcode,
+    dateFrom,
+    dateTo,
+    search,
+    direction,
+    amountMin,
+    amountMax,
+    sortBy = 'receivedAt',
+    sortDir = 'desc',
+  } = params;
   const skip = (page - 1) * limit;
 
   const where = {
     ...(status ? { status } : {}),
     ...(paSource ? { paSource } : {}),
     ...(supplierCardcode ? { supplierB1Cardcode: supplierCardcode } : {}),
+    ...(direction ? { direction } : {}),
+    ...(amountMin !== undefined || amountMax !== undefined
+      ? {
+          totalInclTax: {
+            ...(amountMin !== undefined ? { gte: amountMin } : {}),
+            ...(amountMax !== undefined ? { lte: amountMax } : {}),
+          },
+        }
+      : {}),
     ...(dateFrom || dateTo
       ? {
           docDate: {
@@ -217,10 +279,15 @@ export async function findInvoiceById(id: string): Promise<InvoiceDetailDto | nu
   });
   if (!inv) return null;
 
+  const supplierInCache = inv.supplierB1Cardcode
+    ? (await prisma.supplierCache.count({ where: { cardcode: inv.supplierB1Cardcode } })) > 0
+    : null;
+
   return {
     ...mapSummary(inv),
     lines: inv.lines.map(mapLine),
     files: inv.files.map(mapFile),
+    supplierInCache,
   };
 }
 

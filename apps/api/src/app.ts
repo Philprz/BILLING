@@ -2,6 +2,10 @@ import './env';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import { prisma } from '@pa-sap-bridge/database';
 import { authRoutes } from './routes/auth';
 import { invoiceRoutes } from './routes/invoices';
@@ -9,7 +13,14 @@ import { supplierRoutes } from './routes/suppliers';
 import { settingRoutes } from './routes/settings';
 import { auditRoutes } from './routes/audit';
 import { invoiceGeneratorRoutes } from './routes/invoice-generator';
+import { mappingRuleRoutes } from './routes/mapping-rules';
+import { paChannelRoutes } from './routes/pa-channels';
+import { uploadRoutes } from './routes/upload';
+import { workerStatusRoutes } from './routes/worker-status';
+import { sapRoutes } from './routes/sap';
 import { SAP_IGNORE_SSL } from './config';
+import { assertSapPolicyConfig } from './services/sap-policy.service';
+import { verifyCsrf } from './middleware/csrf';
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
@@ -25,6 +36,8 @@ if (SAP_IGNORE_SSL) {
 }
 
 export function buildApp(): FastifyInstance {
+  assertSapPolicyConfig();
+
   const app = Fastify({
     logger: {
       level: LOG_LEVEL,
@@ -33,6 +46,38 @@ export function buildApp(): FastifyInstance {
           ? { target: 'pino-pretty', options: { colorize: true } }
           : undefined,
     },
+  });
+
+  // ── Sécurité HTTP (CDC §3.3) ────────────────────────────────────────────────
+  app.register(helmet, {
+    // L'API renvoie du JSON : pas besoin de CSP sur les réponses JSON.
+    // La CSP HTML est gérée par nginx devant le frontend.
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    dnsPrefetchControl: { allow: false },
+    frameguard: { action: 'sameorigin' }, // X-Frame-Options: SAMEORIGIN (iframe viewer même origine)
+    hsts:
+      process.env.NODE_ENV === 'production'
+        ? { maxAge: 63_072_000, includeSubDomains: true, preload: true }
+        : false, // HSTS uniquement en prod (HTTPS requis)
+    ieNoOpen: true,
+    noSniff: true, // X-Content-Type-Options: nosniff
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    xssFilter: false, // obsolète — désactivé volontairement
+  });
+
+  // ── Rate limiting global (CDC §3.3) ─────────────────────────────────────────
+  app.register(rateLimit, {
+    global: true,
+    max: 300,
+    timeWindow: '1 minute',
+    keyGenerator: (request) => request.ip,
+    errorResponseBuilder: (_req, ctx) => ({
+      success: false,
+      error: `Trop de requêtes — réessayez dans ${ctx.after}`,
+    }),
   });
 
   app.register(cors, {
@@ -46,12 +91,37 @@ export function buildApp(): FastifyInstance {
     hook: 'onRequest',
   });
 
+  app.addHook('preHandler', verifyCsrf);
+
+  // ── OpenAPI (CDC §2) ────────────────────────────────────────────────────────
+  app.register(swagger, {
+    openapi: {
+      info: {
+        title: 'PA-SAP Bridge API',
+        description: 'API de passerelle entre la Piste d’Audit (PA) et SAP Business One.',
+        version: '1.0.0',
+      },
+      components: {
+        securitySchemes: {
+          cookieAuth: { type: 'apiKey', in: 'cookie', name: 'pa_sap_sid' },
+        },
+      },
+      security: [{ cookieAuth: [] }],
+    },
+  });
+  app.register(swaggerUi, { routePrefix: '/api/docs', uiConfig: { deepLinking: true } });
+
   app.register(authRoutes);
   app.register(invoiceRoutes);
   app.register(supplierRoutes);
   app.register(settingRoutes);
   app.register(auditRoutes);
   app.register(invoiceGeneratorRoutes);
+  app.register(mappingRuleRoutes);
+  app.register(paChannelRoutes);
+  app.register(uploadRoutes);
+  app.register(workerStatusRoutes);
+  app.register(sapRoutes);
 
   app.get('/api/health', async (_req, reply) => {
     let dbStatus: 'ok' | 'error' = 'error';

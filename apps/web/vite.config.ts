@@ -7,10 +7,21 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@pa-sap-bridge/shared': path.resolve(__dirname, '../../packages/shared/src/index.ts'),
     },
   },
   server: {
     port: 5173,
+    host: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    port: 4173,
     host: true,
     proxy: {
       '/api': {

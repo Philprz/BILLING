@@ -4,6 +4,10 @@ export interface SapSession {
   sessionId: string;
   /** Valeur du cookie B1SESSION SAP — stockée côté serveur uniquement */
   b1Session: string;
+  /** En-tête Cookie complet à réinjecter vers SAP (B1SESSION, ROUTEID, etc.) */
+  sapCookieHeader: string;
+  /** Timeout réel annoncé par SAP au login */
+  sessionTimeoutMinutes: number;
   companyDb: string;
   sapUser: string;
   createdAt: Date;
@@ -15,10 +19,15 @@ export interface SapSession {
 const store = new Map<string, SapSession>();
 
 export function createSession(
-  data: Pick<SapSession, 'b1Session' | 'companyDb' | 'sapUser' | 'expiresAt'>,
+  data: Pick<
+    SapSession,
+    'b1Session' | 'companyDb' | 'sapUser' | 'expiresAt' | 'sessionTimeoutMinutes'
+  > &
+    Partial<Pick<SapSession, 'sapCookieHeader'>>,
 ): SapSession {
   const session: SapSession = {
     ...data,
+    sapCookieHeader: data.sapCookieHeader ?? `B1SESSION=${data.b1Session}`,
     sessionId: randomUUID(),
     createdAt: new Date(),
   };
@@ -38,6 +47,24 @@ export function getSession(sessionId: string): SapSession | undefined {
 
 export function deleteSession(sessionId: string): void {
   store.delete(sessionId);
+}
+
+export function updateSession(
+  sessionId: string,
+  patch: Partial<
+    Pick<SapSession, 'expiresAt' | 'sapCookieHeader' | 'b1Session' | 'sessionTimeoutMinutes'>
+  >,
+): SapSession | undefined {
+  const session = store.get(sessionId);
+  if (!session) return undefined;
+
+  const updated: SapSession = {
+    ...session,
+    ...patch,
+  };
+
+  store.set(sessionId, updated);
+  return updated;
 }
 
 export function countActiveSessions(): number {

@@ -2,18 +2,28 @@ import { cn } from '../../lib/utils';
 import type { InvoiceStatus } from '../../api/types';
 
 const STATUS_CONFIG: Record<InvoiceStatus, { label: string; className: string }> = {
-  NEW:       { label: 'Nouvelle',    className: 'bg-slate-100 text-slate-700 border-slate-200' },
-  TO_REVIEW: { label: 'À réviser',   className: 'bg-amber-100 text-amber-700 border-amber-200' },
-  READY:     { label: 'Prête',       className: 'bg-blue-100 text-blue-700 border-blue-200' },
-  POSTED:    { label: 'Intégrée',    className: 'bg-green-100 text-green-700 border-green-200' },
-  REJECTED:  { label: 'Rejetée',     className: 'bg-red-100 text-red-700 border-red-200' },
-  ERROR:     { label: 'Erreur',      className: 'bg-red-100 text-red-700 border-red-200' },
+  NEW: { label: 'Nouvelle', className: 'border-border bg-muted/60 text-foreground' },
+  TO_REVIEW: { label: 'À réviser', className: 'border-warning/30 bg-warning/10 text-warning' },
+  READY: { label: 'Prête', className: 'border-primary/30 bg-primary/10 text-primary' },
+  POSTED: { label: 'Intégrée', className: 'border-success/30 bg-success/10 text-success' },
+  REJECTED: {
+    label: 'Rejetée',
+    className: 'border-destructive/30 bg-destructive/10 text-destructive',
+  },
+  ERROR: { label: 'Erreur', className: 'border-destructive/30 bg-destructive/10 text-destructive' },
 };
 
 export function StatusBadge({ status }: { status: InvoiceStatus }) {
   const cfg = STATUS_CONFIG[status];
   return (
-    <span className={cn('inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium', cfg.className)}>
+    <span
+      role="status"
+      aria-label={`Statut : ${cfg.label}`}
+      className={cn(
+        'inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-[0.12em] uppercase',
+        cfg.className,
+      )}
+    >
       {cfg.label}
     </span>
   );
@@ -21,7 +31,12 @@ export function StatusBadge({ status }: { status: InvoiceStatus }) {
 
 export function Badge({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <span className={cn('inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium bg-secondary text-secondary-foreground', className)}>
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full border border-secondary/30 bg-secondary/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-secondary-foreground',
+        className,
+      )}
+    >
       {children}
     </span>
   );

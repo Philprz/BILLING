@@ -1,7 +1,11 @@
 import { apiFetch } from './client';
 import type { AuthUser } from './types';
 
-export async function apiLogin(companyDb: string, userName: string, password: string): Promise<AuthUser> {
+export async function apiLogin(
+  companyDb: string,
+  userName: string,
+  password: string,
+): Promise<AuthUser> {
   return apiFetch<AuthUser>('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -15,4 +19,8 @@ export async function apiLogout(): Promise<void> {
 
 export async function apiMe(): Promise<AuthUser> {
   return apiFetch<AuthUser>('/api/auth/me');
+}
+
+export async function apiKeepAlive(): Promise<AuthUser> {
+  return apiFetch<AuthUser>('/api/auth/keepalive', { method: 'POST' });
 }

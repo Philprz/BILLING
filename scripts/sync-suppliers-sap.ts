@@ -19,16 +19,16 @@ if (process.env.SAP_IGNORE_SSL === 'true') {
 const prisma = new PrismaClient();
 
 const SAP_BASE_URL = (process.env.SAP_REST_BASE_URL ?? '').replace(/\/$/, '');
-const SAP_CLIENT   = process.env.SAP_CLIENT ?? '';
-const SAP_USER     = process.env.SAP_USER ?? '';
+const SAP_CLIENT = process.env.SAP_CLIENT ?? '';
+const SAP_USER = process.env.SAP_USER ?? '';
 const SAP_PASSWORD = process.env.SAP_CLIENT_PASSWORD ?? '';
-const PAGE_SIZE    = 100;
+const PAGE_SIZE = 100;
 
 interface SapSupplier {
-  CardCode:               string;
-  CardName:               string;
-  FederalTaxID:           string;
-  VATRegistrationNumber:  string;
+  CardCode: string;
+  CardName: string;
+  FederalTaxID: string;
+  VATRegistrationNumber: string;
 }
 
 // ─── Auth SAP ────────────────────────────────────────────────────────────────
@@ -45,32 +45,33 @@ async function sapLogin(): Promise<string> {
     throw new Error(`Connexion SAP échouée (${res.status}) : ${body}`);
   }
 
-  const cookie = res.headers.get('set-cookie') ?? '';
-  const match  = cookie.match(/B1SESSION=([^;,\s]+)/);
-  if (!match) throw new Error('B1SESSION absent de la réponse SAP');
-  return match[1];
+  const sapCookie = extractSapCookieHeader(res);
+  if (!sapCookie) throw new Error('Cookies SAP absents de la réponse SAP');
+  return sapCookie;
 }
 
-async function sapLogout(session: string): Promise<void> {
+async function sapLogout(sapCookie: string): Promise<void> {
   await fetch(`${SAP_BASE_URL}/Logout`, {
     method: 'POST',
-    headers: { Cookie: `B1SESSION=${session}` },
-  }).catch(() => { /* best-effort */ });
+    headers: { Cookie: sapCookie },
+  }).catch(() => {
+    /* best-effort */
+  });
 }
 
 // ─── Récupération des fournisseurs ───────────────────────────────────────────
 
-async function fetchSupplierPage(session: string, skip: number): Promise<SapSupplier[]> {
+async function fetchSupplierPage(sapCookie: string, skip: number): Promise<SapSupplier[]> {
   const params = new URLSearchParams({
-    '$filter': "CardType eq 'cSupplier'",
-    '$select': 'CardCode,CardName,FederalTaxID,VATRegistrationNumber',
-    '$top':    String(PAGE_SIZE),
-    '$skip':   String(skip),
-    '$orderby':'CardCode',
+    $filter: "CardType eq 'cSupplier'",
+    $select: 'CardCode,CardName,FederalTaxID,VATRegistrationNumber',
+    $top: String(PAGE_SIZE),
+    $skip: String(skip),
+    $orderby: 'CardCode',
   });
 
   const res = await fetch(`${SAP_BASE_URL}/BusinessPartners?${params}`, {
-    headers: { Cookie: `B1SESSION=${session}`, Prefer: 'odata.maxpagesize=100' },
+    headers: { Cookie: sapCookie, Prefer: 'odata.maxpagesize=100' },
   });
 
   if (!res.ok) {
@@ -78,17 +79,17 @@ async function fetchSupplierPage(session: string, skip: number): Promise<SapSupp
     throw new Error(`Erreur SAP BusinessPartners (${res.status}) : ${body.slice(0, 200)}`);
   }
 
-  const json = await res.json() as { value?: SapSupplier[] };
+  const json = (await res.json()) as { value?: SapSupplier[] };
   return json.value ?? [];
 }
 
-async function fetchAllSuppliers(session: string): Promise<SapSupplier[]> {
+async function fetchAllSuppliers(sapCookie: string): Promise<SapSupplier[]> {
   const all: SapSupplier[] = [];
   let skip = 0;
   let hasMore = true;
 
   while (hasMore) {
-    const page = await fetchSupplierPage(session, skip);
+    const page = await fetchSupplierPage(sapCookie, skip);
     all.push(...page);
     process.stdout.write(`\r  Récupérés : ${all.length} fournisseurs…`);
 
@@ -102,19 +103,40 @@ async function fetchAllSuppliers(session: string): Promise<SapSupplier[]> {
   return all;
 }
 
+function extractSapCookieHeader(response: Response): string | null {
+  const cookieMap = new Map<string, string>();
+  const rawSetCookies =
+    typeof response.headers.getSetCookie === 'function'
+      ? response.headers.getSetCookie()
+      : [response.headers.get('set-cookie') ?? ''];
+
+  for (const header of rawSetCookies) {
+    if (!header) continue;
+    for (const name of ['B1SESSION', 'ROUTEID', 'HASH_B1SESSION']) {
+      const match = header.match(new RegExp(`${name}=([^;,\\s]+)`));
+      if (match?.[1]) cookieMap.set(name, match[1]);
+    }
+  }
+
+  if (!cookieMap.has('B1SESSION')) return null;
+  return [...cookieMap.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+}
+
 // ─── Upsert en base ──────────────────────────────────────────────────────────
 
-async function upsertSuppliers(suppliers: SapSupplier[]): Promise<{ created: number; updated: number }> {
+async function upsertSuppliers(
+  suppliers: SapSupplier[],
+): Promise<{ created: number; updated: number }> {
   let created = 0;
   let updated = 0;
-  const now   = new Date();
+  const now = new Date();
 
   for (const s of suppliers) {
     const data = {
-      cardname:     s.CardName,
-      federaltaxid: s.FederalTaxID?.trim()            || null,
-      vatregnum:    s.VATRegistrationNumber?.trim()   || null,
-      syncAt:       now,
+      cardname: s.CardName,
+      federaltaxid: s.FederalTaxID?.trim() || null,
+      vatregnum: s.VATRegistrationNumber?.trim() || null,
+      syncAt: now,
     };
 
     const existing = await prisma.supplierCache.findUnique({ where: { cardcode: s.CardCode } });
@@ -135,7 +157,9 @@ async function upsertSuppliers(suppliers: SapSupplier[]): Promise<{ created: num
 
 async function main(): Promise<void> {
   if (!SAP_BASE_URL || !SAP_CLIENT || !SAP_USER || !SAP_PASSWORD) {
-    throw new Error('Variables SAP manquantes dans .env (SAP_REST_BASE_URL, SAP_CLIENT, SAP_USER, SAP_CLIENT_PASSWORD)');
+    throw new Error(
+      'Variables SAP manquantes dans .env (SAP_REST_BASE_URL, SAP_CLIENT, SAP_USER, SAP_CLIENT_PASSWORD)',
+    );
   }
 
   console.log(`[SyncSuppliers] Connexion à SAP B1 (${SAP_CLIENT} / ${SAP_USER})…`);
@@ -160,7 +184,9 @@ async function main(): Promise<void> {
   const { created, updated } = await upsertSuppliers(suppliers);
 
   const total = await prisma.supplierCache.count();
-  console.log(`\n[SyncSuppliers] Terminé — ${created} créés, ${updated} mis à jour. Total en cache : ${total}`);
+  console.log(
+    `\n[SyncSuppliers] Terminé — ${created} créés, ${updated} mis à jour. Total en cache : ${total}`,
+  );
 }
 
 main()

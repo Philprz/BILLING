@@ -1,0 +1,456 @@
+{
+  "info": {
+    "name": "PA-SAP Bridge API",
+    "description": "Collection Postman complète pour l'API PA-SAP Bridge. Importer dans Postman, définir les variables d'environnement, puis exécuter Login pour obtenir la session.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "pa-sap-bridge-v1"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "sapUser", "value": "manager", "type": "string" },
+    { "key": "sapPass", "value": "1234", "type": "string" },
+    { "key": "companyDb", "value": "SBODEMOFR", "type": "string" },
+    { "key": "invoiceId", "value": "", "type": "string" },
+    { "key": "channelId", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  pm.test('Login OK', () => pm.response.to.have.status(200));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user\": \"{{sapUser}}\",\n  \"password\": \"{{sapPass}}\",\n  \"companyDb\": \"{{companyDb}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Keepalive",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/keepalive"
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/logout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Factures",
+      "item": [
+        {
+          "name": "Lister les factures",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices?page=1&limit=20&sortBy=receivedAt&sortDir=desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "invoices"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" },
+                { "key": "status", "value": "TO_REVIEW", "disabled": true },
+                { "key": "direction", "value": "INVOICE", "disabled": true },
+                { "key": "amountMin", "value": "100", "disabled": true },
+                { "key": "amountMax", "value": "10000", "disabled": true },
+                { "key": "search", "value": "DUPONT", "disabled": true },
+                { "key": "sortBy", "value": "receivedAt" },
+                { "key": "sortDir", "value": "desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Statistiques 30 jours",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/invoices/stats/daily"
+          }
+        },
+        {
+          "name": "Export CSV",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/invoices/export.csv?status=POSTED",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "invoices", "export.csv"],
+              "query": [{ "key": "status", "value": "POSTED", "disabled": false }]
+            }
+          }
+        },
+        {
+          "name": "Détail facture",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}"
+          }
+        },
+        {
+          "name": "Intégrer une facture dans SAP B1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}/post",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"integrationMode\": \"SERVICE_INVOICE\",\n  \"simulate\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "Rejeter une facture",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}/reject",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Facture en double — voir réf. INV-2026-001\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Retourner statut à la PA",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}/send-status"
+          }
+        },
+        {
+          "name": "Corriger le fournisseur",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}/supplier",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierB1Cardcode\": \"F00042\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Ré-analyser (re-enrich)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}/re-enrich"
+          }
+        },
+        {
+          "name": "Remettre en traitement (reset ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}/reset"
+          }
+        },
+        {
+          "name": "Contenu fichier attaché",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/invoices/{{invoiceId}}/files/:fileId/content",
+            "variable": [{ "key": "fileId", "value": "<uuid-fichier>" }]
+          }
+        },
+        {
+          "name": "Intégration de masse (bulk-post)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/invoices/bulk-post",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ids\": [\n    \"<uuid-facture-1>\",\n    \"<uuid-facture-2>\"\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Import manuel (upload XML/PDF)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/invoices/upload",
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "file", "type": "file", "src": "/chemin/vers/facture.xml" }]
+            }
+          }
+        },
+        {
+          "name": "Ré-analyser toutes les factures en attente",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/invoices/re-enrich-all"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Fournisseurs",
+      "item": [
+        {
+          "name": "Cache fournisseurs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/suppliers-cache?limit=50&search=DUPONT",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "suppliers-cache"],
+              "query": [
+                { "key": "limit", "value": "50" },
+                { "key": "search", "value": "DUPONT", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Synchroniser depuis SAP B1",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/suppliers-cache/sync"
+          }
+        },
+        {
+          "name": "Créer fournisseur dans SAP B1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/suppliers/create-in-sap",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cardCode\": \"F00099\",\n  \"cardName\": \"DUPONT SERVICES SARL\",\n  \"federalTaxId\": \"12345678901234\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Règles de mappage",
+      "item": [
+        {
+          "name": "Lister les règles",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/mapping-rules?page=1&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "mapping-rules"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "50" },
+                { "key": "scope", "value": "SUPPLIER", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Créer une règle",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/mapping-rules",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"scope\": \"SUPPLIER\",\n  \"supplierCardcode\": \"F00042\",\n  \"matchKeyword\": \"maintenance\",\n  \"matchTaxRate\": 20,\n  \"accountCode\": \"61500000\",\n  \"costCenter\": \"CC-IT\",\n  \"taxCodeB1\": \"S1\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Supprimer une règle",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/mapping-rules/:ruleId",
+            "variable": [{ "key": "ruleId", "value": "<uuid-règle>" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Canaux PA",
+      "item": [
+        {
+          "name": "Lister les canaux",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/pa-channels"
+          }
+        },
+        {
+          "name": "Créer canal SFTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pa-channels",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"CHORUS-SFTP\",\n  \"protocol\": \"SFTP\",\n  \"host\": \"sftp.chorus-pro.gouv.fr\",\n  \"port\": 22,\n  \"user\": \"monlogin\",\n  \"passwordEncrypted\": \"motdepasse\",\n  \"remotePathIn\": \"/in/factures\",\n  \"remotePathProcessed\": \"/in/traites\",\n  \"remotePathOut\": \"/out/statuts\",\n  \"pollIntervalSeconds\": 300\n}"
+            }
+          }
+        },
+        {
+          "name": "Créer canal API",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pa-channels",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"CHORUS-API\",\n  \"protocol\": \"API\",\n  \"apiBaseUrl\": \"https://api.chorus-pro.gouv.fr/v1\",\n  \"apiAuthType\": \"BASIC\",\n  \"apiCredentialsEncrypted\": \"{\\\"user\\\":\\\"login\\\",\\\"password\\\":\\\"pass\\\"}\",\n  \"pollIntervalSeconds\": 60\n}"
+            }
+          }
+        },
+        {
+          "name": "Modifier un canal",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pa-channels/{{channelId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pollIntervalSeconds\": 120,\n  \"active\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "Supprimer un canal",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/pa-channels/{{channelId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Paramètres",
+      "item": [
+        {
+          "name": "Lire tous les paramètres",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/settings"
+          }
+        },
+        {
+          "name": "Modifier TAX_RATE_MAPPING",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/settings/TAX_RATE_MAPPING",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": {\n    \"5.5\": \"S2\",\n    \"10\": \"S3\",\n    \"20\": \"S1\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Modifier AUTO_VALIDATION_THRESHOLD",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/settings/AUTO_VALIDATION_THRESHOLD",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 80\n}"
+            }
+          }
+        },
+        {
+          "name": "Passer en mode simulation",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/settings/SAP_POST_POLICY",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": \"simulate\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audit",
+      "item": [
+        {
+          "name": "Journal d'audit",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/audit?limit=50&outcome=ERROR",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "audit"],
+              "query": [
+                { "key": "limit", "value": "50" },
+                { "key": "outcome", "value": "ERROR", "disabled": true },
+                { "key": "action", "value": "POST_SAP", "disabled": true },
+                { "key": "entityType", "value": "INVOICE", "disabled": true },
+                { "key": "entityId", "value": "{{invoiceId}}", "disabled": true },
+                { "key": "dateFrom", "value": "2026-01-01", "disabled": true },
+                { "key": "dateTo", "value": "2026-12-31", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Export audit CSV",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/audit/export.csv?action=POST_SAP",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "audit", "export.csv"],
+              "query": [{ "key": "action", "value": "POST_SAP" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Worker",
+      "item": [
+        {
+          "name": "Statut des canaux worker",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/worker/status"
+          }
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "noauth"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "exec": [
+          "// Les cookies de session sont gérés automatiquement par Postman.",
+          "// Exécuter d'abord la requête 'Login' pour obtenir une session valide."
+        ]
+      }
+    }
+  ]
+}

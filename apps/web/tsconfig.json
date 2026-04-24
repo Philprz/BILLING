@@ -13,8 +13,11 @@
     "resolveJsonModule": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "paths": {
+      "@pa-sap-bridge/shared": ["../../packages/shared/src/index.ts"]
+    }
   },
-  "include": ["src"],
+  "include": ["src", "../../packages/shared/src"],
   "exclude": ["node_modules", "dist"]
 }

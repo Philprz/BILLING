@@ -2,6 +2,8 @@
 // Types partagés — PA-SAP-Bridge
 // ---------------------------------------------------------------------------
 
+export * from './dtos';
+
 export type Environment = 'development' | 'production' | 'test';
 
 // Réponse API générique

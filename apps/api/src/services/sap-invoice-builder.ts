@@ -1,47 +1,57 @@
 /**
  * Constructeurs de payloads SAP B1 Service Layer.
+ * CDC §7.1 (PurchaseInvoice) et §7.2 (JournalEntry).
  *
- * Prend les données normalisées de la DB et produit les structures
- * JSON attendues par l'API SAP B1 SL.
- *
- * Règles :
- * - accountCode : chosenAccountCode > suggestedAccountCode (obligatoire en mode service)
- * - taxCode     : chosenTaxCodeB1 > suggestedTaxCodeB1 > dérivé de taxRate via TAX_RATE_MAPPING
- * - Si aucun accountCode sur une ligne → ligne ignorée (warning)
+ * Règles de résolution :
+ *  accountCode  : chosenAccountCode > suggestedAccountCode (obligatoire)
+ *  taxCode      : chosenTaxCodeB1 > suggestedTaxCodeB1 > TAX_RATE_MAPPING
+ *  costCenter   : chosenCostCenter > suggestedCostCenter
+ *  Si aucun accountCode sur une ligne → ligne ignorée
  */
 
 import type { Prisma } from '@pa-sap-bridge/database';
 
-// ─── Types internes ───────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface InvoiceData {
-  docNumberPa:        string;
-  direction:          string;  // 'INVOICE' | 'CREDIT_NOTE'
+  docNumberPa: string;
+  paSource: string;
+  paMessageId: string;
+  direction: string; // 'INVOICE' | 'CREDIT_NOTE'
   supplierB1Cardcode: string;
-  docDate:            Date;
-  dueDate:            Date | null;
-  currency:           string;
-  supplierNameRaw:    string;
+  supplierNameRaw: string;
+  docDate: Date;
+  dueDate: Date | null;
+  currency: string;
 }
 
 export interface LineData {
-  lineNo:               number;
-  description:          string;
-  quantity:             Prisma.Decimal;
-  unitPrice:            Prisma.Decimal;
-  amountExclTax:        Prisma.Decimal;
-  taxRate:              Prisma.Decimal | null;
-  taxAmount:            Prisma.Decimal;
-  amountInclTax:        Prisma.Decimal;
-  chosenAccountCode:    string | null;
+  lineNo: number;
+  description: string;
+  quantity: Prisma.Decimal;
+  unitPrice: Prisma.Decimal;
+  amountExclTax: Prisma.Decimal;
+  taxRate: Prisma.Decimal | null;
+  taxAmount: Prisma.Decimal;
+  amountInclTax: Prisma.Decimal;
+  chosenAccountCode: string | null;
   suggestedAccountCode: string | null;
-  chosenTaxCodeB1:      string | null;
-  suggestedTaxCodeB1:   string | null;
+  chosenCostCenter?: string | null;
+  suggestedCostCenter?: string | null;
+  chosenTaxCodeB1: string | null;
+  suggestedTaxCodeB1: string | null;
 }
 
 export interface BuildResult {
   payload: unknown;
-  skippedLines: number[];  // numéros des lignes sans accountCode
+  skippedLines: number[]; // lignes sans accountCode
+  balanceWarning: string | null;
+}
+
+export interface ResolvedLineForSap {
+  accountCode: string | null;
+  costCenter: string | null;
+  taxCode: string | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -54,123 +64,194 @@ function resolveAccountCode(l: LineData): string | null {
   return l.chosenAccountCode ?? l.suggestedAccountCode ?? null;
 }
 
-/**
- * Résout le code TVA SAP B1.
- * Priorité : choisi > suggéré > mapping automatique taxRate→code > null
- */
 function resolveTaxCode(l: LineData, taxRateMap: Record<string, string>): string | null {
-  if (l.chosenTaxCodeB1)    return l.chosenTaxCodeB1;
+  if (l.chosenTaxCodeB1) return l.chosenTaxCodeB1;
   if (l.suggestedTaxCodeB1) return l.suggestedTaxCodeB1;
   if (l.taxRate !== null) {
-    const rateStr = Number(l.taxRate).toFixed(2);
-    return taxRateMap[rateStr] ?? null;
+    return taxRateMap[Number(l.taxRate).toFixed(2)] ?? null;
   }
   return null;
 }
 
-// ─── Purchase Invoice / Credit Note ──────────────────────────────────────────
+export function resolveLineForSap(
+  line: LineData,
+  taxRateMap: Record<string, string>,
+): ResolvedLineForSap {
+  return {
+    accountCode: resolveAccountCode(line),
+    costCenter: line.chosenCostCenter ?? line.suggestedCostCenter ?? null,
+    taxCode: resolveTaxCode(line, taxRateMap),
+  };
+}
+
+// ─── A1 — Purchase Invoice / Credit Note ─────────────────────────────────────
+// CDC §7.1 — DocType dDocument_Service, LineTotal = amountExclTax
 
 export function buildPurchaseDocPayload(
-  invoice:         InvoiceData,
-  lines:           LineData[],
+  invoice: InvoiceData,
+  lines: LineData[],
   attachmentEntry: number,
-  taxRateMap:      Record<string, string>,
+  taxRateMap: Record<string, string>,
 ): BuildResult {
-
   const skippedLines: number[] = [];
   const documentLines: unknown[] = [];
 
   for (const l of lines) {
-    const accountCode = resolveAccountCode(l);
-    if (!accountCode) {
+    const resolved = resolveLineForSap(l, taxRateMap);
+    if (!resolved.accountCode) {
       skippedLines.push(l.lineNo);
       continue;
     }
 
-    const taxCode = resolveTaxCode(l, taxRateMap);
-    const line: Record<string, unknown> = {
+    const docLine: Record<string, unknown> = {
+      LineType: 'acAccount',
       ItemDescription: l.description.slice(0, 100),
-      Quantity:        Number(l.quantity),
-      UnitPrice:       Number(l.unitPrice),
-      AccountCode:     accountCode,
+      // Quantité fixe à 1 + UnitPrice = montant HT exact (évite les erreurs d'arrondi qty×PU)
+      Quantity: 1,
+      UnitPrice: Number(l.amountExclTax),
+      AccountCode: resolved.accountCode,
     };
-    if (taxCode) line.TaxCode = taxCode;
-    documentLines.push(line);
+    if (resolved.taxCode) docLine.TaxCode = resolved.taxCode;
+    if (resolved.costCenter) docLine.CostingCode = resolved.costCenter;
+    documentLines.push(docLine);
   }
 
   const payload: Record<string, unknown> = {
-    CardCode:        invoice.supplierB1Cardcode,
-    DocDate:         toISODate(invoice.docDate),
-    DocDueDate:      toISODate(invoice.dueDate ?? invoice.docDate),
-    DocCurrency:     invoice.currency,
-    AttachmentEntry: attachmentEntry,
-    DocumentLines:   documentLines,
+    CardCode: invoice.supplierB1Cardcode,
+    DocType: 'dDocument_Service',
+    DocDate: toISODate(invoice.docDate),
+    DocDueDate: toISODate(invoice.dueDate ?? invoice.docDate),
+    TaxDate: toISODate(invoice.docDate),
+    NumAtCard: invoice.docNumberPa,
+    Comments: `PA: ${invoice.paSource} / msg ${invoice.paMessageId}`,
+    DocCurrency: invoice.currency,
+    DocumentLines: documentLines,
   };
+  if (attachmentEntry > 0) payload.AttachmentEntry = attachmentEntry;
 
-  return { payload, skippedLines };
+  return { payload, skippedLines, balanceWarning: null };
 }
 
-// ─── Journal Entry ────────────────────────────────────────────────────────────
+// ─── A2 — Journal Entry ───────────────────────────────────────────────────────
+// CDC §7.2 — lignes charge HT + lignes TVA + contrepartie fournisseur TTC
+//
+// Structure pour une facture :
+//   Débit  : compte de charge (amountExclTax) × N lignes
+//   Débit  : compte TVA déductible (taxAmount) × taux distinct  [si apTaxAccountMap fourni]
+//   Crédit : compte fournisseur ShortName=CardCode (totalTtc)
+//
+// Pour avoir (CREDIT_NOTE) : débit ↔ crédit inversés.
 
-/**
- * Journal Entry : une ligne de débit par ligne de facture + une ligne de crédit
- * globale sur le fournisseur SAP B1.
- *
- * Pour les avoir (CREDIT_NOTE), les débits et crédits sont inversés.
- */
 export function buildJournalEntryPayload(
-  invoice:         InvoiceData,
-  lines:           LineData[],
+  invoice: InvoiceData,
+  lines: LineData[],
   attachmentEntry: number,
-  taxRateMap:      Record<string, string>,
+  taxRateMap: Record<string, string>,
+  apTaxAccountMap: Record<string, string> = {}, // ex. {"20.00": "445660"}
 ): BuildResult {
-
   const skippedLines: number[] = [];
   const jeLines: unknown[] = [];
-  let totalTtc = 0;
-
   const isCreditNote = invoice.direction === 'CREDIT_NOTE';
 
+  // Totaux pour le contrôle d'équilibre
+  let totalDebit = 0;
+  let totalCredit = 0;
+
+  // TVA agrégée par taux (pour regrouper les lignes TVA)
+  const taxByRate = new Map<string, { amount: number; account: string | null }>();
+  // Cumul TVA brut (pour calculer le TTC du fournisseur indépendamment des comptes)
+  let totalTvaGross = 0;
+
   for (const l of lines) {
-    const accountCode = resolveAccountCode(l);
-    if (!accountCode) {
+    const resolved = resolveLineForSap(l, taxRateMap);
+    if (!resolved.accountCode) {
       skippedLines.push(l.lineNo);
       continue;
     }
 
-    const amount  = Math.abs(Number(l.amountExclTax));
-    const taxCode = resolveTaxCode(l, taxRateMap);
-    totalTtc     += Math.abs(Number(l.amountInclTax));
+    const ht = Math.abs(Number(l.amountExclTax));
+    const tva = Math.abs(Number(l.taxAmount));
 
-    // Pour un avoir : on crédite le compte de charge (logique inversée)
-    const entry: Record<string, unknown> = {
-      AccountCode: accountCode,
-      Debit:       isCreditNote ? 0 : amount,
-      Credit:      isCreditNote ? amount : 0,
-      LineMemo:    l.description.slice(0, 100),
+    // Ligne de charge HT
+    const chargeLine: Record<string, unknown> = {
+      AccountCode: resolved.accountCode,
+      Debit: isCreditNote ? 0 : ht,
+      Credit: isCreditNote ? ht : 0,
+      LineMemo: l.description.slice(0, 100),
     };
-    if (taxCode) entry.TaxCode = taxCode;
-    jeLines.push(entry);
+    if (resolved.taxCode) chargeLine.TaxCode = resolved.taxCode;
+    jeLines.push(chargeLine);
+
+    if (isCreditNote) {
+      totalCredit += ht;
+    } else {
+      totalDebit += ht;
+    }
+
+    // Agréger la TVA par taux pour une ligne TVA unique par taux
+    if (tva > 0 && l.taxRate !== null) {
+      const rateKey = Number(l.taxRate).toFixed(2);
+      const taxAcct = apTaxAccountMap[rateKey] ?? null;
+      const existing = taxByRate.get(rateKey);
+      if (existing) {
+        existing.amount += tva;
+      } else {
+        taxByRate.set(rateKey, { amount: tva, account: taxAcct });
+      }
+      totalTvaGross += tva;
+    }
   }
 
-  // Ligne de contrepartie fournisseur.
-  // Sur SAP B1, une écriture manuelle vers un tiers se poste via ShortName=CardCode.
+  // Lignes TVA déductible (une par taux distinct)
+  for (const [rateKey, { amount, account }] of taxByRate) {
+    if (!account) continue; // pas de compte configuré pour ce taux → skip
+    const tvaLine: Record<string, unknown> = {
+      AccountCode: account,
+      Debit: isCreditNote ? 0 : amount,
+      Credit: isCreditNote ? amount : 0,
+      LineMemo: `TVA ${rateKey}%`,
+    };
+    jeLines.push(tvaLine);
+    if (isCreditNote) {
+      totalCredit += amount;
+    } else {
+      totalDebit += amount;
+    }
+  }
+
+  // Ligne de contrepartie fournisseur (ShortName = CardCode du fournisseur)
+  // La contrepartie est toujours en TTC (HT + TVA), indépendamment des comptes TVA configurés.
+  const totalHt = isCreditNote ? totalCredit : totalDebit;
+  const totalTtc = totalHt + totalTvaGross;
   if (totalTtc > 0) {
     jeLines.push({
-      ShortName:   invoice.supplierB1Cardcode,
-      Debit:       isCreditNote ? totalTtc : 0,
-      Credit:      isCreditNote ? 0 : totalTtc,
-      LineMemo:    `${invoice.supplierNameRaw} — ${invoice.docNumberPa}`,
+      ShortName: invoice.supplierB1Cardcode,
+      Debit: isCreditNote ? totalTtc : 0,
+      Credit: isCreditNote ? 0 : totalTtc,
+      LineMemo: `${invoice.supplierNameRaw} — ${invoice.docNumberPa}`,
     });
+    if (isCreditNote) {
+      totalDebit += totalTtc;
+    } else {
+      totalCredit += totalTtc;
+    }
   }
 
+  // Contrôle d'équilibre (CDC §7.2)
+  const imbalance = Math.abs(totalDebit - totalCredit);
+  const balanceWarning =
+    imbalance > 0.01
+      ? `Écriture déséquilibrée : débit ${totalDebit.toFixed(2)} ≠ crédit ${totalCredit.toFixed(2)} (écart ${imbalance.toFixed(2)} €). Vérifiez les comptes TVA dans les paramètres.`
+      : null;
+
   const payload: Record<string, unknown> = {
-    Memo:            `${invoice.docNumberPa} — ${invoice.supplierNameRaw}`,
-    ReferenceDate:   toISODate(invoice.docDate),
-    DueDate:         toISODate(invoice.dueDate ?? invoice.docDate),
-    AttachmentEntry: attachmentEntry,
+    Memo: `${invoice.docNumberPa} — ${invoice.supplierNameRaw}`,
+    Reference: invoice.docNumberPa,
+    ReferenceDate: toISODate(invoice.docDate),
+    DueDate: toISODate(invoice.dueDate ?? invoice.docDate),
     JournalEntryLines: jeLines,
   };
+  if (attachmentEntry > 0) payload.AttachmentEntry = attachmentEntry;
 
-  return { payload, skippedLines };
+  return { payload, skippedLines, balanceWarning };
 }

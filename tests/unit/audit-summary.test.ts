@@ -33,4 +33,32 @@ describe('buildAuditSummary', () => {
     expect(summary).toContain('SERVICE_INVOICE');
     expect(summary).toContain('46000');
   });
+
+  it('formats attachment bypass summary', () => {
+    const summary = buildAuditSummary({
+      action: 'POST_SAP',
+      outcome: 'OK',
+      payloadAfter: {
+        stage: 'ATTACHMENT_POLICY_BYPASS',
+      },
+    });
+
+    expect(summary).toContain('ignorée par politique');
+  });
+
+  it('formats simulated post summary', () => {
+    const summary = buildAuditSummary({
+      action: 'POST_SAP',
+      outcome: 'OK',
+      payloadAfter: {
+        stage: 'SAP_POST_SIMULATED',
+        integrationMode: 'SERVICE_INVOICE',
+        sapDocNum: 46000,
+        simulate: true,
+      },
+    });
+
+    expect(summary).toContain('simulée');
+    expect(summary).toContain('46000');
+  });
 });

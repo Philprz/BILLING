@@ -1,9 +1,10 @@
 import '@fastify/cookie';
-import type { FastifyInstance } from 'fastify';
-import { sapLogin, sapLogout, SapAuthError } from '../services/sap-auth.service';
-import { createSession, getSession, deleteSession } from '../session/store';
+import { randomBytes } from 'crypto';
+import type { FastifyInstance, FastifyReply } from 'fastify';
+import { sapLogin, sapLogout, sapPing, SapAuthError } from '../services/sap-auth.service';
+import { createSession, getSession, deleteSession, updateSession } from '../session/store';
 import { createAuditLogBestEffort } from '@pa-sap-bridge/database';
-import { COOKIE_NAME, SESSION_DURATION_MINUTES } from '../config';
+import { COOKIE_NAME, resolveSessionDurationMinutes } from '../config';
 
 // Sociétés SAP autorisées (issues des variables d'env uniquement)
 const ALLOWED_COMPANIES = new Set(
@@ -18,6 +19,33 @@ interface LoginBody {
   password: string;
 }
 
+function computeSessionExpiry(sessionTimeoutMinutes: number): Date {
+  const durationMinutes = resolveSessionDurationMinutes(sessionTimeoutMinutes);
+  return new Date(Date.now() + durationMinutes * 60 * 1000);
+}
+
+function setSessionCookie(reply: FastifyReply, sessionId: string, expiresAt: Date): void {
+  reply.setCookie(COOKIE_NAME, sessionId, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    expires: expiresAt,
+    signed: true,
+  });
+}
+
+function setCsrfCookie(reply: FastifyReply, expiresAt: Date): void {
+  const token = randomBytes(32).toString('hex');
+  reply.setCookie('csrf_token', token, {
+    httpOnly: false,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    expires: expiresAt,
+  });
+}
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // ----------------------------------------------------------------
   // POST /api/auth/login
@@ -25,6 +53,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: LoginBody }>(
     '/api/auth/login',
     {
+      config: {
+        // 10 tentatives par IP sur 15 minutes (CDC §3.3)
+        rateLimit: { max: 10, timeWindow: '15 minutes' },
+      },
       schema: {
         body: {
           type: 'object',
@@ -46,10 +78,21 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
-        const { b1Session, sessionTimeoutMinutes } = await sapLogin(companyDb, userName, password);
+        const { b1Session, sapCookieHeader, sessionTimeoutMinutes } = await sapLogin(
+          companyDb,
+          userName,
+          password,
+        );
 
-        const expiresAt = new Date(Date.now() + SESSION_DURATION_MINUTES * 60 * 1000);
-        const session = createSession({ b1Session, companyDb, sapUser: userName, expiresAt });
+        const expiresAt = computeSessionExpiry(sessionTimeoutMinutes);
+        const session = createSession({
+          b1Session,
+          sapCookieHeader,
+          companyDb,
+          sapUser: userName,
+          expiresAt,
+          sessionTimeoutMinutes,
+        });
 
         // Audit login OK
         await createAuditLogBestEffort({
@@ -63,14 +106,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         });
 
         // Cookie httpOnly signé — le navigateur ne voit jamais le B1SESSION
-        reply.setCookie(COOKIE_NAME, session.sessionId, {
-          httpOnly: true,
-          sameSite: 'strict',
-          secure: process.env.NODE_ENV === 'production',
-          path: '/',
-          expires: expiresAt,
-          signed: true,
-        });
+        setSessionCookie(reply, session.sessionId, expiresAt);
+        setCsrfCookie(reply, expiresAt);
 
         return reply.send({
           success: true,
@@ -112,7 +149,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (unsigned.valid && unsigned.value) {
       const session = getSession(unsigned.value);
       if (session) {
-        await sapLogout(session.b1Session);
+        await sapLogout(session.sapCookieHeader);
 
         await createAuditLogBestEffort({
           action: 'LOGOUT',
@@ -154,6 +191,45 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         user: session.sapUser,
         companyDb: session.companyDb,
         expiresAt: session.expiresAt.toISOString(),
+      },
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // POST /api/auth/keepalive — prolonge la session locale si SAP répond
+  // ----------------------------------------------------------------
+  app.post('/api/auth/keepalive', async (request, reply) => {
+    const raw = request.cookies[COOKIE_NAME] ?? '';
+    const unsigned = request.unsignCookie(raw);
+
+    if (!unsigned.valid || !unsigned.value) {
+      return reply.code(401).send({ success: false, error: 'Authentification requise' });
+    }
+
+    const session = getSession(unsigned.value);
+    if (!session) {
+      reply.clearCookie(COOKIE_NAME, { path: '/' });
+      return reply.code(401).send({ success: false, error: 'Session expirée' });
+    }
+
+    const pingOk = await sapPing(session.sapCookieHeader);
+    if (!pingOk) {
+      deleteSession(session.sessionId);
+      reply.clearCookie(COOKIE_NAME, { path: '/' });
+      return reply.code(401).send({ success: false, error: 'Session SAP expirée ou invalide' });
+    }
+
+    const expiresAt = computeSessionExpiry(session.sessionTimeoutMinutes);
+    updateSession(session.sessionId, { expiresAt });
+    setSessionCookie(reply, session.sessionId, expiresAt);
+    setCsrfCookie(reply, expiresAt);
+
+    return reply.send({
+      success: true,
+      data: {
+        user: session.sapUser,
+        companyDb: session.companyDb,
+        expiresAt: expiresAt.toISOString(),
       },
     });
   });

@@ -15,9 +15,9 @@ import { parseCii } from './cii.parser';
 import type { ParsedInvoice } from './types';
 
 // Détection du format par namespace XML (lecture légère des 2048 premiers octets)
-const NS_UBL_INVOICE   = 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2';
-const NS_UBL_CN        = 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2';
-const NS_CII           = 'urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100';
+const NS_UBL_INVOICE = 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2';
+const NS_UBL_CN = 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2';
+const NS_CII = 'urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100';
 
 function detectXmlFormat(header: string): 'UBL' | 'CII' | 'UNKNOWN' {
   if (header.includes(NS_UBL_INVOICE) || header.includes(NS_UBL_CN)) return 'UBL';
@@ -30,20 +30,20 @@ export function parseFile(absolutePath: string, ext: string): ParsedInvoice {
     // PDF seul : on crée une entrée minimale sans lignes structurées.
     // Le nom du fichier devient le numéro de document provisoire.
     const filename = absolutePath.split(/[\\/]/).pop() ?? 'UNKNOWN.pdf';
-    const docNum   = filename.replace(/\.pdf$/i, '');
+    const docNum = filename.replace(/\.pdf$/i, '');
     return {
-      format:               'PDF_ONLY',
-      direction:            'INVOICE',
-      docNumberPa:          docNum,
-      docDate:              new Date().toISOString().split('T')[0],
-      dueDate:              null,
-      currency:             'EUR',
+      format: 'PDF_ONLY',
+      direction: 'INVOICE',
+      docNumberPa: docNum,
+      docDate: new Date().toISOString().split('T')[0],
+      dueDate: null,
+      currency: 'EUR',
       supplierPaIdentifier: 'UNKNOWN',
-      supplierNameRaw:      docNum,
-      totalExclTax:         '0',
-      totalTax:             '0',
-      totalInclTax:         '0',
-      lines:                [],
+      supplierNameRaw: docNum,
+      totalExclTax: '0',
+      totalTax: '0',
+      totalInclTax: '0',
+      lines: [],
     };
   }
 
@@ -57,10 +57,10 @@ export function parseFile(absolutePath: string, ext: string): ParsedInvoice {
   const format = detectXmlFormat(header);
 
   if (format === 'UBL') return parseUbl(xmlContent);
-  if (format === 'CII') return parseCii(xmlContent);  // lève une erreur explicite
+  if (format === 'CII') return parseCii(xmlContent); // lève une erreur explicite
 
   throw new Error(
     'Format XML non reconnu : namespace inconnu dans le document. ' +
-    'Formats XML supportés : UBL 2.1. Formats détectés mais non supportés : CII.',
+      'Formats XML supportés : UBL 2.1, CII D16B.',
   );
 }

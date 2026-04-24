@@ -48,6 +48,25 @@ function maskValue(value: string): string {
   return value.slice(0, 2) + '***' + value.slice(-2);
 }
 
+function extractSapCookieHeader(response: Response): string | null {
+  const cookieMap = new Map<string, string>();
+  const rawSetCookies =
+    typeof response.headers.getSetCookie === 'function'
+      ? response.headers.getSetCookie()
+      : [response.headers.get('set-cookie') ?? ''];
+
+  for (const header of rawSetCookies) {
+    if (!header) continue;
+    for (const name of ['B1SESSION', 'ROUTEID', 'HASH_B1SESSION']) {
+      const match = header.match(new RegExp(`${name}=([^;,\\s]+)`));
+      if (match?.[1]) cookieMap.set(name, match[1]);
+    }
+  }
+
+  if (!cookieMap.has('B1SESSION')) return null;
+  return [...cookieMap.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+}
+
 async function testLogin(tc: TestCase): Promise<void> {
   console.log(`\n  Société   : ${tc.companyDb || '(non défini)'}`);
   console.log(`  Utilisateur: ${tc.userName || '(non défini)'}`);
@@ -83,14 +102,15 @@ async function testLogin(tc: TestCase): Promise<void> {
   }
 
   const elapsed = Date.now() - t0;
-  const setCookie = response.headers.get('set-cookie') ?? '';
-  const b1SessionMatch = setCookie.match(/B1SESSION=([^;,\s]+)/);
+  const sapCookie = extractSapCookieHeader(response);
+  const b1SessionMatch = sapCookie?.match(/B1SESSION=([^;,\s]+)/);
   const b1Session = b1SessionMatch?.[1] ?? null;
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     const errMsg = (body?.error as Record<string, unknown> | undefined)?.message;
-    const detail = typeof errMsg === 'object' ? JSON.stringify(errMsg) : String(errMsg ?? 'inconnu');
+    const detail =
+      typeof errMsg === 'object' ? JSON.stringify(errMsg) : String(errMsg ?? 'inconnu');
     console.log(`  → ECHEC SAP ${response.status} (${elapsed}ms) : ${detail}`);
     return;
   }
@@ -100,27 +120,31 @@ async function testLogin(tc: TestCase): Promise<void> {
     return;
   }
 
-  const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   const timeout = body.SessionTimeout;
 
-  console.log(`  → OK (${elapsed}ms) — B1SESSION: ${maskValue(b1Session)} — timeout: ${timeout} min`);
+  console.log(
+    `  → OK (${elapsed}ms) — B1SESSION: ${maskValue(b1Session)} — timeout: ${timeout} min`,
+  );
 
   // Logout immédiat (best-effort)
   await fetch(`${SAP_BASE_URL}/Logout`, {
     method: 'POST',
-    headers: { Cookie: `B1SESSION=${b1Session}` },
-  }).then(() => {
-    console.log('  → Logout effectué');
-  }).catch(() => {
-    console.log('  → Logout ignoré (SAP injoignable)');
-  });
+    headers: { Cookie: sapCookie ?? `B1SESSION=${b1Session}` },
+  })
+    .then(() => {
+      console.log('  → Logout effectué');
+    })
+    .catch(() => {
+      console.log('  → Logout ignoré (SAP injoignable)');
+    });
 }
 
 async function main(): Promise<void> {
   console.log('=== Test authentification SAP B1 ===');
   console.log(`URL de base : ${SAP_BASE_URL || '(non défini)'}`);
   console.log(`SSL bypass  : ${process.env.SAP_IGNORE_SSL === 'true' ? 'ACTIF (dev)' : 'inactif'}`);
-  console.log(`Mode        : ${DRY_RUN ? 'DRY-RUN (pas d\'appel réel)' : 'RÉEL'}`);
+  console.log(`Mode        : ${DRY_RUN ? "DRY-RUN (pas d'appel réel)" : 'RÉEL'}`);
 
   if (!SAP_BASE_URL) {
     console.error('\nERREUR : SAP_REST_BASE_URL non défini dans .env');

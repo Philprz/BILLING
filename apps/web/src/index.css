@@ -1,63 +1,306 @@
+@import url('https://fonts.googleapis.com/css2?family=League+Spartan:wght@700&family=Montserrat:ital,wght@0,400;0,700;1,400&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 231 41% 6%;
+    --background-elevated: 229 36% 9%;
+    --foreground: 210 33% 98%;
+    --card: 228 31% 11%;
+    --card-muted: 228 24% 15%;
+    --card-foreground: 210 33% 98%;
+    --popover: 228 31% 10%;
+    --popover-foreground: 210 33% 98%;
+    --border: 228 18% 24%;
+    --input: 228 18% 20%;
+    --ring: 197 99% 50%;
+    --primary: 197 99% 50%;
+    --primary-foreground: 231 41% 6%;
+    --secondary: 262 99% 59%;
+    --secondary-foreground: 210 33% 98%;
+    --accent: 292 96% 56%;
+    --accent-foreground: 210 33% 98%;
+    --muted: 228 20% 18%;
+    --muted-foreground: 220 16% 70%;
+    --destructive: 3 84% 60%;
+    --destructive-foreground: 210 33% 98%;
+    --success: 150 99% 59%;
+    --success-foreground: 231 41% 6%;
+    --warning: 22 98% 50%;
+    --warning-foreground: 210 33% 98%;
+    --info: 176 96% 55%;
+    --info-foreground: 231 41% 6%;
+    --sidebar: 232 47% 8%;
+    --sidebar-accent: 230 43% 12%;
+    --sidebar-foreground: 210 33% 98%;
+    --sidebar-border: 229 20% 19%;
+    --radius: 1rem;
+  }
+
+  .light {
+    --background: 220 100% 99%;
+    --background-elevated: 223 67% 98%;
+    --foreground: 229 35% 16%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-muted: 220 43% 97%;
+    --card-foreground: 229 35% 16%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --radius: 0.5rem;
-    --sidebar: 222.2 84% 4.9%;
-    --sidebar-foreground: 210 40% 98%;
+    --popover-foreground: 229 35% 16%;
+    --border: 222 35% 88%;
+    --input: 221 31% 90%;
+    --ring: 197 99% 50%;
+    --primary: 197 99% 50%;
+    --primary-foreground: 210 33% 98%;
+    --secondary: 262 99% 59%;
+    --secondary-foreground: 210 33% 98%;
+    --accent: 292 96% 56%;
+    --accent-foreground: 210 33% 98%;
+    --muted: 220 35% 95%;
+    --muted-foreground: 225 16% 44%;
+    --destructive: 4 84% 52%;
+    --destructive-foreground: 210 33% 98%;
+    --success: 154 63% 42%;
+    --success-foreground: 210 33% 98%;
+    --warning: 22 98% 44%;
+    --warning-foreground: 210 33% 98%;
+    --info: 176 96% 38%;
+    --info-foreground: 210 33% 98%;
+    --sidebar: 0 0% 100%;
+    --sidebar-accent: 223 67% 98%;
+    --sidebar-foreground: 229 35% 18%;
+    --sidebar-border: 222 35% 88%;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 217.2 32.6% 17.5%;
-    --card-foreground: 210 40% 98%;
-    --popover: 217.2 32.6% 17.5%;
-    --popover-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --sidebar: 217.2 32.6% 12%;
-    --sidebar-foreground: 210 40% 98%;
+    --background: 231 41% 6%;
+    --background-elevated: 229 36% 9%;
+    --foreground: 210 33% 98%;
+    --card: 228 31% 11%;
+    --card-muted: 228 24% 15%;
+    --card-foreground: 210 33% 98%;
+    --popover: 228 31% 10%;
+    --popover-foreground: 210 33% 98%;
+    --border: 228 18% 24%;
+    --input: 228 18% 20%;
+    --ring: 197 99% 50%;
+    --primary: 197 99% 50%;
+    --primary-foreground: 231 41% 6%;
+    --secondary: 262 99% 59%;
+    --secondary-foreground: 210 33% 98%;
+    --accent: 292 96% 56%;
+    --accent-foreground: 210 33% 98%;
+    --muted: 228 20% 18%;
+    --muted-foreground: 220 16% 70%;
+    --destructive: 3 84% 60%;
+    --destructive-foreground: 210 33% 98%;
+    --success: 150 99% 59%;
+    --success-foreground: 231 41% 6%;
+    --warning: 22 98% 50%;
+    --warning-foreground: 210 33% 98%;
+    --info: 176 96% 55%;
+    --info-foreground: 231 41% 6%;
+    --sidebar: 232 47% 8%;
+    --sidebar-accent: 230 43% 12%;
+    --sidebar-foreground: 210 33% 98%;
+    --sidebar-border: 229 20% 19%;
   }
 
   * {
     @apply border-border;
   }
 
+  html {
+    color-scheme: dark;
+  }
+
+  .light {
+    color-scheme: light;
+  }
+
   body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    @apply bg-background text-foreground font-sans antialiased;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at top left, rgba(2, 185, 253, 0.16), transparent 24%),
+      radial-gradient(circle at top right, rgba(226, 32, 251, 0.18), transparent 26%),
+      radial-gradient(circle at 50% 18%, rgba(131, 45, 254, 0.1), transparent 28%),
+      linear-gradient(180deg, #040711 0%, #090d17 42%, #101522 100%);
+    background-attachment: fixed;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
+  }
+
+  .light body {
+    background-image:
+      radial-gradient(circle at top left, rgba(2, 185, 253, 0.12), transparent 24%),
+      radial-gradient(circle at top right, rgba(226, 32, 251, 0.12), transparent 26%),
+      radial-gradient(circle at 50% 18%, rgba(131, 45, 254, 0.08), transparent 28%),
+      linear-gradient(180deg, #f9fbff 0%, #f2f6ff 44%, #f7f1ff 100%);
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background-color: hsl(var(--primary) / 0.35);
+    color: hsl(var(--foreground));
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(131, 45, 254, 0.52), rgba(2, 185, 253, 0.45));
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+}
+
+@layer components {
+  .brand-gradient-text {
+    background-image: linear-gradient(
+      135deg,
+      hsl(var(--primary)),
+      hsl(var(--secondary)) 55%,
+      hsl(var(--accent))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .brand-gradient-soft {
+    background-image: linear-gradient(
+      135deg,
+      hsl(var(--primary) / 0.12),
+      hsl(var(--secondary) / 0.15) 52%,
+      hsl(var(--accent) / 0.16)
+    );
+  }
+
+  .auth-backdrop {
+    background-image:
+      radial-gradient(circle at 18% 18%, rgba(2, 185, 253, 0.22), transparent 0, transparent 28%),
+      radial-gradient(circle at 82% 20%, rgba(226, 32, 251, 0.18), transparent 0, transparent 24%),
+      linear-gradient(180deg, rgba(4, 7, 17, 0.98), rgba(9, 13, 23, 0.96));
+  }
+
+  .light .auth-backdrop {
+    background-image:
+      radial-gradient(circle at 16% 18%, rgba(2, 185, 253, 0.14), transparent 0, transparent 28%),
+      radial-gradient(circle at 84% 16%, rgba(226, 32, 251, 0.12), transparent 0, transparent 24%),
+      linear-gradient(180deg, rgba(249, 251, 255, 0.96), rgba(242, 246, 255, 0.94));
+  }
+
+  .app-page {
+    @apply space-y-6 p-6 lg:p-8;
+  }
+
+  .page-header {
+    @apply flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between;
+  }
+
+  .page-eyebrow {
+    @apply text-[0.68rem] font-bold uppercase tracking-[0.32em] text-primary/75;
+  }
+
+  .page-title {
+    @apply font-display text-3xl uppercase tracking-[0.08em] text-foreground;
+  }
+
+  .page-subtitle {
+    @apply max-w-3xl text-sm text-muted-foreground;
+  }
+
+  .panel-surface {
+    @apply rounded-2xl border border-border/80 bg-card/90 shadow-brand backdrop-blur-md;
+  }
+
+  .panel-surface-muted {
+    @apply rounded-2xl border border-border/70 bg-card-muted/75 shadow-soft backdrop-blur-md;
+  }
+
+  .alert-base {
+    @apply flex items-start gap-2 rounded-2xl border px-4 py-3 text-sm shadow-soft;
+  }
+
+  .alert-error {
+    @apply alert-base border-destructive/30 bg-destructive/10 text-destructive;
+  }
+
+  .alert-warning {
+    @apply alert-base border-warning/30 bg-warning/10 text-warning;
+  }
+
+  .alert-success {
+    @apply alert-base border-success/30 bg-success/10 text-success;
+  }
+
+  .alert-info {
+    @apply alert-base border-info/30 bg-info/10 text-info;
+  }
+
+  .app-input {
+    @apply flex h-11 w-full rounded-xl border border-input/90 bg-background/70 px-3.5 py-2 text-sm text-foreground shadow-soft transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .app-textarea {
+    @apply min-h-[110px] w-full rounded-xl border border-input/90 bg-background/70 px-3.5 py-3 text-sm text-foreground shadow-soft transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .data-table-shell {
+    @apply overflow-hidden rounded-2xl border border-border/70 bg-card/90 shadow-soft backdrop-blur-md;
+  }
+
+  .data-table {
+    @apply w-full text-sm;
+  }
+
+  .data-table thead {
+    @apply bg-muted/40 text-muted-foreground;
+  }
+
+  .data-table th {
+    @apply px-4 py-3 text-left text-[0.68rem] font-semibold uppercase tracking-[0.18em];
+  }
+
+  .data-table td {
+    @apply px-4 py-3 align-middle;
+  }
+
+  .data-table tbody {
+    @apply divide-y divide-border/70;
+  }
+
+  .data-row-interactive {
+    @apply cursor-pointer transition-colors hover:bg-muted/25;
+  }
+
+  .tab-trigger {
+    @apply inline-flex items-center gap-2 border-b-2 border-transparent px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground;
+  }
+
+  .tab-trigger-active {
+    @apply border-primary text-primary;
+  }
+
+  .modal-backdrop {
+    @apply fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm;
+  }
+
+  .modal-panel {
+    @apply panel-surface w-full max-w-md space-y-4 p-6;
   }
 }

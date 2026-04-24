@@ -1,5 +1,14 @@
 import { apiFetch } from './client';
-import type { InvoiceSummary, InvoiceDetail, InvoiceFile, PaginatedResult, BasicSettings, InvoiceStatus } from './types';
+import type {
+  InvoiceSummary,
+  InvoiceDetail,
+  InvoiceFile,
+  PaginatedResult,
+  BasicSettings,
+  InvoiceStatus,
+  SapExecutionPolicy,
+  SapValidationReport,
+} from './types';
 
 export interface GetInvoicesParams {
   page?: number;
@@ -7,17 +16,25 @@ export interface GetInvoicesParams {
   status?: InvoiceStatus;
   paSource?: string;
   search?: string;
+  direction?: 'INVOICE' | 'CREDIT_NOTE';
+  amountMin?: number;
+  amountMax?: number;
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
 }
 
-export async function apiGetInvoices(params: GetInvoicesParams = {}): Promise<PaginatedResult<InvoiceSummary>> {
+export async function apiGetInvoices(
+  params: GetInvoicesParams = {},
+): Promise<PaginatedResult<InvoiceSummary>> {
   const qs = new URLSearchParams();
   if (params.page) qs.set('page', String(params.page));
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.status) qs.set('status', params.status);
   if (params.paSource) qs.set('paSource', params.paSource);
   if (params.search) qs.set('search', params.search);
+  if (params.direction) qs.set('direction', params.direction);
+  if (params.amountMin !== undefined) qs.set('amountMin', String(params.amountMin));
+  if (params.amountMax !== undefined) qs.set('amountMax', String(params.amountMax));
   if (params.sortBy) qs.set('sortBy', params.sortBy);
   if (params.sortDir) qs.set('sortDir', params.sortDir);
   return apiFetch<PaginatedResult<InvoiceSummary>>(`/api/invoices?${qs.toString()}`);
@@ -41,16 +58,21 @@ export interface PostInvoiceParams {
 }
 
 export interface PostInvoiceResult {
-  sapDocEntry:        number;
-  sapDocNum:          number;
+  sapDocEntry: number;
+  sapDocNum: number;
   sapAttachmentEntry: number | null;
-  integrationMode:    string;
-  simulate:           boolean;
-  status:             string;
-  attachmentWarning:  string | null;
+  integrationMode: string;
+  simulate: boolean;
+  status: string;
+  attachmentWarning: string | null;
+  validationReport?: SapValidationReport;
+  policy?: SapExecutionPolicy;
 }
 
-export async function apiPostInvoice(id: string, params: PostInvoiceParams): Promise<PostInvoiceResult> {
+export async function apiPostInvoice(
+  id: string,
+  params: PostInvoiceParams,
+): Promise<PostInvoiceResult> {
   return apiFetch<PostInvoiceResult>(`/api/invoices/${id}/post`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -81,7 +103,10 @@ export async function apiResetInvoice(id: string): Promise<import('./types').Inv
   return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/reset`, { method: 'POST' });
 }
 
-export async function apiUpdateSupplier(invoiceId: string, supplierB1Cardcode: string | null): Promise<import('./types').InvoiceDetail> {
+export async function apiUpdateSupplier(
+  invoiceId: string,
+  supplierB1Cardcode: string | null,
+): Promise<import('./types').InvoiceDetail> {
   return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${invoiceId}/supplier`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -95,10 +120,75 @@ export interface PatchLineParams {
   chosenTaxCodeB1?: string | null;
 }
 
-export async function apiUpdateLine(invoiceId: string, lineId: string, data: PatchLineParams): Promise<import('./types').InvoiceDetail> {
+export async function apiUpdateLine(
+  invoiceId: string,
+  lineId: string,
+  data: PatchLineParams,
+): Promise<import('./types').InvoiceDetail> {
   return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${invoiceId}/lines/${lineId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
+  });
+}
+
+export async function apiSaveDraft(
+  id: string,
+  data: { integrationMode?: string; sapSeries?: string },
+): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/draft`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function apiReEnrichInvoice(id: string): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/re-enrich`, {
+    method: 'POST',
+  });
+}
+
+export async function apiReEnrichAll(): Promise<{ processed: number; errors: number }> {
+  return apiFetch<{ processed: number; errors: number }>('/api/invoices/re-enrich-all', {
+    method: 'POST',
+  });
+}
+
+export interface DailyStatDay {
+  date: string;
+  received: number;
+  posted: number;
+}
+
+export async function apiGetDailyStats(): Promise<{ days: DailyStatDay[] }> {
+  return apiFetch<{ days: DailyStatDay[] }>('/api/invoices/stats/daily');
+}
+
+export interface BulkPostResult {
+  results: { id: string; ok: boolean; error?: string; sapDocNum?: number }[];
+  succeeded: number;
+  failed: number;
+}
+
+export async function apiBulkPost(ids: string[]): Promise<BulkPostResult> {
+  return apiFetch<BulkPostResult>('/api/invoices/bulk-post', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export interface BulkSendStatusResult {
+  results: { id: string; ok: boolean; error?: string }[];
+  succeeded: number;
+  failed: number;
+}
+
+export async function apiBulkSendStatus(ids: string[]): Promise<BulkSendStatusResult> {
+  return apiFetch<BulkSendStatusResult>('/api/invoices/bulk-send-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
   });
 }

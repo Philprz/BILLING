@@ -15,7 +15,7 @@
     "start:worker": "npm run start -w apps/worker",
     "start:web": "npm run preview -w apps/web -- --host 0.0.0.0 --port 4173",
     "start:local": "concurrently -n api,worker,web -c green,yellow,cyan --kill-others-on-fail \"npm run start:api\" \"npm run start:worker\" \"npm run start:web\"",
-    "build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/worker && npm run build -w apps/web",
+    "build": "npm run build -w packages/shared && npm run build -w packages/database && npm run build -w apps/api && npm run build -w apps/worker && npm run build -w apps/web",
     "build:api": "npm run build -w apps/api",
     "build:worker": "npm run build -w apps/worker",
     "build:web": "npm run build -w apps/web",
@@ -41,6 +41,8 @@
     "test:unit": "vitest run --config vitest.config.ts tests/unit",
     "test:integration": "vitest run --config vitest.config.ts tests/integration",
     "test:e2e": "vitest run --config vitest.config.ts tests/e2e",
+    "test:e2e:pw": "playwright test",
+    "test:e2e:pw:ui": "playwright test --ui",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:sap-login": "tsx scripts/test-sap-login.ts",
     "test:sap-login:dry": "tsx scripts/test-sap-login.ts --dry-run",
@@ -51,14 +53,27 @@
     "check:lot9": "tsx scripts/check-lot9.ts",
     "seed:test": "tsx scripts/seed-test-invoices.ts",
     "sync:suppliers": "tsx scripts/sync-suppliers-sap.ts",
-    "launch": "start lancer.bat"
+    "launch": "start lancer.bat",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix --max-warnings 0",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@typescript-eslint/eslint-plugin": "^8.32.0",
     "@typescript-eslint/parser": "^8.32.0",
     "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^9.1.0",
     "eslint": "^8.57.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "prettier": "^3.5.3",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"

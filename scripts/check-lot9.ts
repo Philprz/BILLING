@@ -28,8 +28,10 @@ async function main(): Promise<void> {
 
   const session = createSession({
     b1Session: 'LOT9-TEST-SESSION',
+    sapCookieHeader: 'B1SESSION=LOT9-TEST-SESSION; ROUTEID=.node1',
     companyDb: 'LOT9_TEST_DB',
     sapUser: 'lot9.tester',
+    sessionTimeoutMinutes: 30,
     expiresAt: nowPlusMinutes(30),
   });
   const signedCookie = app.signCookie(session.sessionId);
@@ -65,29 +67,33 @@ async function main(): Promise<void> {
         sapDocEntry: status === 'POSTED' ? 45000 : null,
         sapDocNum: status === 'POSTED' ? 46000 : null,
         lines: {
-          create: [{
-            lineNo: 1,
-            description: `Lot 9 line ${suffix}`,
-            quantity: 1,
-            unitPrice: 100,
-            amountExclTax: 100,
-            taxCode: 'TVA20',
-            taxRate: 20,
-            taxAmount: 20,
-            amountInclTax: 120,
-            suggestedAccountCode: '601000',
-            suggestedAccountConfidence: 90,
-            suggestedTaxCodeB1: 'S1',
-            suggestionSource: 'Fixture validation lot 9',
-          }],
+          create: [
+            {
+              lineNo: 1,
+              description: `Lot 9 line ${suffix}`,
+              quantity: 1,
+              unitPrice: 100,
+              amountExclTax: 100,
+              taxCode: 'TVA20',
+              taxRate: 20,
+              taxAmount: 20,
+              amountInclTax: 120,
+              suggestedAccountCode: '601000',
+              suggestedAccountConfidence: 90,
+              suggestedTaxCodeB1: 'S1',
+              suggestionSource: 'Fixture validation lot 9',
+            },
+          ],
         },
         files: {
-          create: [{
-            kind: 'XML',
-            path: dummyFile,
-            sizeBytes: BigInt(fs.statSync(dummyFile).size),
-            sha256: `lot9-${suffix}`,
-          }],
+          create: [
+            {
+              kind: 'XML',
+              path: dummyFile,
+              sizeBytes: BigInt(fs.statSync(dummyFile).size),
+              sha256: `lot9-${suffix}`,
+            },
+          ],
         },
       },
     });
@@ -107,7 +113,10 @@ async function main(): Promise<void> {
     url: `/api/invoices/${readyInvoiceId}`,
     headers: { cookie: cookieHeader },
   });
-  assert(viewResponse.statusCode === 200, `Consultation facture en échec (${viewResponse.statusCode})`);
+  assert(
+    viewResponse.statusCode === 200,
+    `Consultation facture en échec (${viewResponse.statusCode})`,
+  );
 
   const approveResponse = await app.inject({
     method: 'POST',
@@ -118,7 +127,10 @@ async function main(): Promise<void> {
     },
     payload: { integrationMode: 'SERVICE_INVOICE', simulate: true },
   });
-  assert(approveResponse.statusCode === 200, `Validation facture en échec (${approveResponse.statusCode})`);
+  assert(
+    approveResponse.statusCode === 200,
+    `Validation facture en échec (${approveResponse.statusCode})`,
+  );
 
   const rejectResponse = await app.inject({
     method: 'POST',
@@ -129,16 +141,25 @@ async function main(): Promise<void> {
     },
     payload: { reason: 'Motif obligatoire de test lot 9' },
   });
-  assert(rejectResponse.statusCode === 200, `Rejet facture en échec (${rejectResponse.statusCode})`);
+  assert(
+    rejectResponse.statusCode === 200,
+    `Rejet facture en échec (${rejectResponse.statusCode})`,
+  );
 
   const manualStatusResponse = await app.inject({
     method: 'POST',
     url: `/api/invoices/${readyInvoiceId}/send-status`,
     headers: { cookie: cookieHeader },
   });
-  assert(manualStatusResponse.statusCode === 200, `Retour de statut manuel en échec (${manualStatusResponse.statusCode})`);
+  assert(
+    manualStatusResponse.statusCode === 200,
+    `Retour de statut manuel en échec (${manualStatusResponse.statusCode})`,
+  );
 
-  const blockedPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lot9-status-ko-')), 'blocked.txt');
+  const blockedPath = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'lot9-status-ko-')),
+    'blocked.txt',
+  );
   fs.writeFileSync(blockedPath, 'blocked', 'utf-8');
   process.env.PA_STATUS_RETRY_DELAYS_MS = '0,0,0';
   process.env.STATUS_OUT_PATH = blockedPath;
@@ -178,14 +199,31 @@ async function main(): Promise<void> {
     },
     orderBy: { occurredAt: 'asc' },
   });
-  assert(readyLogs.some((entry) => entry.action === 'VIEW_INVOICE'), 'Le log VIEW_INVOICE attendu est absent');
-  assert(readyLogs.some((entry) => entry.action === 'APPROVE' && entry.outcome === 'OK'), 'Le log APPROVE attendu est absent');
-  assert(readyLogs.some((entry) => entry.action === 'POST_SAP' && entry.outcome === 'OK'), 'Le log POST_SAP attendu est absent');
-  assert(readyLogs.some((entry) => entry.action === 'SEND_STATUS_PA' && entry.outcome === 'OK'), 'Le log SEND_STATUS_PA manuel attendu est absent');
+  assert(
+    readyLogs.some((entry) => entry.action === 'VIEW_INVOICE'),
+    'Le log VIEW_INVOICE attendu est absent',
+  );
+  assert(
+    readyLogs.some((entry) => entry.action === 'APPROVE' && entry.outcome === 'OK'),
+    'Le log APPROVE attendu est absent',
+  );
+  assert(
+    readyLogs.some((entry) => entry.action === 'POST_SAP' && entry.outcome === 'OK'),
+    'Le log POST_SAP attendu est absent',
+  );
+  assert(
+    readyLogs.some((entry) => entry.action === 'SEND_STATUS_PA' && entry.outcome === 'OK'),
+    'Le log SEND_STATUS_PA manuel attendu est absent',
+  );
 
-  const rejectedInvoice = await prisma.invoice.findUniqueOrThrow({ where: { id: rejectInvoiceId } });
+  const rejectedInvoice = await prisma.invoice.findUniqueOrThrow({
+    where: { id: rejectInvoiceId },
+  });
   assert(rejectedInvoice.status === 'REJECTED', 'La facture rejetée n’est pas au statut REJECTED');
-  assert(rejectedInvoice.statusReason === 'Motif obligatoire de test lot 9', 'Le motif de rejet n’a pas été persisté');
+  assert(
+    rejectedInvoice.statusReason === 'Motif obligatoire de test lot 9',
+    'Le motif de rejet n’a pas été persisté',
+  );
 
   const rejectLogs = await prisma.auditLog.findMany({
     where: {
@@ -193,7 +231,10 @@ async function main(): Promise<void> {
       action: 'REJECT',
     },
   });
-  assert(rejectLogs.some((entry) => entry.outcome === 'OK'), 'Le log REJECT attendu est absent');
+  assert(
+    rejectLogs.some((entry) => entry.outcome === 'OK'),
+    'Le log REJECT attendu est absent',
+  );
 
   const auditResponse = await app.inject({
     method: 'GET',
@@ -203,16 +244,24 @@ async function main(): Promise<void> {
   assert(auditResponse.statusCode === 200, `Lecture audit en échec (${auditResponse.statusCode})`);
   const auditPayload = auditResponse.json().data.items as Array<{ summary?: string }>;
   assert(auditPayload.length > 0, 'La route audit n’a retourné aucune entrée utile');
-  assert(auditPayload.some((entry) => typeof entry.summary === 'string' && entry.summary.length > 0), 'Les résumés audit attendus sont absents');
+  assert(
+    auditPayload.some((entry) => typeof entry.summary === 'string' && entry.summary.length > 0),
+    'Les résumés audit attendus sont absents',
+  );
 
   const retryInvoice = await prisma.invoice.findUniqueOrThrow({ where: { id: retryInvoiceId } });
-  assert(retryInvoice.paStatusSentAt, 'Le retry de statut PA n’a pas fini par renseigner paStatusSentAt');
+  assert(
+    retryInvoice.paStatusSentAt,
+    'Le retry de statut PA n’a pas fini par renseigner paStatusSentAt',
+  );
 
   console.log('Lot 9 check OK');
   console.log(`  READY invoice   : ${readyInvoiceId}`);
   console.log(`  REJECT invoice  : ${rejectInvoiceId}`);
   console.log(`  RETRY invoice   : ${retryInvoiceId}`);
-  console.log(`  Retry logs      : ${retryLogs.length} (${retryErrors.length} ERROR, 1 OK attendu)`);
+  console.log(
+    `  Retry logs      : ${retryLogs.length} (${retryErrors.length} ERROR, 1 OK attendu)`,
+  );
 
   await app.close();
   await prisma.$disconnect();

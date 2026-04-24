@@ -15,6 +15,7 @@ export class SapAuthError extends Error {
 
 export interface SapLoginResult {
   b1Session: string;
+  sapCookieHeader: string;
   sessionTimeoutMinutes: number;
 }
 
@@ -55,38 +56,36 @@ export async function sapLogin(
   }
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     const errObj = body?.error as Record<string, unknown> | undefined;
     const msgObj = errObj?.message as Record<string, unknown> | undefined;
     const detail =
-      typeof msgObj?.value === 'string'
-        ? msgObj.value
-        : 'Identifiants incorrects ou accès refusé';
+      typeof msgObj?.value === 'string' ? msgObj.value : 'Identifiants incorrects ou accès refusé';
     const code = response.status === 401 || response.status === 403 ? 401 : 400;
     throw new SapAuthError(detail, code);
   }
 
   // Extraction du B1SESSION depuis l'en-tête Set-Cookie
-  const setCookieHeader = response.headers.get('set-cookie') ?? '';
-  const b1Session = extractB1Session(setCookieHeader);
-  if (!b1Session) {
+  const sapCookieHeader = extractSapCookieHeader(response);
+  const b1Session = sapCookieHeader ? extractCookieValue(sapCookieHeader, 'B1SESSION') : null;
+  if (!sapCookieHeader || !b1Session) {
     throw new SapAuthError('Réponse SAP invalide : B1SESSION absent', 502);
   }
 
-  const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   const sessionTimeout = typeof body.SessionTimeout === 'number' ? body.SessionTimeout : 30;
 
-  return { b1Session, sessionTimeoutMinutes: sessionTimeout };
+  return { b1Session, sapCookieHeader, sessionTimeoutMinutes: sessionTimeout };
 }
 
 /**
  * Appelle POST /b1s/v1/Logout.
  * Best-effort : si SAP est injoignable, la session expirera naturellement.
  */
-export async function sapLogout(b1Session: string): Promise<void> {
+export async function sapLogout(sapSessionCookie: string): Promise<void> {
   await fetch(`${SAP_BASE_URL}/Logout`, {
     method: 'POST',
-    headers: { Cookie: `B1SESSION=${b1Session}` },
+    headers: { Cookie: normalizeSapCookieHeader(sapSessionCookie) },
   }).catch(() => {
     // SAP injoignable : pas bloquant, la session expirera côté SAP
   });
@@ -96,12 +95,12 @@ export async function sapLogout(b1Session: string): Promise<void> {
  * Ping léger pour maintenir la session SAP active.
  * À appeler toutes les ~25 minutes si keep-alive est activé.
  */
-export async function sapPing(b1Session: string): Promise<boolean> {
+export async function sapPing(sapSessionCookie: string): Promise<boolean> {
   try {
     const response = await fetch(`${SAP_BASE_URL}/CompanyService_GetCompanyInfo`, {
       method: 'POST',
       headers: {
-        Cookie: `B1SESSION=${b1Session}`,
+        Cookie: normalizeSapCookieHeader(sapSessionCookie),
         'Content-Type': 'application/json',
       },
       body: '{}',
@@ -112,7 +111,34 @@ export async function sapPing(b1Session: string): Promise<boolean> {
   }
 }
 
-function extractB1Session(setCookieHeader: string): string | null {
-  const match = setCookieHeader.match(/B1SESSION=([^;,\s]+)/);
+export function normalizeSapCookieHeader(sapSessionCookie: string): string {
+  return sapSessionCookie.includes('=') ? sapSessionCookie : `B1SESSION=${sapSessionCookie}`;
+}
+
+function extractSapCookieHeader(response: Response): string | null {
+  const cookieMap = new Map<string, string>();
+  const rawSetCookies =
+    typeof response.headers.getSetCookie === 'function'
+      ? response.headers.getSetCookie()
+      : [response.headers.get('set-cookie') ?? ''];
+
+  for (const header of rawSetCookies) {
+    if (!header) continue;
+
+    for (const name of ['B1SESSION', 'ROUTEID', 'HASH_B1SESSION']) {
+      const value = extractCookieValue(header, name);
+      if (value) cookieMap.set(name, value);
+    }
+  }
+
+  if (!cookieMap.has('B1SESSION')) {
+    return null;
+  }
+
+  return [...cookieMap.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+}
+
+function extractCookieValue(cookieHeader: string, name: string): string | null {
+  const match = cookieHeader.match(new RegExp(`${name}=([^;,\\s]+)`));
   return match?.[1] ?? null;
 }

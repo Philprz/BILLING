@@ -9,7 +9,26 @@ const BASIC_KEYS = [
   'AMOUNT_GAP_ALERT_THRESHOLD',
 ] as const;
 
+// Toutes les clés éditables depuis l'interface
+export const ALL_EDITABLE_KEYS = [
+  'AUTO_VALIDATION_THRESHOLD',
+  'DEFAULT_INTEGRATION_MODE',
+  'DEFAULT_SAP_SERIES',
+  'SESSION_DURATION_MINUTES',
+  'TAX_RATE_MAPPING',
+  'AP_TAX_ACCOUNT_MAP',
+  'AP_ACCOUNT_CODE',
+  'AMOUNT_GAP_ALERT_THRESHOLD',
+] as const;
+
 export type BasicSettingKey = (typeof BASIC_KEYS)[number];
+export type EditableSettingKey = (typeof ALL_EDITABLE_KEYS)[number];
+
+export interface SettingRow {
+  key: string;
+  value: unknown;
+  updatedAt: string;
+}
 
 export type BasicSettings = Record<BasicSettingKey, unknown>;
 
@@ -25,4 +44,30 @@ export async function findBasicSettings(): Promise<BasicSettings> {
     }
   }
   return result;
+}
+
+export async function findAllSettings(): Promise<SettingRow[]> {
+  const rows = await prisma.setting.findMany({
+    where: { key: { in: [...ALL_EDITABLE_KEYS] } },
+    orderBy: { key: 'asc' },
+  });
+
+  // Retourner toutes les clés éditables (valeur null si absente)
+  return ALL_EDITABLE_KEYS.map((key) => {
+    const row = rows.find((r) => r.key === key);
+    return {
+      key,
+      value: row?.value ?? null,
+      updatedAt: row?.updatedAt.toISOString() ?? '',
+    };
+  });
+}
+
+export async function upsertSetting(key: EditableSettingKey, value: unknown): Promise<SettingRow> {
+  const row = await prisma.setting.upsert({
+    where: { key },
+    create: { key, value: value as never },
+    update: { value: value as never },
+  });
+  return { key: row.key, value: row.value, updatedAt: row.updatedAt.toISOString() };
 }

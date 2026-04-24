@@ -332,8 +332,12 @@ model PaChannel {
   /// Credentials API chiffrés (AES-GCM)
   apiCredentialsEncrypted String?   @map("api_credentials_encrypted")
   // -- Commun --
-  pollIntervalSeconds Int     @default(60) @map("poll_interval_seconds")
-  active              Boolean @default(true)
+  pollIntervalSeconds Int      @default(60) @map("poll_interval_seconds")
+  active              Boolean  @default(true)
+  /// Dernière tentative de polling (succès ou échec)
+  lastPollAt          DateTime? @map("last_poll_at") @db.Timestamptz(6)
+  /// Message d'erreur du dernier polling échoué (null si OK)
+  lastPollError       String?  @map("last_poll_error")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
