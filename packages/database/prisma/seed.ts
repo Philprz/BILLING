@@ -45,6 +45,26 @@ const DEFAULT_SETTINGS: Array<{ key: string; value: unknown; description: string
     description: "Mode d'intégration SAP par défaut : SERVICE_INVOICE ou JOURNAL_ENTRY",
   },
   {
+    key: 'DEFAULT_ENERGY_ACCOUNT_CODE',
+    value: '',
+    description: 'Compte SAP B1 par défaut pour énergie / électricité',
+  },
+  {
+    key: 'DEFAULT_MAINTENANCE_ACCOUNT_CODE',
+    value: '',
+    description: 'Compte SAP B1 par défaut pour maintenance / entretien',
+  },
+  {
+    key: 'DEFAULT_HOSTING_ACCOUNT_CODE',
+    value: '',
+    description: 'Compte SAP B1 par défaut pour hébergement / serveur / cloud',
+  },
+  {
+    key: 'DEFAULT_SUPPLIES_ACCOUNT_CODE',
+    value: '',
+    description: 'Compte SAP B1 par défaut pour fournitures / consommables',
+  },
+  {
     key: 'SESSION_DURATION_MINUTES',
     value: 60,
     description: 'Durée de vie des sessions applicatives (minutes)',

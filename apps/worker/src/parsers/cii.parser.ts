@@ -255,5 +255,6 @@ export function parseCii(xmlContent: string): ParsedInvoice {
     totalTax,
     totalInclTax,
     lines,
+    supplierExtracted: null,
   };
 }

@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Search,
   ChevronLeft,
   ChevronRight,
   AlertCircle,
@@ -14,7 +13,6 @@ import {
 import { apiGetInvoices, apiBulkPost, apiBulkSendStatus } from '../api/invoices.api';
 import { apiUploadInvoice } from '../api/upload.api';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
 import { Select } from '../components/ui/select';
 import { StatusBadge } from '../components/ui/badge';
 import { InvoiceListSkeleton } from '../components/ui/skeleton';
@@ -22,20 +20,30 @@ import { toast } from '../lib/toast';
 import { formatAmount, formatDate } from '../lib/utils';
 import type { InvoiceSummary, InvoiceStatus } from '../api/types';
 
-const STATUS_OPTIONS: { value: InvoiceStatus | ''; label: string }[] = [
-  { value: '', label: 'Tous les statuts' },
+const PA_SOURCE_LABELS: Record<string, string> = {
+  MANUAL_UPLOAD: 'Téléchargée',
+  LOCAL_DEV: 'Direct-PA',
+  SEED_TEST: 'Seed-test',
+};
+
+const paSourceLabel = (source: string) => PA_SOURCE_LABELS[source] ?? source;
+
+const STATUS_OPTIONS: { value: InvoiceStatus | 'ACTIVE' | 'ALL'; label: string }[] = [
+  { value: 'ACTIVE', label: 'À traiter' },
+  { value: 'ALL', label: 'Tous statuts' },
   { value: 'NEW', label: 'Nouvelles' },
-  { value: 'TO_REVIEW', label: 'A reviser' },
-  { value: 'READY', label: 'Pretes' },
-  { value: 'POSTED', label: 'Integrees' },
-  { value: 'REJECTED', label: 'Rejetees' },
-  { value: 'ERROR', label: 'Erreur' },
+  { value: 'TO_REVIEW', label: 'À réviser' },
+  { value: 'READY', label: 'Prêtes' },
+  { value: 'ERROR', label: 'En erreur' },
+  { value: 'POSTED', label: 'Intégrées' },
+  { value: 'LINKED', label: 'Rattachées SAP' },
+  { value: 'REJECTED', label: 'Rejetées' },
 ];
 
 const PAGE_SIZE = 20;
 
 const DIRECTION_OPTIONS = [
-  { value: '', label: 'Toutes directions' },
+  { value: '', label: 'Tous types' },
   { value: 'INVOICE', label: 'Factures' },
   { value: 'CREDIT_NOTE', label: 'Avoirs' },
 ];
@@ -54,17 +62,15 @@ export default function InvoiceListPage() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Bulk actions
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkPosting, setBulkPosting] = useState(false);
   const [bulkSendingStatus, setBulkSendingStatus] = useState(false);
 
-  // Keyboard help
   const [showKeyHelp, setShowKeyHelp] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
 
   const page = Number(searchParams.get('page') ?? 1);
-  const status = (searchParams.get('status') ?? '') as InvoiceStatus | '';
+  const status = (searchParams.get('status') ?? 'ACTIVE') as InvoiceStatus | 'ACTIVE' | 'ALL';
   const search = searchParams.get('search') ?? '';
   const direction = (searchParams.get('direction') ?? '') as 'INVOICE' | 'CREDIT_NOTE' | '';
   const paSource = searchParams.get('paSource') ?? '';
@@ -78,8 +84,14 @@ export default function InvoiceListPage() {
     : undefined;
 
   const [searchInput, setSearchInput] = useState(search);
+  const [paSourceInput, setPaSourceInput] = useState(paSource);
   const [amountMinInput, setAmountMinInput] = useState(searchParams.get('amountMin') ?? '');
   const [amountMaxInput, setAmountMaxInput] = useState(searchParams.get('amountMax') ?? '');
+
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const paSourceDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const amountMinDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const amountMaxDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,7 +101,7 @@ export default function InvoiceListPage() {
       const result = await apiGetInvoices({
         page,
         limit: PAGE_SIZE,
-        status: status || undefined,
+        status: status === 'ALL' ? undefined : status,
         search: search || undefined,
         direction: direction || undefined,
         paSource: paSource || undefined,
@@ -124,7 +136,7 @@ export default function InvoiceListPage() {
   };
 
   const hasFilters = !!(
-    status ||
+    status !== 'ACTIVE' ||
     search ||
     direction ||
     paSource ||
@@ -136,10 +148,11 @@ export default function InvoiceListPage() {
 
   const clearAll = () => {
     setSearchInput('');
+    setPaSourceInput('');
     setAmountMinInput('');
     setAmountMaxInput('');
     updateParams({
-      status: '',
+      status: 'ACTIVE',
       search: '',
       direction: '',
       paSource: '',
@@ -150,19 +163,33 @@ export default function InvoiceListPage() {
     });
   };
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    updateParams({ search: searchInput });
-  };
+  function handleSearchInput(value: string) {
+    setSearchInput(value);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => updateParams({ search: value }), 300);
+  }
 
-  const handleAmountFilter = (e: React.FormEvent) => {
-    e.preventDefault();
-    updateParams({ amountMin: amountMinInput, amountMax: amountMaxInput });
-  };
+  function handlePaSourceInput(value: string) {
+    setPaSourceInput(value);
+    if (paSourceDebounceRef.current) clearTimeout(paSourceDebounceRef.current);
+    paSourceDebounceRef.current = setTimeout(() => updateParams({ paSource: value }), 300);
+  }
+
+  function handleAmountMinInput(value: string) {
+    setAmountMinInput(value);
+    if (amountMinDebounceRef.current) clearTimeout(amountMinDebounceRef.current);
+    amountMinDebounceRef.current = setTimeout(() => updateParams({ amountMin: value }), 500);
+  }
+
+  function handleAmountMaxInput(value: string) {
+    setAmountMaxInput(value);
+    if (amountMaxDebounceRef.current) clearTimeout(amountMaxDebounceRef.current);
+    amountMaxDebounceRef.current = setTimeout(() => updateParams({ amountMax: value }), 500);
+  }
 
   const buildExportUrl = () => {
     const params = new URLSearchParams();
-    if (status) params.set('status', status);
+    if (status && status !== 'ALL') params.set('status', status);
     if (search) params.set('search', search);
     if (direction) params.set('direction', direction);
     if (paSource) params.set('paSource', paSource);
@@ -243,7 +270,6 @@ export default function InvoiceListPage() {
     invoices.find((i) => i.id === id && ['POSTED', 'REJECTED'].includes(i.status)),
   );
 
-  // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.target as HTMLElement).matches('input,textarea,select')) return;
@@ -276,7 +302,6 @@ export default function InvoiceListPage() {
       <section className="page-header">
         <div>
           <p className="page-eyebrow">Pilotage</p>
-          <h2 className="page-title">Liste des factures</h2>
           <p className="page-subtitle">
             Recherche, filtrage et consultation detaillee des documents recus.
           </p>
@@ -290,10 +315,16 @@ export default function InvoiceListPage() {
               </p>
             </div>
           )}
+          {hasFilters && (
+            <Button variant="ghost" size="sm" onClick={clearAll} title="Réinitialiser les filtres">
+              <RotateCcw className="h-4 w-4" />
+              Réinitialiser
+            </Button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
-            accept=".xml,.pdf"
+            accept=".xml,.pdf,.zip"
             className="hidden"
             onChange={(e) => {
               void handleFileChange(e);
@@ -325,7 +356,6 @@ export default function InvoiceListPage() {
         </div>
       </section>
 
-      {/* Keyboard help modal */}
       {showKeyHelp && (
         <div className="modal-backdrop" onClick={() => setShowKeyHelp(false)}>
           <div className="modal-panel max-w-sm" onClick={(e) => e.stopPropagation()}>
@@ -336,7 +366,7 @@ export default function InvoiceListPage() {
                   ['J / ↓', 'Ligne suivante'],
                   ['K / ↑', 'Ligne précédente'],
                   ['Entrée', 'Ouvrir la facture sélectionnée'],
-                  ['/ ou F', 'Focus sur la recherche'],
+                  ['/ ou F', 'Focus sur le filtre fournisseur'],
                   ['?', 'Afficher / masquer cette aide'],
                 ].map(([key, desc]) => (
                   <tr key={key}>
@@ -362,103 +392,6 @@ export default function InvoiceListPage() {
         </div>
       )}
 
-      {/* Filters */}
-      <section className="panel-surface-muted p-4">
-        <div className="grid gap-3">
-          {/* Row 1: search + status + direction + clear */}
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_180px_180px_auto] xl:items-end">
-            <form onSubmit={handleSearch} className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <Input
-                ref={searchRef}
-                placeholder="Fournisseur, numero de document..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-              />
-              <Button type="submit" variant="outline">
-                <Search className="h-4 w-4" />
-                Rechercher
-              </Button>
-            </form>
-            <Select value={status} onChange={(e) => updateParams({ status: e.target.value })}>
-              {STATUS_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-            <Select value={direction} onChange={(e) => updateParams({ direction: e.target.value })}>
-              {DIRECTION_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-            {hasFilters && (
-              <Button variant="ghost" onClick={clearAll}>
-                <RotateCcw className="h-4 w-4" />
-                Reinitialiser
-              </Button>
-            )}
-          </div>
-
-          {/* Row 2: canal PA + date range */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground whitespace-nowrap">Canal PA :</span>
-              <input
-                className="app-input h-8 w-36 text-xs"
-                placeholder="ex: CHORUS"
-                value={paSource}
-                onChange={(e) => updateParams({ paSource: e.target.value })}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground whitespace-nowrap">Période :</span>
-              <input
-                type="date"
-                className="app-input h-8 text-xs"
-                value={dateFrom}
-                onChange={(e) => updateParams({ dateFrom: e.target.value })}
-              />
-              <span className="text-xs text-muted-foreground">—</span>
-              <input
-                type="date"
-                className="app-input h-8 text-xs"
-                value={dateTo}
-                onChange={(e) => updateParams({ dateTo: e.target.value })}
-              />
-            </div>
-          </div>
-
-          {/* Row 3: amount filter */}
-          <form onSubmit={handleAmountFilter} className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground whitespace-nowrap">Montant TTC :</span>
-            <Input
-              className="h-8 w-28 text-xs"
-              placeholder="Min €"
-              value={amountMinInput}
-              onChange={(e) => setAmountMinInput(e.target.value)}
-              type="number"
-              min={0}
-              step={0.01}
-            />
-            <span className="text-xs text-muted-foreground">—</span>
-            <Input
-              className="h-8 w-28 text-xs"
-              placeholder="Max €"
-              value={amountMaxInput}
-              onChange={(e) => setAmountMaxInput(e.target.value)}
-              type="number"
-              min={0}
-              step={0.01}
-            />
-            <Button type="submit" variant="outline" size="sm" className="h-8 text-xs px-3">
-              Filtrer
-            </Button>
-          </form>
-        </div>
-      </section>
-
       {error && (
         <div className="alert-error">
           <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
@@ -466,7 +399,6 @@ export default function InvoiceListPage() {
         </div>
       )}
 
-      {/* Bulk action bar */}
       {selectedIds.size > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-primary/30 bg-primary/5 px-4 py-2.5">
           <span className="text-sm font-medium text-foreground">
@@ -506,6 +438,7 @@ export default function InvoiceListPage() {
       <section className="data-table-shell">
         <table className="data-table">
           <thead>
+            {/* ── Ligne d'en-têtes ── */}
             <tr>
               <th className="w-8">
                 <input
@@ -532,7 +465,113 @@ export default function InvoiceListPage() {
               <th className="text-right">Montant TTC</th>
               <th className="text-center">Statut</th>
             </tr>
+
+            {/* ── Ligne de filtres par colonne ── */}
+            <tr className="border-t border-border/40 bg-muted/30">
+              <th className="w-8" />
+
+              {/* DATE : période de/à */}
+              <th className="py-1.5 px-2 font-normal">
+                <div className="flex flex-col gap-1">
+                  <input
+                    type="date"
+                    className="app-input h-7 w-full text-[11px]"
+                    title="Date de début"
+                    value={dateFrom}
+                    onChange={(e) => updateParams({ dateFrom: e.target.value })}
+                  />
+                  <input
+                    type="date"
+                    className="app-input h-7 w-full text-[11px]"
+                    title="Date de fin"
+                    value={dateTo}
+                    onChange={(e) => updateParams({ dateTo: e.target.value })}
+                  />
+                </div>
+              </th>
+
+              {/* FOURNISSEUR : recherche texte */}
+              <th className="py-1.5 px-2 font-normal">
+                <input
+                  ref={searchRef}
+                  className="app-input h-8 w-full text-xs"
+                  placeholder="Filtrer fournisseur…"
+                  value={searchInput}
+                  onChange={(e) => handleSearchInput(e.target.value)}
+                />
+              </th>
+
+              {/* N° DOCUMENT : vide (couvert par la recherche fournisseur) */}
+              <th className="py-1.5 px-2 font-normal">
+                <span className="text-[10px] text-muted-foreground/50 italic">
+                  cf. filtre fournisseur
+                </span>
+              </th>
+
+              {/* SOURCE : type document + canal PA */}
+              <th className="py-1.5 px-2 font-normal">
+                <div className="flex flex-col gap-1">
+                  <Select
+                    className="h-7 text-xs"
+                    value={direction}
+                    onChange={(e) => updateParams({ direction: e.target.value })}
+                  >
+                    {DIRECTION_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                  <input
+                    className="app-input h-7 w-full text-[11px]"
+                    placeholder="Canal PA…"
+                    value={paSourceInput}
+                    onChange={(e) => handlePaSourceInput(e.target.value)}
+                  />
+                </div>
+              </th>
+
+              {/* MONTANT TTC : min / max */}
+              <th className="py-1.5 px-2 font-normal text-right">
+                <div className="flex flex-col gap-1 items-end">
+                  <input
+                    type="number"
+                    className="app-input h-7 w-full text-[11px] text-right"
+                    placeholder="Min €"
+                    value={amountMinInput}
+                    onChange={(e) => handleAmountMinInput(e.target.value)}
+                    min={0}
+                    step={0.01}
+                  />
+                  <input
+                    type="number"
+                    className="app-input h-7 w-full text-[11px] text-right"
+                    placeholder="Max €"
+                    value={amountMaxInput}
+                    onChange={(e) => handleAmountMaxInput(e.target.value)}
+                    min={0}
+                    step={0.01}
+                  />
+                </div>
+              </th>
+
+              {/* STATUT */}
+              <th className="py-1.5 px-2 font-normal text-center">
+                <Select
+                  className="h-8 text-xs"
+                  value={status}
+                  onChange={(e) => updateParams({ status: e.target.value })}
+                >
+                  {STATUS_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+              </th>
+            </tr>
           </thead>
+
           <tbody>
             {loading ? (
               <tr>
@@ -562,11 +601,8 @@ export default function InvoiceListPage() {
                         onChange={(e) => {
                           setSelectedIds((prev) => {
                             const next = new Set(prev);
-                            if (e.target.checked) {
-                              next.add(invoice.id);
-                            } else {
-                              next.delete(invoice.id);
-                            }
+                            if (e.target.checked) next.add(invoice.id);
+                            else next.delete(invoice.id);
                             return next;
                           });
                         }}
@@ -587,7 +623,7 @@ export default function InvoiceListPage() {
                     )}
                   </td>
                   <td className="font-mono text-xs text-muted-foreground">{invoice.docNumberPa}</td>
-                  <td className="text-muted-foreground">{invoice.paSource}</td>
+                  <td className="text-muted-foreground">{paSourceLabel(invoice.paSource)}</td>
                   <td className="whitespace-nowrap text-right font-semibold text-foreground">
                     {formatAmount(invoice.totalInclTax, invoice.currency)}
                   </td>

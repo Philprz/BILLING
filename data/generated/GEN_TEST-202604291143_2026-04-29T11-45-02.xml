@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ccts="urn:un:unece:uncefact:documentation:2" xmlns:qdt="urn:oasis:names:specification:ubl:schema:xsd:QualifiedDatatypes-2" xmlns:udt="urn:oasis:names:specification:ubl:schema:xsd:UnqualifiedDataTypes-2">
+  <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017</cbc:CustomizationID>
+  <cbc:ProfileID>B1</cbc:ProfileID>
+  <cbc:ID>TEST-202604291143</cbc:ID>
+  <cbc:IssueDate>2026-04-29</cbc:IssueDate>
+  <cbc:DueDate>2026-05-29</cbc:DueDate>
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cbc:AccountingCost>FRAIS-GESTION-CLASSE6</cbc:AccountingCost>
+  <cbc:BuyerReference>TEST-GENERATOR-2026</cbc:BuyerReference>
+
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cac:PartyName>
+        <cbc:Name>Métropole Maintenance Services SAS</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>42 Chemin de l&apos;Industrie</cbc:StreetName>
+        <cbc:CityName>Lille</cbc:CityName>
+        <cbc:PostalZone>59000</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>FR12623541879</cbc:CompanyID>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>Métropole Maintenance Services SAS</cbc:RegistrationName>
+        <cbc:CompanyID schemeID="0002">62354187900028</cbc:CompanyID>
+        <cbc:CompanyLegalForm>SAS au capital de 75 000 EUR</cbc:CompanyLegalForm>
+      </cac:PartyLegalEntity>
+      <cac:Contact>
+        <cbc:Telephone>03 20 74 18 96</cbc:Telephone>
+        <cbc:ElectronicMail>facturation@metropole-maintenance.fr</cbc:ElectronicMail>
+      </cac:Contact>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+
+  <cac:AccountingCustomerParty>
+    <cac:Party>
+      <cac:PartyName>
+        <cbc:Name>DEMO INDUSTRIE SAS</cbc:Name>
+      </cac:PartyName>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+
+  <cac:PaymentMeans>
+    <cbc:PaymentMeansCode name="Virement">30</cbc:PaymentMeansCode>
+    <cbc:PaymentID>TEST-202604291143_PAIEMENT</cbc:PaymentID>
+    <cac:PayeeFinancialAccount>
+      <cbc:ID>FR76 2004 1010 0505 5000 5133 049</cbc:ID>
+      <cbc:Name>COMPTE FOURNISSEUR</cbc:Name>
+      <cac:FinancialInstitutionBranch>
+        <cbc:ID>PSSTFRPPLLE</cbc:ID>
+      </cac:FinancialInstitutionBranch>
+    </cac:PayeeFinancialAccount>
+  </cac:PaymentMeans>
+
+  <cac:PaymentTerms>
+    <cbc:Note>PAIEMENT 30 JOURS NET — TOUT RETARD ENTRAINE DES PENALITES EGALES A 3 FOIS LE TAUX LEGAL</cbc:Note>
+  </cac:PaymentTerms>
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">616.00</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">3080.00</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">616.00</cbc:TaxAmount>
+      <cac:TaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>20.00</cbc:Percent>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="EUR">3080.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">3080.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">3696.00</cbc:TaxInclusiveAmount>
+    <cbc:PrepaidAmount currencyID="EUR">0.00</cbc:PrepaidAmount>
+    <cbc:PayableAmount currencyID="EUR">3696.00</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">1.0000</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">2400.00</cbc:LineExtensionAmount>
+    <cbc:AccountingCost>613200</cbc:AccountingCost>
+    <cac:Item>
+      <cbc:Description>Location bureaux — mois de mai 2026</cbc:Description>
+      <cbc:Name>Location bureaux — mois de mai 2026</cbc:Name>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>20.00</cbc:Percent>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="EUR">2400.0000</cbc:PriceAmount>
+      <cbc:BaseQuantity unitCode="C62">1.0000</cbc:BaseQuantity>
+    </cac:Price>
+  </cac:InvoiceLine>
+  <cac:InvoiceLine>
+    <cbc:ID>2</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">1.0000</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">680.00</cbc:LineExtensionAmount>
+    <cbc:AccountingCost>615600</cbc:AccountingCost>
+    <cac:Item>
+      <cbc:Description>Maintenance équipements HVAC — intervention trimestrielle</cbc:Description>
+      <cbc:Name>Maintenance équipements HVAC — intervention trimestrielle</cbc:Name>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>20.00</cbc:Percent>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="EUR">680.0000</cbc:PriceAmount>
+      <cbc:BaseQuantity unitCode="C62">1.0000</cbc:BaseQuantity>
+    </cac:Price>
+  </cac:InvoiceLine>
+</Invoice>

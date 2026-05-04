@@ -22,6 +22,9 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   SEND_STATUS_PA: 'Retour statut PA',
   SYSTEM_ERROR: 'Erreur système',
   CONFIG_CHANGE: 'Config. modifiée',
+  CREATE_SUPPLIER: 'Création fournisseur',
+  SYNC_SUPPLIERS: 'Sync fournisseurs',
+  LINK_SAP: 'Rattachement SAP',
 };
 
 const ACTION_COLOR: Record<AuditAction, string> = {
@@ -36,6 +39,9 @@ const ACTION_COLOR: Record<AuditAction, string> = {
   SEND_STATUS_PA: 'border-info/25 bg-info/10 text-info',
   SYSTEM_ERROR: 'border-destructive/25 bg-destructive/10 text-destructive',
   CONFIG_CHANGE: 'border-warning/25 bg-warning/10 text-warning',
+  CREATE_SUPPLIER: 'border-success/25 bg-success/10 text-success',
+  SYNC_SUPPLIERS: 'border-primary/25 bg-primary/10 text-primary',
+  LINK_SAP: 'border-info/25 bg-info/10 text-info',
 };
 
 const AUDIT_ACTIONS: AuditAction[] = [
@@ -50,6 +56,9 @@ const AUDIT_ACTIONS: AuditAction[] = [
   'SEND_STATUS_PA',
   'SYSTEM_ERROR',
   'CONFIG_CHANGE',
+  'CREATE_SUPPLIER',
+  'SYNC_SUPPLIERS',
+  'LINK_SAP',
 ];
 
 function ActionBadge({ action }: { action: AuditAction }) {

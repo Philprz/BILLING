@@ -8,12 +8,13 @@ import type {
   InvoiceStatus,
   SapExecutionPolicy,
   SapValidationReport,
+  SapPurchaseInvoiceRef,
 } from './types';
 
 export interface GetInvoicesParams {
   page?: number;
   limit?: number;
-  status?: InvoiceStatus;
+  status?: InvoiceStatus | 'ACTIVE' | 'ALL';
   paSource?: string;
   search?: string;
   direction?: 'INVOICE' | 'CREDIT_NOTE';
@@ -29,7 +30,7 @@ export async function apiGetInvoices(
   const qs = new URLSearchParams();
   if (params.page) qs.set('page', String(params.page));
   if (params.limit) qs.set('limit', String(params.limit));
-  if (params.status) qs.set('status', params.status);
+  if (params.status && params.status !== 'ALL') qs.set('status', params.status);
   if (params.paSource) qs.set('paSource', params.paSource);
   if (params.search) qs.set('search', params.search);
   if (params.direction) qs.set('direction', params.direction);
@@ -118,6 +119,7 @@ export interface PatchLineParams {
   chosenAccountCode?: string | null;
   chosenCostCenter?: string | null;
   chosenTaxCodeB1?: string | null;
+  taxCodeLockedByUser?: boolean;
 }
 
 export async function apiUpdateLine(
@@ -130,6 +132,33 @@ export async function apiUpdateLine(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
+}
+
+export type TaxCodeSource =
+  | 'account_mapping'
+  | 'supplier_history'
+  | 'global_history'
+  | 'vat_rate_mapping'
+  | 'none';
+
+export interface TaxCodeResolution {
+  taxCode: string | null;
+  source: TaxCodeSource;
+}
+
+export async function apiResolveTaxCode(
+  invoiceId: string,
+  lineId: string,
+  accountCode: string,
+): Promise<TaxCodeResolution> {
+  return apiFetch<TaxCodeResolution>(
+    `/api/invoices/${invoiceId}/lines/${lineId}/resolve-tax-code`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountCode }),
+    },
+  );
 }
 
 export async function apiSaveDraft(
@@ -145,6 +174,24 @@ export async function apiSaveDraft(
 
 export async function apiReEnrichInvoice(id: string): Promise<import('./types').InvoiceDetail> {
   return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/re-enrich`, {
+    method: 'POST',
+  });
+}
+
+export async function apiReParseLinesInvoice(id: string): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/re-parse-lines`, {
+    method: 'POST',
+  });
+}
+
+export interface PushSupplierFiscalResult {
+  cardCode: string;
+  taxId0: string | null;
+  federalTaxId: string | null;
+}
+
+export async function apiPushSupplierFiscal(id: string): Promise<PushSupplierFiscalResult> {
+  return apiFetch<PushSupplierFiscalResult>(`/api/invoices/${id}/push-supplier-fiscal`, {
     method: 'POST',
   });
 }
@@ -191,4 +238,46 @@ export async function apiBulkSendStatus(ids: string[]): Promise<BulkSendStatusRe
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids }),
   });
+}
+
+export type LinkSapOkResult = {
+  status: 'LINKED';
+  sapDocEntry: number;
+  sapDocNum: number;
+  attachmentEntry: number | null;
+  invoice: InvoiceDetail;
+};
+
+export type LinkSapConflictResult = {
+  conflict: true;
+  candidates: SapPurchaseInvoiceRef[];
+  message: string;
+};
+
+export async function apiLinkSap(id: string): Promise<LinkSapOkResult | LinkSapConflictResult> {
+  // Gestion manuelle des codes HTTP 404 / 409 pour exposer les candidats
+  const res = await fetch(`/api/invoices/${id}/link-sap`, { method: 'POST' });
+
+  if (res.status === 409) {
+    const body = (await res.json()) as {
+      error: string;
+      data?: { candidates: SapPurchaseInvoiceRef[] };
+    };
+    return { conflict: true, candidates: body.data?.candidates ?? [], message: body.error };
+  }
+
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string };
+    throw new Error(body.error ?? `Erreur ${res.status}`);
+  }
+
+  const body = (await res.json()) as { success: boolean; data: InvoiceDetail };
+  const inv = body.data;
+  return {
+    status: 'LINKED',
+    sapDocEntry: inv.sapDocEntry!,
+    sapDocNum: inv.sapDocNum!,
+    attachmentEntry: inv.sapAttachmentEntry,
+    invoice: inv,
+  };
 }

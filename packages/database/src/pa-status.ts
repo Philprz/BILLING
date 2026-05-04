@@ -37,7 +37,8 @@ function parseRetryDelays(raw: string | undefined): number[] | null {
 export function getPaStatusRetryPolicy(): PaStatusRetryPolicy {
   return {
     maxRetries: parsePositiveInteger(process.env.PA_STATUS_MAX_RETRIES) ?? DEFAULT_MAX_RETRIES,
-    retryDelaysMs: parseRetryDelays(process.env.PA_STATUS_RETRY_DELAYS_MS) ?? DEFAULT_RETRY_DELAYS_MS,
+    retryDelaysMs:
+      parseRetryDelays(process.env.PA_STATUS_RETRY_DELAYS_MS) ?? DEFAULT_RETRY_DELAYS_MS,
   };
 }
 
@@ -55,7 +56,11 @@ export function computeNextRetryAt(failureCount: number, from: Date): Date | nul
   return new Date(from.getTime() + delayMs);
 }
 
-export function isPaStatusRetryDue(failureCount: number, lastFailureAt: Date | null, now = new Date()): boolean {
+export function isPaStatusRetryDue(
+  failureCount: number,
+  lastFailureAt: Date | null,
+  now = new Date(),
+): boolean {
   if (failureCount <= 0 || !lastFailureAt) return true;
   const nextRetryAt = computeNextRetryAt(failureCount, lastFailureAt);
   return nextRetryAt !== null && nextRetryAt.getTime() <= now.getTime();
@@ -70,7 +75,9 @@ export function buildPaStatusPayload(invoice: {
   sapDocEntry: number | null;
   sapDocNum: number | null;
 }): PaStatusPayload {
-  const outcome: PaStatusOutcome = invoice.status === 'POSTED' ? 'VALIDATED' : 'REJECTED';
+  // POSTED et LINKED (Voie B) → VALIDATED ; tout autre statut terminal → REJECTED
+  const outcome: PaStatusOutcome =
+    invoice.status === 'POSTED' || invoice.status === 'LINKED' ? 'VALIDATED' : 'REJECTED';
 
   return {
     paMessageId: invoice.paMessageId,

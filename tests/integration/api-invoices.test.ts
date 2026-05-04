@@ -10,6 +10,7 @@ describe.sequential('API invoice integration', () => {
   const createdIds: string[] = [];
   let app: Awaited<ReturnType<typeof buildAuthenticatedApp>>['app'];
   let cookieHeader: string;
+  let csrfToken: string;
   const previousPolicyEnv = {
     validationMode: process.env.SAP_VALIDATION_MODE,
     attachmentPolicy: process.env.SAP_ATTACHMENT_POLICY,
@@ -21,6 +22,7 @@ describe.sequential('API invoice integration', () => {
     const built = await buildAuthenticatedApp('integration.user');
     app = built.app;
     cookieHeader = built.cookieHeader;
+    csrfToken = built.csrfToken;
   });
 
   afterAll(async () => {
@@ -91,6 +93,7 @@ describe.sequential('API invoice integration', () => {
       headers: {
         cookie: cookieHeader,
         'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
       },
       payload: { reason: 'Rejet intégration test' },
     });
@@ -117,7 +120,23 @@ describe.sequential('API invoice integration', () => {
     process.env.SAP_REST_BASE_URL = 'https://sap.test.local/b1s/v1';
     process.env.SAP_POST_POLICY = 'real';
 
-    const fetchSpy = vi.fn(async () => jsonResponse({ value: [{}] }));
+    // SAP mock : les appels BP identité retournent {} (existence), les appels BP fiscal retournent SIRET+TVA
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes('FederalTaxID')) {
+        return jsonResponse({
+          value: [
+            {
+              FederalTaxID: 'FR12345678901',
+              VATRegistrationNumber: null,
+              TaxId0: '41258736900019',
+              TaxId1: null,
+              TaxId2: null,
+            },
+          ],
+        });
+      }
+      return jsonResponse({ value: [{}] });
+    });
     vi.stubGlobal('fetch', fetchSpy);
 
     const postResponse = await app.inject({
@@ -126,6 +145,7 @@ describe.sequential('API invoice integration', () => {
       headers: {
         cookie: cookieHeader,
         'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
       },
       payload: { integrationMode: 'SERVICE_INVOICE', simulate: true },
     });
@@ -141,7 +161,7 @@ describe.sequential('API invoice integration', () => {
     const sendStatusResponse = await app.inject({
       method: 'POST',
       url: `/api/invoices/${invoiceId}/send-status`,
-      headers: { cookie: cookieHeader },
+      headers: { cookie: cookieHeader, 'x-csrf-token': csrfToken },
     });
 
     process.env.STATUS_OUT_PATH = previousStatusOut;
@@ -186,6 +206,7 @@ describe.sequential('API invoice integration', () => {
       headers: {
         cookie: cookieHeader,
         'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
       },
       payload: { integrationMode: 'SERVICE_INVOICE', simulate: true },
     });
@@ -208,6 +229,19 @@ describe.sequential('API invoice integration', () => {
       if (init?.method === 'POST' && url.includes('/Attachments2')) {
         return jsonResponse({ error: { message: { value: 'upload denied' } } }, 500);
       }
+      if (url.includes('FederalTaxID')) {
+        return jsonResponse({
+          value: [
+            {
+              FederalTaxID: 'FR12345678901',
+              VATRegistrationNumber: null,
+              TaxId0: '41258736900019',
+              TaxId1: null,
+              TaxId2: null,
+            },
+          ],
+        });
+      }
       return jsonResponse({ value: [{}] });
     });
     vi.stubGlobal('fetch', fetchSpy);
@@ -218,6 +252,7 @@ describe.sequential('API invoice integration', () => {
       headers: {
         cookie: cookieHeader,
         'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
       },
       payload: { integrationMode: 'SERVICE_INVOICE' },
     });

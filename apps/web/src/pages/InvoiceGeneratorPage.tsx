@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronUp,
   FlaskConical,
+  Package,
 } from 'lucide-react';
 import {
   apiSearchSapSuppliers,
@@ -20,111 +21,375 @@ import {
   type GeneratedInvoice,
   type SapSupplier,
 } from '../api/generator.api';
+import { DEMO_COMPANIES, CHART_OF_ACCOUNTS } from '../data/demoSuppliers';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { ApiError } from '../api/client';
 
-// ─── Scénarios prédéfinis ─────────────────────────────────────────────────────
+// ─── Scénarios prédéfinis — charges classe 6 uniquement ──────────────────────
 
-const PRESETS: {
+type PresetSupplier = Omit<GenSupplier, never>;
+
+interface Preset {
   label: string;
+  category: string;
   description: string;
   data: Omit<InvoiceGenData, 'invoiceNumber' | 'invoiceDate'>;
-}[] = [
+}
+
+const S = DEMO_COMPANIES;
+
+const PRESETS: Preset[] = [
+  // 60 — Achats / fournitures consommables
   {
-    label: 'Facture simple',
-    description: '1 ligne, fournisseur manuel, TVA 20 %',
+    label: '60 — Fournitures',
+    category: 'Achats / fournitures consommables',
+    description: 'Fournitures administratives et consommables de bureau (606400)',
     data: {
       dueDate: undefined,
       currency: 'EUR',
       direction: 'INVOICE',
       supplier: {
-        name: 'Acme Fournitures SAS',
-        address: '12 Rue du Commerce',
-        city: 'Paris',
-        postalCode: '75015',
+        name: S.fournitures[0].name,
+        legalForm: S.fournitures[0].legalForm,
+        address: S.fournitures[0].address,
+        city: S.fournitures[0].city,
+        postalCode: S.fournitures[0].postalCode,
         country: 'FR',
-        taxId: 'FR12345678901',
-      },
+        taxId: S.fournitures[0].vatNumber,
+        siret: S.fournitures[0].siret,
+        iban: S.fournitures[0].iban,
+        bic: S.fournitures[0].bic,
+        phone: S.fournitures[0].phone,
+        email: S.fournitures[0].email,
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
       lines: [
         {
-          description: 'Fournitures de bureau — pack standard',
-          quantity: 10,
-          unitPrice: 25,
+          description: 'Rames de papier A4 — 5 cartons',
+          quantity: 5,
+          unitPrice: 42.0,
           taxRate: 20,
+          accountingCode: '606400',
+          accountingLabel: 'Fournitures administratives',
         },
-      ],
-    },
-  },
-  {
-    label: 'Facture multi-lignes',
-    description: '3 lignes, TVA mixte (20 % / 10 % / 0 %)',
-    data: {
-      currency: 'EUR',
-      direction: 'INVOICE',
-      supplier: {
-        name: 'Tech Solutions SARL',
-        address: '8 Avenue de la Technologie',
-        city: 'Lyon',
-        postalCode: '69003',
-        country: 'FR',
-        taxId: 'FR98765432100',
-      },
-      lines: [
-        { description: 'Licence logicielle annuelle', quantity: 1, unitPrice: 1200, taxRate: 20 },
         {
-          description: 'Formation utilisateurs (journée)',
+          description: 'Cartouches imprimante — lot de 12',
           quantity: 2,
-          unitPrice: 800,
+          unitPrice: 89.5,
           taxRate: 20,
+          accountingCode: '606500',
+          accountingLabel: 'Fournitures de bureau',
+        },
+      ],
+    },
+  },
+
+  // 61 — Services extérieurs (location + maintenance)
+  {
+    label: '61 — Services ext.',
+    category: 'Services extérieurs',
+    description: 'Location locaux + maintenance équipements (613200 / 615600)',
+    data: {
+      currency: 'EUR',
+      direction: 'INVOICE',
+      supplier: {
+        name: S.maintenance[0].name,
+        legalForm: S.maintenance[0].legalForm,
+        address: S.maintenance[0].address,
+        city: S.maintenance[0].city,
+        postalCode: S.maintenance[0].postalCode,
+        country: 'FR',
+        taxId: S.maintenance[0].vatNumber,
+        siret: S.maintenance[0].siret,
+        iban: S.maintenance[0].iban,
+        bic: S.maintenance[0].bic,
+        phone: S.maintenance[0].phone,
+        email: S.maintenance[0].email,
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
+      lines: [
+        {
+          description: 'Location bureaux — mois de mai 2026',
+          quantity: 1,
+          unitPrice: 2400.0,
+          taxRate: 20,
+          accountingCode: '613200',
+          accountingLabel: 'Locations immobilières',
         },
         {
-          description: 'Hébergement serveur (taux réduit)',
-          quantity: 12,
-          unitPrice: 50,
-          taxRate: 10,
+          description: 'Maintenance équipements HVAC — intervention trimestrielle',
+          quantity: 1,
+          unitPrice: 680.0,
+          taxRate: 20,
+          accountingCode: '615600',
+          accountingLabel: 'Maintenance matériel informatique',
         },
       ],
     },
   },
+
+  // 62 — Autres services extérieurs (honoraires + infogérance)
   {
-    label: 'Avoir',
-    description: 'CreditNote UBL, 1 ligne, TVA 20 %',
+    label: '62 — Autres services',
+    category: 'Autres services extérieurs',
+    description: 'Honoraires conseil + prestation infogérance (622600)',
     data: {
       currency: 'EUR',
-      direction: 'CREDIT_NOTE',
+      direction: 'INVOICE',
       supplier: {
-        name: 'Acme Fournitures SAS',
-        address: '12 Rue du Commerce',
-        city: 'Paris',
-        postalCode: '75015',
+        name: S.informatique[0].name,
+        legalForm: S.informatique[0].legalForm,
+        address: S.informatique[0].address,
+        city: S.informatique[0].city,
+        postalCode: S.informatique[0].postalCode,
         country: 'FR',
-        taxId: 'FR12345678901',
-      },
+        taxId: S.informatique[0].vatNumber,
+        siret: S.informatique[0].siret,
+        iban: S.informatique[0].iban,
+        bic: S.informatique[0].bic,
+        phone: S.informatique[0].phone,
+        email: S.informatique[0].email,
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
       lines: [
-        { description: 'Avoir sur commande annulée', quantity: 5, unitPrice: 25, taxRate: 20 },
+        {
+          description: 'Prestation infogérance serveurs — avril 2026',
+          quantity: 1,
+          unitPrice: 1800.0,
+          taxRate: 20,
+          accountingCode: '622600',
+          accountingLabel: 'Honoraires',
+        },
+        {
+          description: 'Frais de déplacement ingénieur',
+          quantity: 3,
+          unitPrice: 120.0,
+          taxRate: 20,
+          accountingCode: '625100',
+          accountingLabel: 'Voyages et déplacements',
+        },
       ],
-      note: 'Avoir suite à retour marchandise — bon de retour n° BR-2026-042',
     },
   },
+
+  // 63 — Impôts et taxes
   {
-    label: 'Fournisseur SAP existant',
-    description: 'Pré-sélection depuis le cache SAP',
+    label: '63 — Impôts & taxes',
+    category: 'Impôts et taxes',
+    description: 'Taxe foncière + taxes diverses non récupérables (635100 / 637000)',
     data: {
       currency: 'EUR',
       direction: 'INVOICE',
-      supplier: { name: '' }, // rempli via recherche SAP
-      lines: [{ description: 'Prestation de service', quantity: 1, unitPrice: 500, taxRate: 20 }],
+      supplier: {
+        name: 'Direction des Finances Publiques — Fictif',
+        legalForm: 'Administration publique fictive',
+        address: "10 Rue de l'Administration",
+        city: 'Paris',
+        postalCode: '75001',
+        country: 'FR',
+        taxId: 'FR00000000000',
+        siret: '00000000000000',
+        iban: 'FR76 1000 1000 0000 0000 0000 000',
+        bic: 'BDFEFRPPCCT',
+        email: 'test@impots-fictif.fr',
+        phone: '01 00 00 00 00',
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
+      lines: [
+        {
+          description: 'Taxe foncière — exercice 2026',
+          quantity: 1,
+          unitPrice: 4200.0,
+          taxRate: 0,
+          accountingCode: '635100',
+          accountingLabel: 'Taxe foncière',
+        },
+        {
+          description: 'Cotisation foncière des entreprises (CFE) — 2026',
+          quantity: 1,
+          unitPrice: 1850.0,
+          taxRate: 0,
+          accountingCode: '635000',
+          accountingLabel: 'Autres impôts et taxes',
+        },
+      ],
     },
   },
+
+  // 64 — Charges de personnel (charges sociales patronales URSSAF)
   {
-    label: 'Fournisseur manuel',
-    description: 'Saisie libre + enrichissement INSEE/Pappers',
+    label: '64 — Charges personnel',
+    category: 'Charges de personnel',
+    description: 'Charges sociales patronales URSSAF (645000)',
     data: {
       currency: 'EUR',
       direction: 'INVOICE',
-      supplier: { name: '', taxId: '', siret: '' },
-      lines: [{ description: 'Matières premières', quantity: 100, unitPrice: 8.5, taxRate: 20 }],
+      supplier: {
+        name: 'URSSAF Île-de-France — Fictif',
+        legalForm: 'Organisme de recouvrement fictif',
+        address: '93 Rue de Rivoli',
+        city: 'Paris',
+        postalCode: '75001',
+        country: 'FR',
+        taxId: 'FR00000000001',
+        siret: '78230000100001',
+        iban: 'FR76 1000 1000 0000 0000 0000 001',
+        bic: 'BDFEFRPPCCT',
+        email: 'cotisations@urssaf-fictif.fr',
+        phone: '3957',
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
+      lines: [
+        {
+          description: 'Cotisations patronales — avril 2026',
+          quantity: 1,
+          unitPrice: 8500.0,
+          taxRate: 0,
+          accountingCode: '645000',
+          accountingLabel: 'Charges de sécurité sociale',
+        },
+        {
+          description: 'Contribution formation professionnelle — avril 2026',
+          quantity: 1,
+          unitPrice: 340.0,
+          taxRate: 0,
+          accountingCode: '647000',
+          accountingLabel: 'Autres charges sociales',
+        },
+      ],
+    },
+  },
+
+  // 65 — Autres charges de gestion courante
+  {
+    label: '65 — Autres charges',
+    category: 'Autres charges de gestion courante',
+    description: 'Cotisations professionnelles + redevances (628000 / 651000)',
+    data: {
+      currency: 'EUR',
+      direction: 'INVOICE',
+      supplier: {
+        name: 'Cabinet Orial Conseil SAS',
+        legalForm: 'SAS au capital de 30 000 EUR',
+        address: '18 Avenue des Conseils',
+        city: 'Paris',
+        postalCode: '75016',
+        country: 'FR',
+        taxId: S.honoraires[0].vatNumber,
+        siret: S.honoraires[0].siret,
+        iban: S.honoraires[0].iban,
+        bic: S.honoraires[0].bic,
+        phone: S.honoraires[0].phone,
+        email: S.honoraires[0].email,
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
+      lines: [
+        {
+          description: 'Cotisation annuelle CCI — exercice 2026',
+          quantity: 1,
+          unitPrice: 950.0,
+          taxRate: 20,
+          accountingCode: '628000',
+          accountingLabel: 'Divers (cotisations)',
+        },
+        {
+          description: 'Redevance licence logiciel de gestion',
+          quantity: 1,
+          unitPrice: 2400.0,
+          taxRate: 20,
+          accountingCode: '651000',
+          accountingLabel: 'Redevances pour concessions',
+        },
+      ],
+    },
+  },
+
+  // 66 — Charges financières
+  {
+    label: '66 — Charges financières',
+    category: 'Charges financières',
+    description: 'Frais bancaires + intérêts sur emprunt (627000 / 661200)',
+    data: {
+      currency: 'EUR',
+      direction: 'INVOICE',
+      supplier: {
+        name: S.assuranceBanque[2].name,
+        legalForm: S.assuranceBanque[2].legalForm,
+        address: S.assuranceBanque[2].address,
+        city: S.assuranceBanque[2].city,
+        postalCode: S.assuranceBanque[2].postalCode,
+        country: 'FR',
+        taxId: S.assuranceBanque[2].vatNumber,
+        siret: S.assuranceBanque[2].siret,
+        iban: S.assuranceBanque[2].iban,
+        bic: S.assuranceBanque[2].bic,
+        phone: S.assuranceBanque[2].phone,
+        email: S.assuranceBanque[2].email,
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
+      lines: [
+        {
+          description: 'Frais de tenue de compte — 1er trimestre 2026',
+          quantity: 1,
+          unitPrice: 180.0,
+          taxRate: 20,
+          accountingCode: '627000',
+          accountingLabel: 'Services bancaires',
+        },
+        {
+          description: 'Intérêts sur emprunt professionnel — avril 2026',
+          quantity: 1,
+          unitPrice: 1240.0,
+          taxRate: 0,
+          accountingCode: '661200',
+          accountingLabel: 'Intérêts sur emprunts',
+        },
+      ],
+    },
+  },
+
+  // 67 — Charges exceptionnelles
+  {
+    label: '67 — Charges except.',
+    category: 'Charges exceptionnelles',
+    description: 'Pénalités contractuelles + charges sur exercices antérieurs (671000 / 672000)',
+    data: {
+      currency: 'EUR',
+      direction: 'INVOICE',
+      supplier: {
+        name: S.honoraires[2].name,
+        legalForm: S.honoraires[2].legalForm,
+        address: S.honoraires[2].address,
+        city: S.honoraires[2].city,
+        postalCode: S.honoraires[2].postalCode,
+        country: 'FR',
+        taxId: S.honoraires[2].vatNumber,
+        siret: S.honoraires[2].siret,
+        iban: S.honoraires[2].iban,
+        bic: S.honoraires[2].bic,
+        phone: S.honoraires[2].phone,
+        email: S.honoraires[2].email,
+      } satisfies PresetSupplier,
+      buyerName: 'DEMO INDUSTRIE SAS',
+      lines: [
+        {
+          description: 'Pénalités de retard — contrat prestation 2025',
+          quantity: 1,
+          unitPrice: 350.0,
+          taxRate: 20,
+          accountingCode: '671000',
+          accountingLabel: 'Pénalités et amendes',
+        },
+        {
+          description: 'Régularisation exercice 2025 — frais de conseil',
+          quantity: 1,
+          unitPrice: 1200.0,
+          taxRate: 20,
+          accountingCode: '672000',
+          accountingLabel: 'Charges sur exercices antérieurs',
+        },
+      ],
     },
   },
 ];
@@ -140,11 +405,17 @@ function dueDateStr() {
   return d.toISOString().split('T')[0];
 }
 function defaultLine(): GenLine {
-  return { description: '', quantity: 1, unitPrice: 0, taxRate: 20 };
+  return {
+    description: '',
+    quantity: 1,
+    unitPrice: 0,
+    taxRate: 20,
+    accountingCode: '',
+    accountingLabel: '',
+  };
 }
 function defaultForm(): InvoiceGenData {
   const timestamp = new Date().toISOString().replace(/-/g, '').replace(/:/g, '').replace('T', '');
-
   return {
     invoiceNumber: `TEST-${timestamp.substring(0, 12)}`,
     invoiceDate: todayStr(),
@@ -153,12 +424,17 @@ function defaultForm(): InvoiceGenData {
     direction: 'INVOICE',
     supplier: {
       name: '',
+      legalForm: '',
       address: '',
       city: '',
       postalCode: '',
       country: 'FR',
       taxId: '',
       siret: '',
+      iban: '',
+      bic: '',
+      phone: '',
+      email: '',
     },
     buyerName: 'DEMO INDUSTRIE SAS',
     lines: [defaultLine()],
@@ -166,11 +442,10 @@ function defaultForm(): InvoiceGenData {
   };
 }
 
-// ─── Calcul montants (miroir du backend) ──────────────────────────────────────
-
 function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
+
 function computeTotals(lines: GenLine[]) {
   let ht = 0,
     tva = 0;
@@ -180,6 +455,10 @@ function computeTotals(lines: GenLine[]) {
     tva += round2((lineHt * l.taxRate) / 100);
   }
   return { ht: round2(ht), tva: round2(tva), ttc: round2(ht + tva) };
+}
+
+function getAccountLabel(code: string): string {
+  return CHART_OF_ACCOUNTS[code] ?? '';
 }
 
 // ─── Composant principal ──────────────────────────────────────────────────────
@@ -195,6 +474,7 @@ export default function InvoiceGeneratorPage() {
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState<GeneratedInvoice | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [xmlOpen, setXmlOpen] = useState(false);
 
   const totals = computeTotals(form.lines);
@@ -204,15 +484,15 @@ export default function InvoiceGeneratorPage() {
     const p = PRESETS[idx];
     setResult(null);
     setError(null);
+    setValidationError(null);
     setEnrichError(null);
-    if (p.label === 'Fournisseur SAP existant') setSupplierMode('sap');
-    else setSupplierMode('manual');
+    setSupplierMode('manual');
     setForm((prev) => ({
       ...defaultForm(),
       ...p.data,
       invoiceNumber: prev.invoiceNumber,
       invoiceDate: prev.invoiceDate,
-      dueDate: prev.dueDate,
+      dueDate: prev.dueDate ?? dueDateStr(),
     }));
   };
 
@@ -235,6 +515,7 @@ export default function InvoiceGeneratorPage() {
     setForm((prev) => ({
       ...prev,
       supplier: {
+        ...prev.supplier,
         name: s.cardname,
         taxId: s.vatregnum ?? s.federaltaxid ?? '',
         siret: s.federaltaxid ?? '',
@@ -284,16 +565,50 @@ export default function InvoiceGeneratorPage() {
   const updateLine = (idx: number, field: keyof GenLine, value: string | number) => {
     setForm((prev) => {
       const lines = [...prev.lines];
-      lines[idx] = { ...lines[idx], [field]: value };
+      const updated = { ...lines[idx], [field]: value };
+      // Auto-remplissage du libellé quand le code change
+      if (field === 'accountingCode' && typeof value === 'string') {
+        const label = getAccountLabel(value);
+        if (label) updated.accountingLabel = label;
+      }
+      lines[idx] = updated;
       return { ...prev, lines };
     });
   };
+
   const addLine = () => setForm((prev) => ({ ...prev, lines: [...prev.lines, defaultLine()] }));
+
   const removeLine = (idx: number) =>
     setForm((prev) => ({ ...prev, lines: prev.lines.filter((_, i) => i !== idx) }));
 
+  // ── Validation client ─────────────────────────────────────────────────────
+  const validateForm = (): string | null => {
+    if (!form.invoiceNumber.trim()) return 'Le numéro de facture est obligatoire.';
+    if (!form.supplier.name.trim()) return 'La raison sociale du fournisseur est obligatoire.';
+    if (form.lines.length === 0) return 'Au moins une ligne est obligatoire.';
+    for (let i = 0; i < form.lines.length; i++) {
+      const line = form.lines[i];
+      if (!line.accountingCode || !line.accountingCode.trim()) {
+        return `Ligne ${i + 1} ("${line.description || '?'}") : le compte comptable est obligatoire.`;
+      }
+      if (!line.accountingCode.trim().startsWith('6')) {
+        return (
+          `Ligne ${i + 1} : le compte "${line.accountingCode}" n'est pas un compte de charges classe 6. ` +
+          `Seuls les comptes commençant par 6 sont autorisés (frais de gestion uniquement).`
+        );
+      }
+    }
+    return null;
+  };
+
   // ── Génération ────────────────────────────────────────────────────────────
   const generate = async () => {
+    const vErr = validateForm();
+    if (vErr) {
+      setValidationError(vErr);
+      return;
+    }
+    setValidationError(null);
     setGenerating(true);
     setError(null);
     setResult(null);
@@ -309,7 +624,7 @@ export default function InvoiceGeneratorPage() {
   };
 
   // ── Helpers UI ────────────────────────────────────────────────────────────
-  const setSupplierField = (field: keyof GenSupplier, value: string) =>
+  const setSupplierField = (field: keyof typeof form.supplier, value: string) =>
     setForm((prev) => ({ ...prev, supplier: { ...prev.supplier, [field]: value } }));
 
   const fmtAmt = (n: number) =>
@@ -322,17 +637,17 @@ export default function InvoiceGeneratorPage() {
       {/* Titre */}
       <div className="page-header">
         <div>
-          <p className="page-eyebrow">Bac a sable</p>
+          <p className="page-eyebrow">Bac à sable</p>
           <div className="mt-2 flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-secondary/25 bg-secondary/10 text-secondary">
               <FlaskConical className="h-6 w-6" />
             </div>
             <div>
               <h1 className="font-display text-3xl uppercase tracking-[0.1em] text-foreground">
-                Generateur de factures
+                Générateur de factures
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                Generation XML UBL 2.1 et PDF compatibles BILLING pour les scenarios de test
+                Génération XML UBL 2.1 + PDF + ZIP compatibles BILLING — scénarios de test
                 uniquement.
               </p>
             </div>
@@ -341,7 +656,21 @@ export default function InvoiceGeneratorPage() {
         <div className="rounded-2xl border border-border/80 bg-card-muted/70 px-4 py-3 text-right shadow-soft">
           <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Usage</p>
           <p className="text-sm font-semibold text-foreground">Validation front et flux</p>
-          <p className="text-xs text-muted-foreground">Aucune logique metier modifiee</p>
+          <p className="text-xs text-muted-foreground">Aucune logique métier modifiée</p>
+        </div>
+      </div>
+
+      {/* Bandeau mode frais de gestion */}
+      <div className="flex items-center gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+        <Package className="h-5 w-5 shrink-0 text-amber-600" />
+        <div>
+          <p className="text-sm font-semibold text-amber-700">
+            Mode frais de gestion — factures fournisseurs classe 6 uniquement
+          </p>
+          <p className="text-xs text-amber-600/80">
+            Seuls les comptes de charges commençant par 6 sont autorisés. Ventes, immobilisations et
+            stocks interdits.
+          </p>
         </div>
       </div>
 
@@ -349,10 +678,10 @@ export default function InvoiceGeneratorPage() {
       <Card className="panel-surface-muted">
         <CardHeader>
           <CardTitle className="font-display text-2xl uppercase tracking-[0.08em]">
-            Scenarios predefinis
+            Scénarios — charges classe 6
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            Charges de travail rapides pour valider les variantes fournisseurs, TVA et formats.
+            Huit catégories de charges, sociétés fictives crédibles, comptes PCG pré-renseignés.
           </p>
         </CardHeader>
         <CardContent>
@@ -375,7 +704,7 @@ export default function InvoiceGeneratorPage() {
       <Card>
         <CardHeader>
           <CardTitle className="font-display text-2xl uppercase tracking-[0.08em]">
-            En-tete facture
+            En-tête facture
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -387,7 +716,7 @@ export default function InvoiceGeneratorPage() {
                 onChange={(e) => setForm((p) => ({ ...p, invoiceNumber: e.target.value }))}
               />
             </Field>
-            <Field label="Type *">
+            <Field label="Type">
               <select
                 className={inputCls}
                 value={form.direction}
@@ -396,7 +725,6 @@ export default function InvoiceGeneratorPage() {
                 }
               >
                 <option value="INVOICE">Facture (380)</option>
-                <option value="CREDIT_NOTE">Avoir (381)</option>
               </select>
             </Field>
             <Field label="Devise *">
@@ -530,6 +858,14 @@ export default function InvoiceGeneratorPage() {
                 maxLength={2}
               />
             </Field>
+            <Field label="Forme juridique">
+              <input
+                className={inputCls}
+                value={form.supplier.legalForm ?? ''}
+                onChange={(e) => setSupplierField('legalForm', e.target.value)}
+                placeholder="SAS au capital de 50 000 EUR"
+              />
+            </Field>
             <Field label="Adresse">
               <input
                 className={inputCls}
@@ -567,9 +903,40 @@ export default function InvoiceGeneratorPage() {
                 placeholder="12345678901234"
               />
             </Field>
+            <Field label="IBAN">
+              <input
+                className={inputCls}
+                value={form.supplier.iban ?? ''}
+                onChange={(e) => setSupplierField('iban', e.target.value)}
+                placeholder="FR76 3000 6000 0112 3456 7890 189"
+              />
+            </Field>
+            <Field label="BIC">
+              <input
+                className={inputCls}
+                value={form.supplier.bic ?? ''}
+                onChange={(e) => setSupplierField('bic', e.target.value)}
+                placeholder="AGRIFRPP"
+              />
+            </Field>
+            <Field label="Téléphone">
+              <input
+                className={inputCls}
+                value={form.supplier.phone ?? ''}
+                onChange={(e) => setSupplierField('phone', e.target.value)}
+              />
+            </Field>
+            <Field label="Email">
+              <input
+                className={inputCls}
+                value={form.supplier.email ?? ''}
+                onChange={(e) => setSupplierField('email', e.target.value)}
+                type="email"
+              />
+            </Field>
           </div>
 
-          {/* Bouton enrichissement */}
+          {/* Enrichissement INSEE/Pappers */}
           <div className="flex items-center gap-3">
             <Button variant="outline" size="sm" onClick={enrich} loading={enrichLoading}>
               <Wand2 className="h-3.5 w-3.5" />
@@ -592,25 +959,30 @@ export default function InvoiceGeneratorPage() {
               Ajouter une ligne
             </Button>
           </div>
+          <p className="text-xs text-amber-600">
+            Chaque ligne doit avoir un compte de charge classe 6 (ex : 622600 pour honoraires).
+          </p>
         </CardHeader>
         <CardContent>
-          <div className="data-table-shell">
-            <table className="data-table">
+          <div className="data-table-shell overflow-x-auto">
+            <table className="data-table w-full min-w-[900px]">
               <thead>
                 <tr>
-                  <th>Description *</th>
-                  <th className="w-20 text-right">Quantité</th>
-                  <th className="w-28 text-right">P.U. HT</th>
-                  <th className="w-20 text-right">TVA %</th>
-                  <th className="w-28 text-right">Montant HT</th>
-                  <th className="w-28 text-right">Total TTC</th>
-                  <th className="w-8" />
+                  <th className="text-left">Description *</th>
+                  <th className="w-24 text-left">Compte 6 *</th>
+                  <th className="w-36 text-left">Libellé compte</th>
+                  <th className="w-16 text-right">Qté</th>
+                  <th className="w-24 text-right">P.U. HT</th>
+                  <th className="w-16 text-right">TVA %</th>
+                  <th className="w-24 text-right">Montant HT</th>
+                  <th className="w-6" />
                 </tr>
               </thead>
               <tbody>
                 {form.lines.map((line, idx) => {
                   const lineHt = round2(line.quantity * line.unitPrice);
-                  const lineTtc = round2(lineHt * (1 + line.taxRate / 100));
+                  const codeOk = line.accountingCode.startsWith('6');
+                  const codeMiss = !line.accountingCode.trim();
                   return (
                     <tr key={idx} className="transition-colors hover:bg-muted/20">
                       <td className="px-2 py-1.5">
@@ -619,6 +991,29 @@ export default function InvoiceGeneratorPage() {
                           value={line.description}
                           onChange={(e) => updateLine(idx, 'description', e.target.value)}
                           placeholder="Description..."
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          className={`${inputCls} text-xs font-mono ${
+                            codeMiss
+                              ? 'border-amber-400 bg-amber-50/30'
+                              : codeOk
+                                ? 'border-success/40'
+                                : 'border-destructive/60 bg-destructive/5'
+                          }`}
+                          value={line.accountingCode}
+                          onChange={(e) => updateLine(idx, 'accountingCode', e.target.value)}
+                          placeholder="606400"
+                          maxLength={10}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          className={`${inputCls} text-xs text-muted-foreground`}
+                          value={line.accountingLabel ?? ''}
+                          onChange={(e) => updateLine(idx, 'accountingLabel', e.target.value)}
+                          placeholder="auto"
                         />
                       </td>
                       <td className="px-2 py-1.5">
@@ -660,9 +1055,6 @@ export default function InvoiceGeneratorPage() {
                       </td>
                       <td className="px-2 py-1.5 text-right text-xs font-medium">
                         {fmtAmt(lineHt)}
-                      </td>
-                      <td className="px-2 py-1.5 text-right text-xs font-medium">
-                        {fmtAmt(lineTtc)}
                       </td>
                       <td className="px-2 py-1.5 text-right">
                         {form.lines.length > 1 && (
@@ -707,7 +1099,7 @@ export default function InvoiceGeneratorPage() {
         </CardContent>
       </Card>
 
-      {/* Bouton générer + erreur */}
+      {/* Bouton générer + erreurs */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <Button
           size="lg"
@@ -718,7 +1110,8 @@ export default function InvoiceGeneratorPage() {
           <RefreshCw className="h-4 w-4" />
           Générer la facture
         </Button>
-        {error && <div className="alert-error">{error}</div>}
+        {validationError && <div className="alert-error flex-1">{validationError}</div>}
+        {error && <div className="alert-error flex-1">{error}</div>}
       </div>
 
       {/* Résultat */}
@@ -766,6 +1159,12 @@ export default function InvoiceGeneratorPage() {
                 <Button variant="outline" size="sm">
                   <Download className="h-3.5 w-3.5" />
                   Télécharger PDF
+                </Button>
+              </a>
+              <a href={getDownloadUrl(result.zipFilename)} download={result.zipFilename}>
+                <Button size="sm">
+                  <Download className="h-3.5 w-3.5" />
+                  Télécharger ZIP (XML + PDF)
                 </Button>
               </a>
             </div>

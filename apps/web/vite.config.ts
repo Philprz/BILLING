@@ -15,7 +15,7 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:3002',
         changeOrigin: true,
       },
     },
@@ -23,9 +23,10 @@ export default defineConfig({
   preview: {
     port: 4173,
     host: true,
+    allowedHosts: ['billing.itspirit.ovh'],
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:3002',
         changeOrigin: true,
       },
     },

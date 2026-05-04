@@ -1,24 +1,30 @@
 import {
-  checkAccountCodesExist,
   checkCostCentersExist,
   checkSupplierExists,
-  checkTaxCodesExist,
+  fetchSupplierFiscalFields,
+  getSupplierLegalIdentifier,
+  getSupplierVatIdentifier,
   SapReferenceError,
 } from './sap-reference.service';
+import { validateVatCode } from './sap-vat-code.service';
+import { getCachedAccountsByCode, findClosestAccounts } from './chart-of-accounts-cache.service';
 import { resolveLineForSap, type LineData } from './sap-invoice-builder';
 
 export interface SapValidationIssue {
-  severity: 'ERROR';
+  severity: 'ERROR' | 'WARNING';
   code:
     | 'INVALID_STATUS'
     | 'MISSING_ATTACHMENT'
     | 'MISSING_SUPPLIER'
     | 'MISSING_LINES'
     | 'MISSING_ACCOUNT_CODE'
+    | 'MISSING_TAX_CODE'
     | 'INVALID_SUPPLIER'
     | 'INVALID_ACCOUNT_CODE'
     | 'INVALID_TAX_CODE'
     | 'INVALID_COST_CENTER'
+    | 'MISSING_LEGAL_IDENTIFIER'
+    | 'MISSING_VAT_IDENTIFIER'
     | 'SAP_REFERENCE_ERROR';
   message: string;
   lineNo?: number;
@@ -66,14 +72,14 @@ export async function validateInvoiceForSapPost(
     costCenters: [],
   };
 
-  if (invoice.status !== 'READY') {
+  if (invoice.status !== 'READY' && invoice.status !== 'TO_REVIEW') {
     issues.push(
       buildIssue({
         severity: 'ERROR',
         code: 'INVALID_STATUS',
         field: 'status',
         value: invoice.status,
-        message: `Statut "${invoice.status}" non autorisé pour l'intégration SAP. Statut attendu: READY.`,
+        message: `Statut "${invoice.status}" non autorisé pour l'intégration SAP. Statuts acceptés : READY, TO_REVIEW.`,
       }),
     );
   }
@@ -127,6 +133,17 @@ export async function validateInvoiceForSapPost(
     }
 
     checkedRefs.accountCodes.push(resolved.accountCode);
+    if (!resolved.taxCode) {
+      issues.push(
+        buildIssue({
+          severity: 'ERROR',
+          code: 'MISSING_TAX_CODE',
+          field: 'taxCode',
+          lineNo: line.lineNo,
+          message: `Code TVA SAP B1 manquant sur la ligne ${line.lineNo}.`,
+        }),
+      );
+    }
     if (resolved.taxCode) checkedRefs.taxCodes.push(resolved.taxCode);
     if (resolved.costCenter) checkedRefs.costCenters.push(resolved.costCenter);
   }
@@ -147,14 +164,57 @@ export async function validateInvoiceForSapPost(
   }
 
   try {
-    const [supplierExists, accountCheck, taxCheck, costCenterCheck] = await Promise.all([
+    // Le cache de plan comptable n'est utile que s'il a été synchronisé.
+    // Si la table n'existe pas encore (DB non migrée), on ignore silencieusement
+    // la vérification d'existence pour ne pas bloquer les environnements non configurés.
+    let accountCache: Awaited<ReturnType<typeof getCachedAccountsByCode>> | null = null;
+    try {
+      accountCache = await getCachedAccountsByCode(checkedRefs.accountCodes);
+    } catch {
+      // Table absente (migration en cours ou environnement sans cache) → skip
+    }
+
+    for (const line of invoice.lines) {
+      const resolved = resolveLineForSap(line, taxRateMap);
+      if (!resolved.accountCode) continue;
+      if (accountCache === null) continue; // cache inaccessible → pas de vérification
+      const account = accountCache.get(resolved.accountCode);
+      const invalid = !account || !account.activeAccount || !account.postable;
+      if (invalid) {
+        const closest = await findClosestAccounts(resolved.accountCode, 3);
+        const suggestion =
+          closest.length > 0
+            ? `\n→ Compte le plus proche : ${closest.map((a) => `${a.acctCode} — ${a.acctName}`).join(' | ')}`
+            : '';
+        issues.push(
+          buildIssue({
+            severity: 'ERROR',
+            code: 'INVALID_ACCOUNT_CODE',
+            field: 'accountCode',
+            lineNo: line.lineNo,
+            value: resolved.accountCode,
+            message:
+              `La ligne ${line.lineNo} utilise le compte ${resolved.accountCode}, qui n'existe pas ou n'est pas imputable dans SAP B1.` +
+              suggestion,
+          }),
+        );
+      }
+    }
+
+    const uniqueTaxCodes = [...new Set(checkedRefs.taxCodes.filter((c) => c.trim().length > 0))];
+    const taxValidations = await Promise.all(uniqueTaxCodes.map((c) => validateVatCode(c)));
+    const taxCheck = {
+      missing: uniqueTaxCodes.filter((_, i) => !taxValidations[i].ok),
+      checked: uniqueTaxCodes,
+    };
+
+    const [supplierExists, supplierFiscalFields, costCenterCheck] = await Promise.all([
       checkSupplierExists(sapSessionCookie, invoice.supplierB1Cardcode!),
-      checkAccountCodesExist(sapSessionCookie, checkedRefs.accountCodes),
-      checkTaxCodesExist(sapSessionCookie, checkedRefs.taxCodes),
+      fetchSupplierFiscalFields(sapSessionCookie, invoice.supplierB1Cardcode!),
       checkCostCentersExist(sapSessionCookie, checkedRefs.costCenters),
     ]);
 
-    checkedRefs.accountCodes = accountCheck.checked;
+    checkedRefs.accountCodes = [...new Set(checkedRefs.accountCodes)];
     checkedRefs.taxCodes = taxCheck.checked;
     checkedRefs.costCenters = costCenterCheck.checked;
 
@@ -168,18 +228,35 @@ export async function validateInvoiceForSapPost(
           message: `CardCode SAP introuvable: ${invoice.supplierB1Cardcode}`,
         }),
       );
-    }
+    } else if (supplierFiscalFields !== undefined) {
+      // supplierFiscalFields === undefined → SAP injoignable → vérification impossible, on ne bloque pas
+      // supplierFiscalFields !== undefined → BP trouvé, on contrôle les identifiants
 
-    for (const missing of accountCheck.missing) {
-      issues.push(
-        buildIssue({
-          severity: 'ERROR',
-          code: 'INVALID_ACCOUNT_CODE',
-          field: 'accountCode',
-          value: missing,
-          message: `Compte SAP introuvable: ${missing}`,
-        }),
-      );
+      const legalId = getSupplierLegalIdentifier(supplierFiscalFields);
+      if (legalId === null) {
+        issues.push(
+          buildIssue({
+            severity: 'WARNING',
+            code: 'MISSING_LEGAL_IDENTIFIER',
+            field: 'supplier',
+            value: invoice.supplierB1Cardcode,
+            message: `Le fournisseur SAP B1 n'a pas de SIRET/SIREN renseigné dans le champ d'identification entreprise. Ouvrez la fiche Business Partner dans SAP B1 et renseignez le champ "N° identification entreprise" (SIRET 14 chiffres ou SIREN 9 chiffres).`,
+          }),
+        );
+      }
+
+      const vatId = getSupplierVatIdentifier(supplierFiscalFields);
+      if (vatId === null) {
+        issues.push(
+          buildIssue({
+            severity: 'WARNING',
+            code: 'MISSING_VAT_IDENTIFIER',
+            field: 'supplier',
+            value: invoice.supplierB1Cardcode,
+            message: `Le fournisseur SAP B1 n'a pas de numéro de TVA intracommunautaire renseigné (champ FederalTaxID / TVA intracommunautaire, ex: FR12345678901).`,
+          }),
+        );
+      }
     }
 
     for (const missing of taxCheck.missing) {

@@ -1,5 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings2, Save, AlertCircle, CheckCircle2, Pencil, X, Wifi, WifiOff } from 'lucide-react';
+import {
+  Settings2,
+  Save,
+  AlertCircle,
+  CheckCircle2,
+  Pencil,
+  X,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+} from 'lucide-react';
 import {
   apiGetSettings,
   apiPutSetting,
@@ -7,6 +17,12 @@ import {
   SETTING_META,
   type SettingRow,
 } from '../api/settings.api';
+import {
+  apiSyncSapChartOfAccounts,
+  apiSyncSapVatCodes,
+  apiCreateSapUdfPaRef,
+  type SapChartSyncResult,
+} from '../api/sap.api';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { formatDate } from '../lib/utils';
@@ -191,6 +207,15 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [testingConn, setTestingConn] = useState(false);
   const [connResult, setConnResult] = useState<{ ok: boolean; ms: number } | null>(null);
+  const [syncingChart, setSyncingChart] = useState(false);
+  const [chartResult, setChartResult] = useState<SapChartSyncResult | null>(null);
+  const [syncingVat, setSyncingVat] = useState(false);
+  const [vatResult, setVatResult] = useState<{ imported: number; source: string } | null>(null);
+  const [creatingUdf, setCreatingUdf] = useState(false);
+  const [udfResult, setUdfResult] = useState<{ alreadyExists: boolean; fieldName: string } | null>(
+    null,
+  );
+  const [udfError, setUdfError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -226,11 +251,55 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleSyncVat() {
+    setSyncingVat(true);
+    setVatResult(null);
+    try {
+      const result = await apiSyncSapVatCodes();
+      setVatResult(result);
+    } finally {
+      setSyncingVat(false);
+    }
+  }
+
+  async function handleCreateUdfPaRef() {
+    setCreatingUdf(true);
+    setUdfResult(null);
+    setUdfError(null);
+    try {
+      const result = await apiCreateSapUdfPaRef();
+      setUdfResult(result);
+    } catch (err) {
+      setUdfError(err instanceof Error ? err.message : 'Erreur lors de la création du champ');
+    } finally {
+      setCreatingUdf(false);
+    }
+  }
+
+  async function handleSyncChart() {
+    setSyncingChart(true);
+    setChartResult(null);
+    try {
+      const result = await apiSyncSapChartOfAccounts();
+      setChartResult(result);
+    } finally {
+      setSyncingChart(false);
+    }
+  }
+
   const integrationRows = rows.filter((r) =>
     ['DEFAULT_INTEGRATION_MODE', 'DEFAULT_SAP_SERIES', 'AUTO_VALIDATION_THRESHOLD'].includes(r.key),
   );
   const accountingRows = rows.filter((r) =>
-    ['TAX_RATE_MAPPING', 'AP_TAX_ACCOUNT_MAP', 'AP_ACCOUNT_CODE'].includes(r.key),
+    [
+      'TAX_RATE_MAPPING',
+      'AP_TAX_ACCOUNT_MAP',
+      'AP_ACCOUNT_CODE',
+      'DEFAULT_ENERGY_ACCOUNT_CODE',
+      'DEFAULT_MAINTENANCE_ACCOUNT_CODE',
+      'DEFAULT_HOSTING_ACCOUNT_CODE',
+      'DEFAULT_SUPPLIES_ACCOUNT_CODE',
+    ].includes(r.key),
   );
   const systemRows = rows.filter((r) =>
     ['SESSION_DURATION_MINUTES', 'AMOUNT_GAP_ALERT_THRESHOLD'].includes(r.key),
@@ -355,6 +424,76 @@ export default function SettingsPage() {
                         SAP injoignable
                       </>
                     )}
+                  </div>
+                )}
+              </div>
+              <div className="mt-4 flex items-center gap-3 border-t border-border/70 pt-3">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void handleSyncChart();
+                  }}
+                  disabled={syncingChart}
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 mr-1.5 ${syncingChart ? 'animate-spin' : ''}`}
+                  />
+                  {syncingChart ? 'Synchronisation…' : 'Resynchroniser plan comptable SAP'}
+                </Button>
+                {chartResult && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-success">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {chartResult.imported} compte(s) importé(s) · {chartResult.activePostable}{' '}
+                    actifs+imputables
+                  </div>
+                )}
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void handleSyncVat();
+                  }}
+                  disabled={syncingVat}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${syncingVat ? 'animate-spin' : ''}`} />
+                  {syncingVat ? 'Synchronisation…' : 'Resynchroniser codes TVA SAP'}
+                </Button>
+                {vatResult && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-success">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {vatResult.imported} code(s) TVA · source : {vatResult.source}
+                  </div>
+                )}
+              </div>
+              <div className="mt-3 flex items-center gap-3 border-t border-border/70 pt-3">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void handleCreateUdfPaRef();
+                  }}
+                  disabled={creatingUdf}
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 mr-1.5 ${creatingUdf ? 'animate-spin' : ''}`}
+                  />
+                  {creatingUdf ? 'Création…' : 'Créer le champ U_PA_REF dans SAP B1'}
+                </Button>
+                {udfResult && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-success">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {udfResult.alreadyExists
+                      ? `Champ ${udfResult.fieldName} déjà présent dans SAP B1`
+                      : `Champ ${udfResult.fieldName} créé avec succès dans SAP B1 (table OPCH)`}
+                  </div>
+                )}
+                {udfError && (
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-destructive">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    {udfError}
                   </div>
                 )}
               </div>

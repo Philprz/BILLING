@@ -40,16 +40,22 @@ export async function runIngestionCycle(): Promise<void> {
     try {
       // 1. Parsing
       const parsed = parseFile(file.absolutePath, file.ext);
-      log('INFO', `[${file.filename}] Format détecté : ${parsed.format} — Doc : ${parsed.docNumberPa}`);
+      log(
+        'INFO',
+        `[${file.filename}] Format détecté : ${parsed.format} — Doc : ${parsed.docNumberPa}`,
+      );
 
       // 2. Stockage permanent (avant écriture DB pour avoir le chemin)
       //    On utilise un UUID temporaire si l'invoice n'existe pas encore ;
       //    le vrai UUID sera généré par Prisma. On stocke d'abord, puis DB.
       //    Le nom final inclura l'ID de la facture — mais pour simplifier
       //    on utilise le paMessageId comme préfixe de fichier.
-      const tempId  = paMessageId.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const stored  = storeFile(file.absolutePath, tempId, file.filename);
-      log('INFO', `[${file.filename}] Fichier stocké : ${stored.absolutePath} (${stored.sha256.slice(0, 12)}…)`);
+      const tempId = paMessageId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const stored = storeFile(file.absolutePath, tempId, file.filename);
+      log(
+        'INFO',
+        `[${file.filename}] Fichier stocké : ${stored.absolutePath} (${stored.sha256.slice(0, 12)}…)`,
+      );
 
       // 3. Écriture DB
       const result = await writeInvoice(
@@ -71,20 +77,29 @@ export async function runIngestionCycle(): Promise<void> {
         await enrichInvoice(result.invoiceId);
         log('INFO', `[${file.filename}] Enrichissement OK`);
       } catch (enrichErr) {
-        log('WARN', `[${file.filename}] Enrichissement échoué (non bloquant): ${String(enrichErr)}`);
+        log(
+          'WARN',
+          `[${file.filename}] Enrichissement échoué (non bloquant): ${String(enrichErr)}`,
+        );
       }
 
       // 5. Audit
       await auditIngestion('OK', result.invoiceId, {
-        filename:    file.filename,
-        format:      parsed.format,
+        filename: file.filename,
+        format: parsed.format,
         docNumberPa: parsed.docNumberPa,
-        created:     result.created,
+        created: result.created,
       });
 
       // 6. Déplacement vers processed/
-      moveFile(file.absolutePath, PROCESSED_PATH, file.filename);
-
+      try {
+        moveFile(file.absolutePath, PROCESSED_PATH, file.filename);
+      } catch {
+        log(
+          'WARN',
+          `[${file.filename}] Impossible de déplacer vers processed/ — fichier laissé dans inbox.`,
+        );
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       log('ERROR', `[${file.filename}] Échec d'ingestion : ${message}`);
@@ -95,7 +110,10 @@ export async function runIngestionCycle(): Promise<void> {
       try {
         moveFile(file.absolutePath, ERROR_PATH, file.filename);
       } catch {
-        log('WARN', `[${file.filename}] Impossible de déplacer vers error/ — fichier laissé dans inbox.`);
+        log(
+          'WARN',
+          `[${file.filename}] Impossible de déplacer vers error/ — fichier laissé dans inbox.`,
+        );
       }
     }
   }

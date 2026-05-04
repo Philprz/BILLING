@@ -7,7 +7,6 @@ import {
   TrendingUp,
   ArrowRight,
   XCircle,
-  RefreshCw,
   Radio,
   Clock,
   Activity,
@@ -23,7 +22,6 @@ import { apiGetWorkerStatus, type WorkerChannel } from '../api/worker-status.api
 import { apiGetAudit } from '../api/audit.api';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { Button } from '../components/ui/button';
 import { DashboardSkeleton } from '../components/ui/skeleton';
 import { toast } from '../lib/toast';
 import { formatDate } from '../lib/utils';
@@ -159,7 +157,7 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const [stats, setStats] = useState<Stats | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [reEnriching, setReEnriching] = useState(false);
+  const [_reEnriching, setReEnriching] = useState(false);
   const [workerChannels, setWorkerChannels] = useState<WorkerChannel[]>([]);
   const [dailyDays, setDailyDays] = useState<DailyStatDay[]>([]);
   const [recentAudit, setRecentAudit] = useState<AuditEntry[]>([]);
@@ -199,7 +197,7 @@ export default function DashboardPage() {
     loadStats();
   }, [loadStats]);
 
-  async function handleReEnrichAll() {
+  async function _handleReEnrichAll() {
     setReEnriching(true);
     try {
       const result = await apiReEnrichAll();
@@ -234,6 +232,8 @@ export default function DashboardPage() {
       icon: FileText,
       iconClassName: 'bg-primary/10 text-primary ring-1 ring-primary/20',
       accentClassName: 'from-primary/20 to-transparent',
+      to: '/invoices?status=ALL',
+      ariaLabel: `Total factures — ${stats.total} facture${stats.total !== 1 ? 's' : ''}. Voir la liste complète.`,
     },
     {
       label: 'À réviser',
@@ -241,6 +241,8 @@ export default function DashboardPage() {
       icon: AlertCircle,
       iconClassName: 'bg-warning/10 text-warning ring-1 ring-warning/20',
       accentClassName: 'from-warning/20 to-transparent',
+      to: '/invoices?status=TO_REVIEW',
+      ariaLabel: `À réviser — ${stats.toReview} facture${stats.toReview !== 1 ? 's' : ''}. Voir les factures à réviser.`,
     },
     {
       label: 'Prêtes',
@@ -248,13 +250,8 @@ export default function DashboardPage() {
       icon: CheckCircle2,
       iconClassName: 'bg-secondary/20 text-secondary ring-1 ring-secondary/20',
       accentClassName: 'from-secondary/20 to-transparent',
-    },
-    {
-      label: 'Intégrées SAP',
-      value: stats.posted,
-      icon: TrendingUp,
-      iconClassName: 'bg-success/10 text-success ring-1 ring-success/20',
-      accentClassName: 'from-success/20 to-transparent',
+      to: '/invoices?status=READY',
+      ariaLabel: `Prêtes — ${stats.ready} facture${stats.ready !== 1 ? 's' : ''}. Voir les factures prêtes.`,
     },
     {
       label: 'En erreur',
@@ -262,6 +259,8 @@ export default function DashboardPage() {
       icon: XCircle,
       iconClassName: 'bg-destructive/10 text-destructive ring-1 ring-destructive/20',
       accentClassName: 'from-destructive/20 to-transparent',
+      to: '/invoices?status=ERROR',
+      ariaLabel: `En erreur — ${stats.error} facture${stats.error !== 1 ? 's' : ''}. Voir les factures en erreur.`,
     },
   ];
 
@@ -269,68 +268,53 @@ export default function DashboardPage() {
     <div className="app-page">
       <section className="page-header">
         <div>
-          <p className="page-eyebrow">Cockpit</p>
-          <h2 className="page-title">Tableau de bord</h2>
           <p className="page-subtitle">
             Connecté en tant que <span className="font-semibold text-foreground">{user?.user}</span>{' '}
             sur <span className="font-semibold text-foreground">{user?.companyDb}</span>.
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={handleReEnrichAll} disabled={reEnriching}>
-          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${reEnriching ? 'animate-spin' : ''}`} />
-          {reEnriching ? 'Ré-analyse…' : 'Ré-analyser les factures en attente'}
-        </Button>
       </section>
-
-      {stats.toReview > 0 && (
-        <div className="alert-info text-sm">
-          <AlertCircle className="h-4 w-4 flex-shrink-0" />
-          <span>
-            <strong>{stats.toReview}</strong> facture{stats.toReview !== 1 ? 's' : ''} en attente de
-            révision.{' '}
-            <Link to="/invoices?status=TO_REVIEW" className="underline hover:no-underline">
-              Voir →
-            </Link>
-          </span>
-        </div>
-      )}
 
       {stats.error > 0 && (
         <div className="alert-error text-sm">
           <XCircle className="h-4 w-4 flex-shrink-0" />
           <span>
-            <strong>{stats.error}</strong> facture{stats.error !== 1 ? 's' : ''} en erreur SAP.{' '}
-            <Link to="/invoices?status=ERROR" className="underline hover:no-underline">
-              Voir →
-            </Link>
+            <strong>{stats.error}</strong> facture{stats.error !== 1 ? 's' : ''} en erreur SAP.
           </span>
         </div>
       )}
 
       <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">
         {statCards.map((card) => (
-          <Card key={card.label} className="relative overflow-hidden">
-            <div
-              className={`absolute inset-x-0 top-0 h-24 bg-gradient-to-br ${card.accentClassName}`}
-            />
-            <CardContent className="relative p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
-                    {card.label}
-                  </p>
-                  <p className="mt-3 font-display text-4xl uppercase tracking-[0.1em] text-foreground">
-                    {card.value}
-                  </p>
+          <Link
+            key={card.label}
+            to={card.to}
+            aria-label={card.ariaLabel}
+            className="block rounded-[inherit] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2"
+          >
+            <Card className="relative overflow-hidden cursor-pointer transition-shadow hover:shadow-md hover:ring-1 hover:ring-border/60">
+              <div
+                className={`absolute inset-x-0 top-0 h-24 bg-gradient-to-br ${card.accentClassName}`}
+              />
+              <CardContent className="relative p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+                      {card.label}
+                    </p>
+                    <p className="mt-3 font-display text-4xl uppercase tracking-[0.1em] text-foreground">
+                      {card.value}
+                    </p>
+                  </div>
+                  <div
+                    className={`flex h-12 w-12 items-center justify-center rounded-2xl ${card.iconClassName}`}
+                  >
+                    <card.icon className="h-5 w-5" />
+                  </div>
                 </div>
-                <div
-                  className={`flex h-12 w-12 items-center justify-center rounded-2xl ${card.iconClassName}`}
-                >
-                  <card.icon className="h-5 w-5" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </Link>
         ))}
       </section>
 

@@ -1,4 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
+
+const PA_SOURCE_LABELS: Record<string, string> = {
+  MANUAL_UPLOAD: 'Téléchargée',
+  LOCAL_DEV: 'Direct-PA',
+  SEED_TEST: 'Seed-test',
+};
+const paSourceLabel = (source: string) => PA_SOURCE_LABELS[source] ?? source;
+import { XmlViewer } from '../components/ui/XmlViewer';
+import { PdfViewer } from '../components/ui/PdfViewer';
+import { AccountSearch } from '../components/ui/AccountSearch';
 import { useParams, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -23,6 +33,7 @@ import {
   ExternalLink,
   Save,
   HelpCircle,
+  Link2,
 } from 'lucide-react';
 import {
   apiGetInvoice,
@@ -31,11 +42,16 @@ import {
   apiSendStatus,
   apiUpdateSupplier,
   apiUpdateLine,
+  apiResolveTaxCode,
   apiResetInvoice,
   apiReEnrichInvoice,
+  apiReParseLinesInvoice,
   apiSaveDraft,
+  apiLinkSap,
+  apiPushSupplierFiscal,
 } from '../api/invoices.api';
 import { apiGetSuppliers, apiCreateSupplierInSap, type SupplierCache } from '../api/suppliers.api';
+import { apiSyncSapChartOfAccounts } from '../api/sap.api';
 import { apiCreateMappingRule } from '../api/mapping-rules.api';
 import { apiGetAudit } from '../api/audit.api';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -44,10 +60,16 @@ import { Button } from '../components/ui/button';
 import { InvoiceDetailSkeleton } from '../components/ui/skeleton';
 import { toast } from '../lib/toast';
 import { formatAmount, formatDate } from '../lib/utils';
-import type { InvoiceDetail, InvoiceLine, AuditEntry, AuditAction } from '../api/types';
+import type {
+  InvoiceDetail,
+  InvoiceLine,
+  AuditEntry,
+  AuditAction,
+  SapPurchaseInvoiceRef,
+} from '../api/types';
 
 type IntegrationMode = 'SERVICE_INVOICE' | 'JOURNAL_ENTRY';
-const TERMINAL_STATUSES_UI = new Set(['POSTED', 'REJECTED', 'ERROR']);
+const TERMINAL_STATUSES_UI = new Set(['POSTED', 'LINKED', 'REJECTED']);
 
 const ACTION_LABELS: Record<AuditAction, string> = {
   LOGIN: 'Connexion',
@@ -58,9 +80,12 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   APPROVE: 'Approbation',
   REJECT: 'Rejet',
   POST_SAP: 'Intégration SAP',
+  LINK_SAP: 'Rattachement SAP',
   SEND_STATUS_PA: 'Retour statut PA',
   SYSTEM_ERROR: 'Erreur système',
   CONFIG_CHANGE: 'Config.',
+  CREATE_SUPPLIER: 'Création fournisseur',
+  SYNC_SUPPLIERS: 'Sync fournisseurs',
 };
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -90,6 +115,8 @@ interface EditingLine {
   chosenAccountCode: string;
   chosenCostCenter: string;
   chosenTaxCodeB1: string;
+  taxCodeLockedByUser: boolean;
+  taxCodeSource: string | null;
 }
 
 interface RuleModalState {
@@ -108,9 +135,44 @@ interface RuleModalState {
 const supplierSchema = z.object({
   cardCode: z.string().min(1, 'CardCode requis').max(15, 'Max 15 caractères'),
   cardName: z.string().min(1, 'Nom requis'),
-  federalTaxId: z.string().optional(),
+  siren: z.string().optional(),
+  siret: z.string().optional(),
+  vatRegNum: z.string().optional(),
+  street: z.string().optional(),
+  street2: z.string().optional(),
+  city: z.string().optional(),
+  postalCode: z.string().optional(),
+  country: z.string().optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
 });
 type SupplierForm = z.infer<typeof supplierSchema>;
+
+function nextSupplierCardCode(suppliers: SupplierCache[]): string {
+  const max = suppliers.reduce((current, supplier) => {
+    const match = /^F(\d+)$/i.exec(supplier.cardcode);
+    return match ? Math.max(current, Number(match[1])) : current;
+  }, 0);
+  return `F${String(max + 1).padStart(5, '0')}`;
+}
+
+function buildSupplierPrefill(invoice: InvoiceDetail, cardCode: string): Partial<SupplierForm> {
+  const extracted = invoice.supplierExtracted;
+  return {
+    cardCode,
+    cardName: invoice.supplierNameRaw || '',
+    siren: extracted?.siren ?? '',
+    siret: extracted?.siret ?? '',
+    vatRegNum: extracted?.vatNumber ?? '',
+    street: extracted?.street ?? '',
+    street2: extracted?.street2 ?? '',
+    postalCode: extracted?.postalCode ?? '',
+    city: extracted?.city ?? '',
+    country: extracted?.country ?? '',
+    email: extracted?.email ?? '',
+    phone: extracted?.phone ?? '',
+  };
+}
 
 const ruleSchema = z.object({
   scope: z.enum(['GLOBAL', 'SUPPLIER']),
@@ -124,24 +186,75 @@ type RuleForm = z.infer<typeof ruleSchema>;
 // ── CreateSupplierModal ───────────────────────────────────────────────────────
 
 interface CreateSupplierModalProps {
+  initialValues?: Partial<SupplierForm>;
   onConfirm: (data: SupplierForm) => Promise<void>;
   onClose: () => void;
 }
 
-function CreateSupplierModal({ onConfirm, onClose }: CreateSupplierModalProps) {
+function FieldRow({
+  label,
+  required,
+  error,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label className="text-xs text-muted-foreground font-medium block mb-1">
+        {label}
+        {required && ' *'}
+      </label>
+      {children}
+      {error && <p className="text-xs text-destructive mt-0.5">{error}</p>}
+    </div>
+  );
+}
+
+function CreateSupplierModal({ initialValues, onConfirm, onClose }: CreateSupplierModalProps) {
+  const [serverError, setServerError] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<SupplierForm>({
     resolver: zodResolver(supplierSchema),
-    defaultValues: { cardCode: '', cardName: '', federalTaxId: '' },
+    defaultValues: {
+      cardCode: initialValues?.cardCode ?? '',
+      cardName: initialValues?.cardName ?? '',
+      siren: initialValues?.siren ?? '',
+      siret: initialValues?.siret ?? '',
+      vatRegNum: initialValues?.vatRegNum ?? '',
+      street: initialValues?.street ?? '',
+      street2: initialValues?.street2 ?? '',
+      city: initialValues?.city ?? '',
+      postalCode: initialValues?.postalCode ?? '',
+      country: initialValues?.country ?? '',
+      email: initialValues?.email ?? '',
+      phone: initialValues?.phone ?? '',
+    },
   });
+
+  async function onSubmit(data: SupplierForm) {
+    setServerError(null);
+    try {
+      await onConfirm(data);
+    } catch (err) {
+      setServerError(
+        err instanceof Error ? err.message : 'Erreur lors de la création du fournisseur',
+      );
+    }
+  }
+
+  const hasPrefill = initialValues && Object.values(initialValues).some(Boolean);
 
   return (
     <div className="modal-backdrop" role="presentation">
       <div
-        className="modal-panel"
+        className="modal-panel max-h-[90vh] overflow-y-auto"
         role="dialog"
         aria-modal="true"
         aria-labelledby="dlg-supplier-title"
@@ -152,50 +265,148 @@ function CreateSupplierModal({ onConfirm, onClose }: CreateSupplierModalProps) {
         >
           <BookmarkPlus className="h-4 w-4 text-primary" /> Créer un fournisseur dans SAP B1
         </h2>
+        {hasPrefill && (
+          <p className="text-xs text-muted-foreground rounded-lg bg-muted/50 px-3 py-2">
+            Champs pré-remplis depuis la facture — vous pouvez les modifier avant de créer.
+          </p>
+        )}
         <form
           onSubmit={(e) => {
-            void handleSubmit(onConfirm)(e);
+            void handleSubmit(onSubmit)(e);
           }}
           className="space-y-3"
         >
-          <div>
-            <label className="text-xs text-muted-foreground font-medium block mb-1">
-              CardCode *
-            </label>
+          {/* ── Identifiants SAP ── */}
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground pt-1">
+            Identifiants SAP B1
+          </p>
+          <FieldRow label="CardCode" required error={errors.cardCode?.message}>
             <input
               className={`app-input h-9 text-xs font-mono ${errors.cardCode ? 'border-destructive' : ''}`}
               placeholder="ex: F00042"
               disabled={isSubmitting}
               {...register('cardCode')}
             />
-            {errors.cardCode && (
-              <p className="text-xs text-destructive mt-0.5">{errors.cardCode.message}</p>
-            )}
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground font-medium block mb-1">Nom *</label>
+          </FieldRow>
+          <FieldRow label="Raison sociale" required error={errors.cardName?.message}>
             <input
               className={`app-input h-9 text-xs ${errors.cardName ? 'border-destructive' : ''}`}
               placeholder="Raison sociale"
               disabled={isSubmitting}
               {...register('cardName')}
             />
-            {errors.cardName && (
-              <p className="text-xs text-destructive mt-0.5">{errors.cardName.message}</p>
-            )}
+          </FieldRow>
+
+          {/* ── Identifiants fiscaux ── */}
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground pt-1">
+            Identifiants fiscaux
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <FieldRow label="SIREN">
+              <input
+                className="app-input h-9 text-xs font-mono"
+                placeholder="Ex: 123456789"
+                disabled={isSubmitting}
+                {...register('siren')}
+              />
+            </FieldRow>
+            <FieldRow label="SIRET">
+              <input
+                className="app-input h-9 text-xs font-mono"
+                placeholder="Ex: 12345678900012"
+                disabled={isSubmitting}
+                {...register('siret')}
+              />
+            </FieldRow>
           </div>
-          <div>
-            <label className="text-xs text-muted-foreground font-medium block mb-1">
-              SIRET / NIF
-            </label>
+          <div className="grid grid-cols-1 gap-2">
+            <FieldRow label="TVA intracommunautaire">
+              <input
+                className="app-input h-9 text-xs font-mono"
+                placeholder="Ex: FR12345678901"
+                disabled={isSubmitting}
+                {...register('vatRegNum')}
+              />
+            </FieldRow>
+          </div>
+
+          {/* ── Adresse ── */}
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground pt-1">
+            Adresse de facturation
+          </p>
+          <FieldRow label="Rue (ligne 1)">
             <input
-              className="app-input h-9 text-xs font-mono"
-              placeholder="Optionnel"
+              className="app-input h-9 text-xs"
+              placeholder="Numéro et nom de voie"
               disabled={isSubmitting}
-              {...register('federalTaxId')}
+              {...register('street')}
             />
+          </FieldRow>
+          <FieldRow label="Rue (ligne 2)">
+            <input
+              className="app-input h-9 text-xs"
+              placeholder="Complément d'adresse"
+              disabled={isSubmitting}
+              {...register('street2')}
+            />
+          </FieldRow>
+          <div className="grid grid-cols-3 gap-2">
+            <FieldRow label="Code postal">
+              <input
+                className="app-input h-9 text-xs font-mono"
+                placeholder="75001"
+                disabled={isSubmitting}
+                {...register('postalCode')}
+              />
+            </FieldRow>
+            <FieldRow label="Ville">
+              <input
+                className="app-input h-9 text-xs"
+                placeholder="Paris"
+                disabled={isSubmitting}
+                {...register('city')}
+              />
+            </FieldRow>
+            <FieldRow label="Pays (code ISO)">
+              <input
+                className="app-input h-9 text-xs font-mono"
+                placeholder="FR"
+                disabled={isSubmitting}
+                {...register('country')}
+              />
+            </FieldRow>
           </div>
-          <div className="flex justify-end gap-2">
+
+          {/* ── Contact ── */}
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground pt-1">
+            Contact
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <FieldRow label="Email">
+              <input
+                className="app-input h-9 text-xs"
+                placeholder="contact@exemple.fr"
+                disabled={isSubmitting}
+                {...register('email')}
+              />
+            </FieldRow>
+            <FieldRow label="Téléphone">
+              <input
+                className="app-input h-9 text-xs font-mono"
+                placeholder="+33 1 23 45 67 89"
+                disabled={isSubmitting}
+                {...register('phone')}
+              />
+            </FieldRow>
+          </div>
+
+          {serverError && (
+            <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>{serverError}</span>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
             <Button
               variant="outline"
               size="sm"
@@ -227,6 +438,8 @@ function CreateRuleModal({ state, onConfirm, onClose }: CreateRuleModalProps) {
   const {
     register,
     handleSubmit,
+    setValue,
+    watch,
     formState: { errors, isSubmitting, isSubmitSuccessful },
   } = useForm<RuleForm>({
     resolver: zodResolver(ruleSchema),
@@ -238,6 +451,7 @@ function CreateRuleModal({ state, onConfirm, onClose }: CreateRuleModalProps) {
       taxCodeB1: state.taxCodeB1,
     },
   });
+  const accountCodeValue = watch('accountCode');
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -300,12 +514,17 @@ function CreateRuleModal({ state, onConfirm, onClose }: CreateRuleModalProps) {
                 <label className="text-xs text-muted-foreground font-medium block mb-1">
                   Compte comptable *
                 </label>
-                <input
-                  className={`app-input h-9 text-xs font-mono ${errors.accountCode ? 'border-destructive' : ''}`}
-                  placeholder="ex: 60110000"
+                <AccountSearch
+                  value={accountCodeValue}
+                  onChange={(code) => {
+                    setValue('accountCode', code, { shouldDirty: true, shouldValidate: true });
+                  }}
+                  placeholder="Code ou libellé…"
                   disabled={isSubmitting}
-                  {...register('accountCode')}
+                  className={errors.accountCode ? 'border-destructive' : ''}
+                  onSyncRequest={apiSyncSapChartOfAccounts}
                 />
+                <input type="hidden" {...register('accountCode')} />
                 {errors.accountCode && (
                   <p className="text-xs text-destructive mt-0.5">{errors.accountCode.message}</p>
                 )}
@@ -377,7 +596,7 @@ function extractKeyword(description: string): string {
   return tokens.reduce((a, b) => (b.length > a.length ? b : a));
 }
 
-function FileViewerPanel({
+function _FileViewerPanel({
   files,
   invoiceId,
 }: {
@@ -437,13 +656,23 @@ function FileViewerPanel({
         )}
       </div>
       <div className="flex-1 overflow-hidden">
-        {contentUrl && selectedFile?.kind !== 'ATTACHMENT' ? (
-          <iframe
+        {contentUrl && selectedFile?.kind === 'PDF' ? (
+          <PdfViewer
             key={selected}
-            src={contentUrl}
-            title={selectedFile?.path.split(/[\\/]/).pop()}
-            className="h-full w-full bg-white"
-            sandbox="allow-scripts allow-same-origin"
+            url={contentUrl}
+            filename={selectedFile?.path.split(/[\\/]/).pop()}
+          />
+        ) : contentUrl && selectedFile?.kind === 'XML' ? (
+          <XmlViewer
+            key={selected}
+            url={contentUrl}
+            filename={selectedFile?.path.split(/[\\/]/).pop()}
+          />
+        ) : contentUrl && selectedFile?.kind !== 'ATTACHMENT' ? (
+          <PdfViewer
+            key={selected}
+            url={contentUrl}
+            filename={selectedFile?.path.split(/[\\/]/).pop()}
           />
         ) : selectedFile?.kind === 'ATTACHMENT' ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
@@ -584,33 +813,79 @@ function LinesTab({
     chosenAccountCode: '',
     chosenCostCenter: '',
     chosenTaxCodeB1: '',
+    taxCodeLockedByUser: false,
+    taxCodeSource: null,
   });
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [resolvingTax, setResolvingTax] = useState(false);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
 
   function startEdit(l: InvoiceLine) {
+    const accountInvalid =
+      l.suggestionSource?.includes('Compte inexistant') ||
+      l.suggestionSource?.includes('Compte non imputable') ||
+      l.suggestionSource?.includes('Compte inactif');
     setEditingId(l.id);
+    setSaveError(null);
     setDraft({
-      chosenAccountCode: l.chosenAccountCode ?? l.suggestedAccountCode ?? '',
+      chosenAccountCode: accountInvalid
+        ? ''
+        : (l.chosenAccountCode ?? l.suggestedAccountCode ?? ''),
       chosenCostCenter: l.chosenCostCenter ?? l.suggestedCostCenter ?? '',
       chosenTaxCodeB1: l.chosenTaxCodeB1 ?? l.suggestedTaxCodeB1 ?? '',
+      taxCodeLockedByUser: l.taxCodeLockedByUser,
+      taxCodeSource: null,
     });
   }
 
   function cancelEdit() {
     setEditingId(null);
+    setSaveError(null);
+  }
+
+  // Appelé uniquement quand l'utilisateur sélectionne un compte dans la liste SAP (acctCode pur)
+  async function handleAccountChange(lineId: string, acctCode: string) {
+    setDraft((d) => ({ ...d, chosenAccountCode: acctCode }));
+    setSaveError(null);
+    if (!draft.taxCodeLockedByUser && acctCode.trim().length >= 2) {
+      setResolvingTax(true);
+      try {
+        const resolution = await apiResolveTaxCode(invoiceId, lineId, acctCode.trim());
+        if (resolution.taxCode) {
+          setDraft((d) =>
+            d.taxCodeLockedByUser
+              ? d
+              : {
+                  ...d,
+                  chosenTaxCodeB1: resolution.taxCode!,
+                  taxCodeLockedByUser: false,
+                  taxCodeSource: resolution.source,
+                },
+          );
+        }
+      } catch {
+        // best-effort
+      } finally {
+        setResolvingTax(false);
+      }
+    }
   }
 
   async function saveLine(lineId: string) {
     setSaving(true);
+    setSaveError(null);
     try {
       const updated = await apiUpdateLine(invoiceId, lineId, {
         chosenAccountCode: draft.chosenAccountCode.trim() || null,
         chosenCostCenter: draft.chosenCostCenter.trim() || null,
         chosenTaxCodeB1: draft.chosenTaxCodeB1.trim() || null,
+        taxCodeLockedByUser: draft.taxCodeLockedByUser,
       });
       onSaved(updated);
       setEditingId(null);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Erreur lors de la sauvegarde');
     } finally {
       setSaving(false);
     }
@@ -624,6 +899,7 @@ function LinesTab({
         chosenAccountCode: l.suggestedAccountCode,
         chosenCostCenter: l.suggestedCostCenter ?? null,
         chosenTaxCodeB1: l.suggestedTaxCodeB1 ?? null,
+        taxCodeLockedByUser: false,
       });
       onSaved(updated);
     } finally {
@@ -659,6 +935,11 @@ function LinesTab({
             const isEditing = editingId === l.id;
             const displayAccount = l.chosenAccountCode ?? l.suggestedAccountCode;
             const isChosen = !!l.chosenAccountCode;
+            const accountAlert =
+              l.suggestionSource?.includes('Compte inexistant') ||
+              l.suggestionSource?.includes('Compte non imputable') ||
+              l.suggestionSource?.includes('Compte inactif') ||
+              l.suggestionSource?.includes('non synchronisé');
             return (
               <tr
                 key={l.id}
@@ -682,26 +963,47 @@ function LinesTab({
                 {/* Compte comptable */}
                 <td className="px-3 py-2 min-w-[130px]">
                   {isEditing ? (
-                    <input
-                      className="app-input h-8 px-2 py-1 text-xs font-mono"
+                    <AccountSearch
                       value={draft.chosenAccountCode}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, chosenAccountCode: e.target.value }))
+                      onChange={(code) => {
+                        void handleAccountChange(l.id, code);
+                      }}
+                      placeholder={l.suggestedAccountCode ?? 'Code ou libellé…'}
+                      initialQuery={
+                        !draft.chosenAccountCode || accountAlert
+                          ? (l.suggestedAccountCode ?? l.description)
+                          : undefined
                       }
-                      placeholder={l.suggestedAccountCode ?? ''}
-                      autoFocus
+                      onSyncRequest={apiSyncSapChartOfAccounts}
                     />
                   ) : displayAccount ? (
                     <div className="space-y-0.5">
-                      <span
-                        className={`font-mono text-xs font-semibold ${isChosen ? 'text-success' : 'text-foreground'}`}
-                      >
-                        {displayAccount}
+                      <span className="inline-flex items-center gap-1">
+                        {accountAlert && (
+                          <AlertCircle
+                            className="h-3.5 w-3.5 text-destructive"
+                            aria-label="Compte invalide"
+                          />
+                        )}
+                        <span
+                          className={`font-mono text-xs font-semibold ${isChosen ? 'text-success' : accountAlert ? 'text-destructive' : 'text-foreground'}`}
+                          title={l.suggestionSource ?? undefined}
+                        >
+                          {displayAccount}
+                        </span>
                       </span>
                       {!isChosen && <ConfidenceBar value={l.suggestedAccountConfidence} />}
                     </div>
                   ) : (
-                    <span className="text-xs font-medium text-warning">Non défini</span>
+                    <span className="inline-flex items-center gap-1">
+                      {accountAlert && <AlertCircle className="h-3.5 w-3.5 text-destructive" />}
+                      <span
+                        className={`text-xs font-medium ${accountAlert ? 'text-destructive' : 'text-warning'}`}
+                        title={l.suggestionSource ?? 'Aucune règle applicable'}
+                      >
+                        {accountAlert ? 'Compte invalide' : 'Non défini'}
+                      </span>
+                    </span>
                   )}
                 </td>
 
@@ -724,41 +1026,101 @@ function LinesTab({
                 </td>
 
                 {/* Code TVA B1 */}
-                <td className="px-3 py-2 min-w-[90px]">
+                <td className="px-3 py-2 min-w-[110px]">
                   {isEditing ? (
-                    <input
-                      className="app-input h-8 px-2 py-1 text-xs font-mono"
-                      value={draft.chosenTaxCodeB1}
-                      onChange={(e) => setDraft((d) => ({ ...d, chosenTaxCodeB1: e.target.value }))}
-                      placeholder={l.suggestedTaxCodeB1 ?? ''}
-                    />
+                    <div className="space-y-0.5">
+                      <div className="relative">
+                        <input
+                          className="app-input h-8 px-2 py-1 text-xs font-mono w-full"
+                          value={draft.chosenTaxCodeB1}
+                          onChange={(e) =>
+                            setDraft((d) => ({
+                              ...d,
+                              chosenTaxCodeB1: e.target.value,
+                              taxCodeLockedByUser: true,
+                              taxCodeSource: 'manual',
+                            }))
+                          }
+                          placeholder={l.suggestedTaxCodeB1 ?? 'ex: S1'}
+                        />
+                        {resolvingTax && (
+                          <span className="absolute right-1.5 top-1/2 -translate-y-1/2">
+                            <span className="h-2.5 w-2.5 animate-spin rounded-full border border-primary border-t-transparent inline-block" />
+                          </span>
+                        )}
+                      </div>
+                      {draft.taxCodeLockedByUser ? (
+                        <span className="inline-block rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                          Manuel
+                        </span>
+                      ) : draft.chosenTaxCodeB1 && draft.taxCodeSource ? (
+                        <span className="inline-block rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider bg-muted text-muted-foreground">
+                          Auto
+                        </span>
+                      ) : null}
+                    </div>
                   ) : (
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {l.chosenTaxCodeB1 ?? l.suggestedTaxCodeB1 ?? '—'}
-                    </span>
+                    (() => {
+                      const displayTax = l.chosenTaxCodeB1 ?? l.suggestedTaxCodeB1;
+                      if (!displayTax) {
+                        return (
+                          <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-warning/15 text-warning">
+                            <AlertCircle className="h-2.5 w-2.5 flex-shrink-0" />
+                            TVA à confirmer
+                          </span>
+                        );
+                      }
+                      return (
+                        <div className="space-y-0.5">
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {displayTax}
+                          </span>
+                          {l.chosenTaxCodeB1 && (
+                            <span
+                              className={`block rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
+                                l.taxCodeLockedByUser
+                                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                                  : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              {l.taxCodeLockedByUser ? 'Manuel' : 'Auto'}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()
                   )}
                 </td>
 
                 {(editable || onCreateRule) && (
                   <td className="px-2 py-2 text-right whitespace-nowrap">
                     {isEditing ? (
-                      <span className="flex items-center gap-1 justify-end">
-                        <button
-                          onClick={() => saveLine(l.id)}
-                          disabled={saving}
-                          className="rounded-lg p-1 text-success transition-colors hover:bg-success/10 disabled:opacity-50"
-                          title="Valider"
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          onClick={cancelEdit}
-                          disabled={saving}
-                          className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-muted/60"
-                          title="Annuler"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
+                      <span className="flex flex-col items-end gap-1">
+                        <span className="flex items-center gap-1 justify-end">
+                          <button
+                            onClick={() => {
+                              void saveLine(l.id);
+                            }}
+                            disabled={saving}
+                            className="rounded-lg p-1 text-success transition-colors hover:bg-success/10 disabled:opacity-50"
+                            title="Valider"
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            onClick={cancelEdit}
+                            disabled={saving}
+                            className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-muted/60"
+                            title="Annuler"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
+                        {saveError && (
+                          <span className="text-[10px] text-destructive text-right max-w-[140px] leading-tight">
+                            {saveError}
+                          </span>
+                        )}
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 justify-end">
@@ -1001,8 +1363,9 @@ export default function InvoiceDetailPage() {
     simulate: boolean;
     attachmentWarning: string | null;
   } | null>(null);
+  const [postError, setPostError] = useState<string | null>(null);
   const [integrationMode, setIntegrationMode] = useState<IntegrationMode>('SERVICE_INVOICE');
-  const [simulate, setSimulate] = useState(false);
+  const [simulate, _setSimulate] = useState(false);
   // Reject
   const [showReject, setShowReject] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
@@ -1016,6 +1379,9 @@ export default function InvoiceDetailPage() {
   const [showAuditDrawer, setShowAuditDrawer] = useState(false);
   // Reset from ERROR
   const [resetting, setResetting] = useState(false);
+  // Push fiscal data from invoice to SAP B1 supplier
+  const [pushingFiscal, setPushingFiscal] = useState(false);
+  const [pushFiscalDone, setPushFiscalDone] = useState(false);
   // Supplier picker
   const [editingSupplier, setEditingSupplier] = useState(false);
   const [supplierList, setSupplierList] = useState<SupplierCache[]>([]);
@@ -1023,10 +1389,16 @@ export default function InvoiceDetailPage() {
   const [savingSupplier, setSavingSupplier] = useState(false);
   // Re-enrichissement
   const [reEnriching, setReEnriching] = useState(false);
+  // Re-parse lines
+  const [reParsing, setReParsing] = useState(false);
   // Supplier creation in SAP
   const [showCreateSupplier, setShowCreateSupplier] = useState(false);
+  const [createSupplierInitial, setCreateSupplierInitial] = useState<Partial<SupplierForm>>({});
   // Rule creation modal
   const [ruleModal, setRuleModal] = useState<RuleModalState | null>(null);
+  // Voie B — rattachement SAP
+  const [linking, setLinking] = useState(false);
+  const [linkSapConflict, setLinkSapConflict] = useState<SapPurchaseInvoiceRef[] | null>(null);
 
   const reloadInvoice = useCallback(async () => {
     if (!id) return;
@@ -1075,6 +1447,7 @@ export default function InvoiceDetailPage() {
     if (!id) return;
     setPosting(true);
     setPostResult(null);
+    setPostError(null);
     try {
       const result = await apiPostInvoice(id, { integrationMode, simulate });
       setPostResult({
@@ -1091,7 +1464,9 @@ export default function InvoiceDetailPage() {
       if (result.attachmentWarning) toast.error(`PJ : ${result.attachmentWarning}`);
       await reloadInvoice();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Erreur lors de l'intégration");
+      const message = err instanceof Error ? err.message : "Erreur lors de l'intégration";
+      setPostError(message);
+      toast.error(message);
       await reloadInvoice().catch(() => {});
     } finally {
       setPosting(false);
@@ -1121,22 +1496,63 @@ export default function InvoiceDetailPage() {
       const updated = await apiResetInvoice(id);
       setInvoice(updated);
       setPostResult(null);
+      setPushFiscalDone(false);
     } finally {
       setResetting(false);
     }
   }
 
+  async function handlePushSupplierFiscal() {
+    if (!id) return;
+    setPushingFiscal(true);
+    try {
+      await apiPushSupplierFiscal(id);
+      setPushFiscalDone(true);
+      toast.success('Identifiants fiscaux mis à jour dans SAP B1');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erreur lors de la mise à jour');
+    } finally {
+      setPushingFiscal(false);
+    }
+  }
+
   async function handleCreateSupplier(data: SupplierForm) {
     if (!id) return;
+    const federalTaxId = data.siret?.trim() || data.siren?.trim() || undefined;
     const result = await apiCreateSupplierInSap({
       cardCode: data.cardCode.trim(),
       cardName: data.cardName.trim(),
-      federalTaxId: data.federalTaxId?.trim() || undefined,
+      federalTaxId,
+      vatRegNum: data.vatRegNum?.trim() || undefined,
+      street: data.street?.trim() || undefined,
+      street2: data.street2?.trim() || undefined,
+      city: data.city?.trim() || undefined,
+      postalCode: data.postalCode?.trim() || undefined,
+      country: data.country?.trim() || undefined,
+      email: data.email?.trim() || undefined,
+      phone: data.phone?.trim() || undefined,
+      invoiceId: id,
     });
     const updated = await apiUpdateSupplier(id, result.cardCode);
     setInvoice(updated);
     setShowCreateSupplier(false);
     toast.success(`Fournisseur ${result.cardCode} créé et associé`);
+  }
+
+  async function openCreateSupplierModal() {
+    if (!invoice) return;
+    let suppliers = supplierList;
+    if (suppliers.length === 0) {
+      try {
+        const res = await apiGetSuppliers();
+        suppliers = res.items;
+        setSupplierList(res.items);
+      } catch {
+        suppliers = [];
+      }
+    }
+    setCreateSupplierInitial(buildSupplierPrefill(invoice, nextSupplierCardCode(suppliers)));
+    setShowCreateSupplier(true);
   }
 
   async function openSupplierPicker() {
@@ -1191,6 +1607,26 @@ export default function InvoiceDetailPage() {
     }
   }
 
+  async function handleLinkSap() {
+    if (!id) return;
+    setLinking(true);
+    setLinkSapConflict(null);
+    try {
+      const result = await apiLinkSap(id);
+      if ('conflict' in result) {
+        setLinkSapConflict(result.candidates);
+        toast.error(result.message);
+      } else {
+        toast.success(`Facture rattachée à SAP — DocNum ${result.sapDocNum}`);
+        await reloadInvoice();
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erreur lors du rattachement SAP');
+    } finally {
+      setLinking(false);
+    }
+  }
+
   async function handleReEnrich() {
     if (!id) return;
     setReEnriching(true);
@@ -1199,6 +1635,20 @@ export default function InvoiceDetailPage() {
       setInvoice(updated);
     } finally {
       setReEnriching(false);
+    }
+  }
+
+  async function handleReParseLines() {
+    if (!id) return;
+    setReParsing(true);
+    try {
+      const updated = await apiReParseLinesInvoice(id);
+      setInvoice(updated);
+      toast.success('Lignes ré-analysées depuis le XML');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erreur lors de la ré-analyse des lignes');
+    } finally {
+      setReParsing(false);
     }
   }
 
@@ -1266,10 +1716,10 @@ export default function InvoiceDetailPage() {
       <div className="page-header">
         <div>
           <p className="page-eyebrow">Detail facture</p>
-          <h1 className="page-title">{invoice.supplierNameRaw}</h1>
-          <p className="page-subtitle">
-            {invoice.docNumberPa} · recue le {formatDate(invoice.receivedAt)}
-          </p>
+          <h1 className="page-title">
+            {invoice.supplierNameRaw} · recue le {formatDate(invoice.receivedAt)}
+          </h1>
+          <p className="page-subtitle">{invoice.docNumberPa}</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <StatusBadge status={invoice.status} />
@@ -1289,6 +1739,18 @@ export default function InvoiceDetailPage() {
           >
             <HelpCircle className="h-4 w-4" />
           </Button>
+          {['NEW', 'TO_REVIEW', 'READY', 'ERROR'].includes(invoice.status) && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleLinkSap()}
+              disabled={linking}
+              title="Rattacher à une facture SAP créée manuellement (Voie B)"
+            >
+              <Link2 className="h-3.5 w-3.5 mr-1" />
+              {linking ? 'Recherche…' : 'Rattacher SAP'}
+            </Button>
+          )}
           {['NEW', 'TO_REVIEW', 'READY'].includes(invoice.status) && (
             <Button
               variant="outline"
@@ -1353,6 +1815,78 @@ export default function InvoiceDetailPage() {
         </div>
       )}
 
+      {/* Voie B — conflict modal (409 : plusieurs factures SAP trouvées) */}
+      {linkSapConflict && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-panel max-w-2xl max-h-[90vh] overflow-y-auto"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dlg-link-conflict-title"
+          >
+            <h2
+              id="dlg-link-conflict-title"
+              className="flex items-center gap-2 font-display text-2xl uppercase tracking-[0.08em] text-foreground"
+            >
+              <AlertCircle className="h-4 w-4 text-warning" /> Plusieurs factures SAP trouvées
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {linkSapConflict.length} factures SAP correspondent au numéro{' '}
+              <span className="font-mono font-semibold">{invoice.docNumberPa}</span>. Le
+              rattachement automatique est impossible — sélectionnez la bonne facture manuellement
+              dans SAP B1 en corrigeant le champ{' '}
+              <span className="font-mono">NumAtCard / Vendor Ref</span>.
+            </p>
+            <div className="overflow-x-auto rounded-xl border border-border/70">
+              <table className="w-full text-xs">
+                <thead className="bg-muted/30 border-b border-border/70">
+                  <tr>
+                    {[
+                      'DocNum',
+                      'DocEntry',
+                      'CardCode',
+                      'Fournisseur',
+                      'NumAtCard',
+                      'Date',
+                      'Total TTC',
+                    ].map((h) => (
+                      <th
+                        key={h}
+                        className="px-3 py-2 text-left font-semibold uppercase tracking-wider text-muted-foreground"
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {linkSapConflict.map((c) => (
+                    <tr key={c.docEntry} className="hover:bg-muted/20">
+                      <td className="px-3 py-2 font-mono font-semibold">{c.docNum}</td>
+                      <td className="px-3 py-2 font-mono text-muted-foreground">{c.docEntry}</td>
+                      <td className="px-3 py-2 font-mono">{c.cardCode}</td>
+                      <td className="px-3 py-2 max-w-[160px] truncate" title={c.cardName}>
+                        {c.cardName}
+                      </td>
+                      <td className="px-3 py-2 font-mono">{c.numAtCard}</td>
+                      <td className="px-3 py-2 font-mono">{c.docDate?.slice(0, 10)}</td>
+                      <td className="px-3 py-2 text-right font-semibold">
+                        {formatAmount(c.docTotal)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" onClick={() => setLinkSapConflict(null)}>
+                Fermer
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Rule creation modal */}
       {ruleModal && (
         <CreateRuleModal
@@ -1366,6 +1900,7 @@ export default function InvoiceDetailPage() {
       {/* Supplier creation modal */}
       {showCreateSupplier && (
         <CreateSupplierModal
+          initialValues={createSupplierInitial}
           onConfirm={handleCreateSupplier}
           onClose={() => setShowCreateSupplier(false)}
         />
@@ -1444,17 +1979,10 @@ export default function InvoiceDetailPage() {
         </div>
       )}
 
-      {/* 2-column layout */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        {/* ── LEFT — PDF/XML viewer (sticky) ── */}
-        <div className="lg:sticky lg:top-4 lg:self-start">
-          <Card className="flex flex-col overflow-hidden">
-            <FileViewerPanel files={invoice.files} invoiceId={invoice.id} />
-          </Card>
-        </div>
-
-        {/* ── RIGHT — editing panel ── */}
-        <div className="space-y-4">
+      {/* editing panel */}
+      <div className="space-y-4">
+        {/* Ligne 1 : En-tête + Matching fournisseur côte à côte */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {/* En-tête */}
           <Card>
             <CardHeader className="pb-2">
@@ -1482,34 +2010,9 @@ export default function InvoiceDetailPage() {
               {invoice.dueDate && <InfoRow label="Échéance" value={formatDate(invoice.dueDate)} />}
               <InfoRow label="Devise" value={invoice.currency} />
               <InfoRow label="Format" value={invoice.format} />
-              <InfoRow label="Source PA" value={invoice.paSource} />
+              <InfoRow label="Source PA" value={paSourceLabel(invoice.paSource)} />
             </CardContent>
           </Card>
-
-          {/* Montants */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="font-display text-xl uppercase tracking-[0.08em]">
-                Montants
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <InfoRow
-                label="Total HT"
-                value={formatAmount(invoice.totalExclTax, invoice.currency)}
-              />
-              <InfoRow label="Total TVA" value={formatAmount(invoice.totalTax, invoice.currency)} />
-              <div className="flex items-center justify-between py-2 gap-4">
-                <span className="text-sm font-semibold">Total TTC</span>
-                <span className="text-lg font-bold">
-                  {formatAmount(invoice.totalInclTax, invoice.currency)}
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Récapitulatif TVA */}
-          <TvaRecapCard lines={invoice.lines} invoice={invoice} />
 
           {/* Matching fournisseur */}
           <Card>
@@ -1522,6 +2025,11 @@ export default function InvoiceDetailPage() {
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Score de confiance</p>
                 <ConfidenceBar value={invoice.supplierMatchConfidence} />
+                {invoice.supplierMatchReason && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {invoice.supplierMatchReason}
+                  </p>
+                )}
               </div>
 
               {editingSupplier ? (
@@ -1536,6 +2044,11 @@ export default function InvoiceDetailPage() {
                     {supplierList.map((s) => (
                       <option key={s.cardcode} value={s.cardcode}>
                         {s.cardcode} — {s.cardname}
+                        {s.taxId0 || s.federaltaxid ? ` · ${s.taxId0 ?? s.federaltaxid}` : ''}
+                        {s.vatregnum ? ` · ${s.vatregnum}` : ''}
+                        {s.city || s.country
+                          ? ` · ${[s.city, s.country].filter(Boolean).join('/')}`
+                          : ''}
                       </option>
                     ))}
                   </select>
@@ -1577,8 +2090,13 @@ export default function InvoiceDetailPage() {
                         </p>
                       </div>
                     ) : (
-                      <div className="rounded-2xl border border-success/30 bg-success/10 px-3 py-2 text-xs font-mono text-success">
-                        {invoice.supplierB1Cardcode}
+                      <div className="rounded-2xl border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+                        <span className="font-mono font-semibold">
+                          {invoice.supplierB1Cardcode}
+                        </span>
+                        {invoice.supplierNameRaw && (
+                          <span className="ml-2 text-success/80">— {invoice.supplierNameRaw}</span>
+                        )}
                       </div>
                     )
                   ) : (
@@ -1604,7 +2122,9 @@ export default function InvoiceDetailPage() {
                           size="sm"
                           variant="outline"
                           className="w-full text-xs"
-                          onClick={() => setShowCreateSupplier(true)}
+                          onClick={() => {
+                            void openCreateSupplierModal();
+                          }}
                         >
                           <BookmarkPlus className="h-3 w-3 mr-1.5" /> Créer dans SAP B1
                         </Button>
@@ -1615,254 +2135,358 @@ export default function InvoiceDetailPage() {
               )}
             </CardContent>
           </Card>
+        </div>
+        {/* fin grid En-tête / Matching */}
 
-          {/* SAP Integration */}
-          <Card>
-            <CardHeader className="pb-2">
+        {/* Lignes de facture */}
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-2">
               <CardTitle className="font-display text-xl uppercase tracking-[0.08em]">
-                Intégration SAP B1
+                Lignes ({invoice.lines.length})
               </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center gap-2">
-                {isPosted ? (
-                  <CheckCircle2 className="h-5 w-5 text-success" />
-                ) : isError ? (
-                  <XCircle className="h-5 w-5 text-destructive" />
-                ) : (
-                  <Clock className="h-5 w-5 text-muted-foreground" />
-                )}
-                <span className="text-sm font-medium">
-                  {isPosted ? 'Intégrée' : isError ? 'Erreur' : 'En attente'}
-                </span>
-              </div>
-              {invoice.sapDocEntry && (
-                <InfoRow
-                  label="DocEntry"
-                  value={<span className="font-mono text-xs">{invoice.sapDocEntry}</span>}
-                />
-              )}
-              {invoice.sapDocNum && (
-                <InfoRow
-                  label="DocNum"
-                  value={<span className="font-mono text-xs">{invoice.sapDocNum}</span>}
-                />
-              )}
-              {invoice.integrationMode && <InfoRow label="Mode" value={invoice.integrationMode} />}
-              {invoice.sapAttachmentEntry && (
-                <a
-                  href={`/api/invoices/${invoice.id}/files/xml`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-1.5 text-xs text-primary hover:underline"
+              {(invoice.format === 'UBL' || invoice.format === 'CII') && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => {
+                    void handleReParseLines();
+                  }}
+                  disabled={reParsing}
+                  title="Ré-analyser les lignes depuis le fichier XML"
                 >
-                  <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
-                  UBL attaché dans SAP (AttachmentEntry&nbsp;#{invoice.sapAttachmentEntry})
-                  <ExternalLink className="h-3 w-3" />
-                </a>
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${reParsing ? 'animate-spin' : ''}`} />
+                  {reParsing ? 'Analyse…' : 'Ré-analyser XML'}
+                </Button>
               )}
-              {invoice.statusReason && (
-                <div className="rounded-2xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-                  {invoice.statusReason}
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <LinesTab
+              lines={invoice.lines}
+              invoiceId={invoice.id}
+              editable={isEditable}
+              onSaved={setInvoice}
+              onCreateRule={openRuleModal}
+            />
+          </CardContent>
+        </Card>
+
+        {/* Ligne : Montants + TVA (1/3) | Intégration SAP B1 (2/3) */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {/* Colonne gauche 1/3 : Montants + Récapitulatif TVA */}
+          <div className="space-y-4">
+            {/* Montants */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="font-display text-xl uppercase tracking-[0.08em]">
+                  Montants
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <InfoRow
+                  label="Total HT"
+                  value={formatAmount(invoice.totalExclTax, invoice.currency)}
+                />
+                <InfoRow
+                  label="Total TVA"
+                  value={formatAmount(invoice.totalTax, invoice.currency)}
+                />
+                <div className="flex items-center justify-between py-2 gap-4">
+                  <span className="text-sm font-semibold">Total TTC</span>
+                  <span className="text-lg font-bold">
+                    {formatAmount(invoice.totalInclTax, invoice.currency)}
+                  </span>
                 </div>
-              )}
+              </CardContent>
+            </Card>
 
-              {isError && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full"
-                  onClick={handleReset}
-                  disabled={resetting}
-                >
-                  <ArrowLeft className="h-3.5 w-3.5 mr-1.5" />
-                  {resetting ? 'Remise en traitement…' : 'Remettre en traitement'}
-                </Button>
-              )}
+            {/* Récapitulatif TVA */}
+            <TvaRecapCard lines={invoice.lines} invoice={invoice} />
+          </div>
 
-              {/* Re-enrichissement — visible si NEW ou TO_REVIEW */}
-              {['NEW', 'TO_REVIEW'].includes(invoice.status) && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full text-xs"
-                  onClick={handleReEnrich}
-                  disabled={reEnriching}
-                >
-                  <RefreshCw
-                    className={`h-3.5 w-3.5 mr-1.5 ${reEnriching ? 'animate-spin' : ''}`}
+          {/* Colonne droite 2/3 : Intégration SAP B1 */}
+          <div className="lg:col-span-2">
+            {/* Intégration SAP B1 */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="font-display text-xl uppercase tracking-[0.08em]">
+                  Intégration SAP B1
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center gap-2">
+                  {isPosted ? (
+                    <CheckCircle2 className="h-5 w-5 text-success" />
+                  ) : isError ? (
+                    <XCircle className="h-5 w-5 text-destructive" />
+                  ) : (
+                    <Clock className="h-5 w-5 text-muted-foreground" />
+                  )}
+                  <span className="text-sm font-medium">
+                    {isPosted ? 'Intégrée' : isError ? 'Erreur' : 'En attente'}
+                  </span>
+                </div>
+                {invoice.sapDocEntry && (
+                  <InfoRow
+                    label="DocEntry"
+                    value={<span className="font-mono text-xs">{invoice.sapDocEntry}</span>}
                   />
-                  {reEnriching ? 'Ré-analyse en cours…' : 'Ré-analyser (moteur de règles)'}
-                </Button>
-              )}
-
-              {/* Série + brouillon */}
-              {isEditable && (
-                <div className="space-y-2 border-t border-border/70 pt-2">
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                      Série SAP
-                    </label>
-                    <input
-                      className="app-input h-9 text-xs font-mono"
-                      value={sapSeries}
-                      onChange={(e) => setSapSeries(e.target.value)}
-                      placeholder="ex: S1"
-                      disabled={savingDraft}
-                    />
+                )}
+                {invoice.sapDocNum && (
+                  <InfoRow
+                    label="DocNum"
+                    value={<span className="font-mono text-xs">{invoice.sapDocNum}</span>}
+                  />
+                )}
+                {invoice.integrationMode && (
+                  <InfoRow label="Mode" value={invoice.integrationMode} />
+                )}
+                {invoice.sapAttachmentEntry && (
+                  <a
+                    href={`/api/invoices/${invoice.id}/files/xml`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-1.5 text-xs text-primary hover:underline"
+                  >
+                    <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
+                    UBL attaché dans SAP (AttachmentEntry&nbsp;#{invoice.sapAttachmentEntry})
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+                {invoice.statusReason && (
+                  <div className="rounded-2xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                    {invoice.statusReason}
                   </div>
+                )}
+
+                {/* Mise à jour TVA intracommunautaire depuis la facture */}
+                {['READY', 'TO_REVIEW', 'ERROR'].includes(invoice.status) &&
+                  invoice.supplierB1Cardcode &&
+                  invoice.supplierExtracted?.vatNumber && (
+                    <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs space-y-2">
+                      <p className="font-semibold text-foreground">TVA disponible sur la facture</p>
+                      <div className="space-y-0.5 text-muted-foreground font-mono">
+                        {(invoice.supplierExtracted?.siret || invoice.supplierExtracted?.siren) && (
+                          <p>
+                            N° identification :{' '}
+                            <span className="text-foreground font-semibold">
+                              {invoice.supplierExtracted?.siret ?? invoice.supplierExtracted?.siren}
+                            </span>
+                            <span className="text-muted-foreground/60">
+                              {' '}
+                              (à saisir manuellement dans SAP B1)
+                            </span>
+                          </p>
+                        )}
+                        <p>
+                          TVA intracommunautaire :{' '}
+                          <span className="text-foreground font-semibold">
+                            {invoice.supplierExtracted.vatNumber}
+                          </span>
+                        </p>
+                      </div>
+                      {pushFiscalDone ? (
+                        <div className="flex items-center gap-1.5 text-success text-xs font-medium">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          TVA appliquée dans SAP B1 — relancez l'intégration.
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="w-full"
+                          onClick={() => {
+                            void handlePushSupplierFiscal();
+                          }}
+                          disabled={pushingFiscal}
+                        >
+                          {pushingFiscal
+                            ? 'Mise à jour en cours…'
+                            : 'Appliquer la TVA sur la fiche fournisseur SAP B1'}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+
+                {isError && (
                   <Button
                     variant="outline"
                     size="sm"
                     className="w-full"
-                    onClick={() => {
-                      void handleSaveDraft();
-                    }}
-                    disabled={savingDraft}
+                    onClick={handleReset}
+                    disabled={resetting}
                   >
-                    <Save className="h-4 w-4 mr-1.5" />
-                    {savingDraft ? 'Enregistrement…' : 'Enregistrer le brouillon'}
+                    <ArrowLeft className="h-3.5 w-3.5 mr-1.5" />
+                    {resetting ? 'Remise en traitement…' : 'Remettre en traitement'}
                   </Button>
-                </div>
-              )}
-
-              {/* Alerte fournisseur non référencé dans SAP */}
-              {invoice.supplierInCache === false &&
-                invoice.supplierB1Cardcode &&
-                !postResult &&
-                (invoice.status === 'READY' || invoice.status === 'TO_REVIEW') && (
-                  <div className="mt-2 rounded-2xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive flex items-start gap-2">
-                    <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-semibold">Fournisseur non référencé dans SAP B1</p>
-                      <p className="mt-0.5 text-destructive/80">
-                        Le CardCode{' '}
-                        <span className="font-mono font-semibold">
-                          {invoice.supplierB1Cardcode}
-                        </span>{' '}
-                        est absent du cache fournisseurs. L'intégration échouera lors de la
-                        validation SAP. Synchronisez les fournisseurs ou réassignez-en un existant.
-                      </p>
-                    </div>
-                  </div>
                 )}
 
-              {/* Posting UI — visible only if READY and supplier resolved */}
-              {(invoice.status === 'READY' || invoice.status === 'TO_REVIEW') &&
-                invoice.supplierB1Cardcode &&
-                !postResult && (
-                  <div className="mt-2 space-y-3 border-t border-border/70 pt-2">
-                    <div className="space-y-1.5">
-                      <label className="text-xs text-muted-foreground font-medium">
-                        Mode d'intégration
+                {/* Re-enrichissement — visible si NEW ou TO_REVIEW */}
+                {['NEW', 'TO_REVIEW'].includes(invoice.status) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full text-xs"
+                    onClick={handleReEnrich}
+                    disabled={reEnriching}
+                  >
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 mr-1.5 ${reEnriching ? 'animate-spin' : ''}`}
+                    />
+                    {reEnriching ? 'Recalcul en cours…' : 'Recalculer fournisseur / comptes / TVA'}
+                  </Button>
+                )}
+
+                {/* Série + brouillon */}
+                {isEditable && (
+                  <div className="space-y-2 border-t border-border/70 pt-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                        Série SAP
                       </label>
-                      <select
-                        className="app-input h-10 text-xs"
-                        value={integrationMode}
-                        onChange={(e) => setIntegrationMode(e.target.value as IntegrationMode)}
-                        disabled={posting}
-                      >
-                        <option value="SERVICE_INVOICE">Facture d'achat (Service)</option>
-                        <option value="JOURNAL_ENTRY">Écriture comptable</option>
-                      </select>
-                    </div>
-                    <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
                       <input
-                        type="checkbox"
-                        checked={simulate}
-                        onChange={(e) => setSimulate(e.target.checked)}
-                        disabled={posting}
-                        className="h-4 w-4 rounded border-input bg-background text-primary focus:ring-primary"
+                        className="app-input h-9 text-xs font-mono"
+                        value={sapSeries}
+                        onChange={(e) => setSapSeries(e.target.value)}
+                        placeholder="ex: S1"
+                        disabled={savingDraft}
                       />
-                      Mode simulation (sans appel SAP réel)
-                    </label>
-                    <Button className="w-full" size="sm" onClick={handlePost} disabled={posting}>
-                      <Send className="h-4 w-4 mr-1.5" />
-                      {posting ? 'Intégration en cours…' : 'Intégrer dans SAP B1'}
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => {
+                        void handleSaveDraft();
+                      }}
+                      disabled={savingDraft}
+                    >
+                      <Save className="h-4 w-4 mr-1.5" />
+                      {savingDraft ? 'Enregistrement…' : 'Enregistrer (sans intégrer SAP)'}
                     </Button>
                   </div>
                 )}
 
-              {/* Success banner */}
-              {postResult && (
-                <div className="space-y-2">
-                  <div className="space-y-0.5 rounded-2xl border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
-                    <p className="font-semibold flex items-center gap-1">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      {postResult.simulate ? 'Simulation réussie' : 'Intégrée dans SAP B1'}
-                    </p>
-                    <p>
-                      DocEntry : <span className="font-mono">{postResult.sapDocEntry}</span>
-                    </p>
-                    <p>
-                      DocNum : <span className="font-mono">{postResult.sapDocNum}</span>
-                    </p>
-                  </div>
-                  {postResult.attachmentWarning && (
-                    <div className="rounded-2xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-                      ⚠ {postResult.attachmentWarning}
+                {/* Alerte fournisseur non référencé dans SAP */}
+                {invoice.supplierInCache === false &&
+                  invoice.supplierB1Cardcode &&
+                  !postResult &&
+                  (invoice.status === 'READY' || invoice.status === 'TO_REVIEW') && (
+                    <div className="mt-2 rounded-2xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive flex items-start gap-2">
+                      <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold">Fournisseur non référencé dans SAP B1</p>
+                        <p className="mt-0.5 text-destructive/80">
+                          Le CardCode{' '}
+                          <span className="font-mono font-semibold">
+                            {invoice.supplierB1Cardcode}
+                          </span>{' '}
+                          est absent du cache fournisseurs. L'intégration échouera lors de la
+                          validation SAP. Synchronisez les fournisseurs ou réassignez-en un
+                          existant.
+                        </p>
+                      </div>
                     </div>
                   )}
-                </div>
-              )}
 
-              {/* Retour statut PA */}
-              {['POSTED', 'REJECTED'].includes(invoice.status) && (
-                <div className="mt-2 space-y-2 border-t border-border/70 pt-2">
-                  {invoice.paStatusSentAt ? (
-                    <div className="alert-info text-xs">
-                      <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0" />
-                      Statut retourné à la PA le {formatDate(invoice.paStatusSentAt)}
-                    </div>
-                  ) : (
-                    <>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
-                        onClick={handleSendStatus}
-                        disabled={sendingStatus}
-                      >
-                        <Send className="h-3.5 w-3.5 mr-1.5" />
-                        {sendingStatus ? 'Envoi en cours…' : 'Retourner statut à la PA'}
+                {/* Posting UI — visible only if READY and supplier resolved */}
+                {(invoice.status === 'READY' || invoice.status === 'TO_REVIEW') &&
+                  invoice.supplierB1Cardcode &&
+                  !postResult && (
+                    <div className="mt-2 space-y-3 border-t border-border/70 pt-2">
+                      {postError && (
+                        <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+                          <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                          <span>{postError}</span>
+                        </div>
+                      )}
+                      <div className="space-y-1.5">
+                        <label className="text-xs text-muted-foreground font-medium">
+                          Mode d'intégration
+                        </label>
+                        <select
+                          className="app-input h-10 text-xs"
+                          value={integrationMode}
+                          onChange={(e) => setIntegrationMode(e.target.value as IntegrationMode)}
+                          disabled={posting}
+                        >
+                          <option value="SERVICE_INVOICE">Facture d'achat (Service)</option>
+                          <option value="JOURNAL_ENTRY">Écriture comptable</option>
+                        </select>
+                      </div>
+                      <Button className="w-full" size="sm" onClick={handlePost} disabled={posting}>
+                        <Send className="h-4 w-4 mr-1.5" />
+                        {posting ? 'Intégration en cours…' : 'Intégrer dans SAP B1'}
                       </Button>
-                    </>
+                    </div>
                   )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
 
-          {/* Lignes de facture */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="font-display text-xl uppercase tracking-[0.08em]">
-                Lignes ({invoice.lines.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <LinesTab
-                lines={invoice.lines}
-                invoiceId={invoice.id}
-                editable={isEditable}
-                onSaved={setInvoice}
-                onCreateRule={openRuleModal}
-              />
-            </CardContent>
-          </Card>
+                {/* Success banner */}
+                {postResult && (
+                  <div className="space-y-2">
+                    <div className="space-y-0.5 rounded-2xl border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+                      <p className="font-semibold flex items-center gap-1">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        {postResult.simulate ? 'Simulation réussie' : 'Intégrée dans SAP B1'}
+                      </p>
+                      <p>
+                        DocEntry : <span className="font-mono">{postResult.sapDocEntry}</span>
+                      </p>
+                      <p>
+                        DocNum : <span className="font-mono">{postResult.sapDocNum}</span>
+                      </p>
+                    </div>
+                    {postResult.attachmentWarning && (
+                      <div className="rounded-2xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                        ⚠ {postResult.attachmentWarning}
+                      </div>
+                    )}
+                  </div>
+                )}
 
-          {/* Fichiers */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="font-display text-xl uppercase tracking-[0.08em]">
-                Fichiers ({invoice.files.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <FilesTab files={invoice.files} invoiceId={invoice.id} />
-            </CardContent>
-          </Card>
+                {/* Retour statut PA */}
+                {['POSTED', 'REJECTED'].includes(invoice.status) && (
+                  <div className="mt-2 space-y-2 border-t border-border/70 pt-2">
+                    {invoice.paStatusSentAt ? (
+                      <div className="alert-info text-xs">
+                        <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0" />
+                        Statut retourné à la PA le {formatDate(invoice.paStatusSentAt)}
+                      </div>
+                    ) : (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full"
+                          onClick={handleSendStatus}
+                          disabled={sendingStatus}
+                        >
+                          <Send className="h-3.5 w-3.5 mr-1.5" />
+                          {sendingStatus ? 'Envoi en cours…' : 'Retourner statut à la PA'}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+          {/* fin col 2/3 */}
         </div>
+        {/* fin grid 1/3 - 2/3 */}
+
+        {/* Fichiers */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="font-display text-xl uppercase tracking-[0.08em]">
+              Fichiers ({invoice.files.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <FilesTab files={invoice.files} invoiceId={invoice.id} />
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

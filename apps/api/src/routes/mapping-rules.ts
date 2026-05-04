@@ -2,6 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { requireSession } from '../middleware/require-session';
 import { prisma, createAuditLogBestEffort } from '@pa-sap-bridge/database';
 import type { MappingScope } from '@pa-sap-bridge/database';
+import { checkTaxCodesExist, checkCostCentersExist } from '../services/sap-reference.service';
+import {
+  validateCachedAccount,
+  isCachePopulated,
+} from '../services/chart-of-accounts-cache.service';
 
 interface CreateRuleBody {
   scope: 'GLOBAL' | 'SUPPLIER';
@@ -17,6 +22,8 @@ interface CreateRuleBody {
 }
 
 interface PatchRuleBody {
+  scope?: 'GLOBAL' | 'SUPPLIER';
+  supplierCardcode?: string | null;
   matchKeyword?: string | null;
   matchTaxRate?: number | null;
   accountCode?: string;
@@ -32,6 +39,42 @@ function getRequestMeta(request: { ip: string; headers: Record<string, unknown> 
     userAgent:
       typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
   };
+}
+
+interface SapRefErrors {
+  accountCode?: string;
+  taxCodeB1?: string;
+  costCenter?: string;
+}
+
+async function validateRefsAgainstSap(
+  sapCookieHeader: string,
+  accountCode: string | undefined,
+  taxCodeB1: string | null | undefined,
+  costCenter: string | null | undefined,
+): Promise<SapRefErrors> {
+  const errors: SapRefErrors = {};
+
+  const cacheReady = await isCachePopulated();
+  const [accountResult, taxResult, costCenterResult] = await Promise.all([
+    accountCode && cacheReady ? validateCachedAccount(accountCode) : null,
+    taxCodeB1 ? checkTaxCodesExist(sapCookieHeader, [taxCodeB1]) : null,
+    costCenter ? checkCostCentersExist(sapCookieHeader, [costCenter]) : null,
+  ]);
+
+  if (accountCode && !cacheReady) {
+    errors.accountCode = `Plan comptable non synchronisé — synchronisez d'abord le plan comptable SAP B1 dans les Paramètres avant de créer une règle.`;
+  } else if (accountResult && !accountResult.ok) {
+    errors.accountCode = `${accountResult.reason} : ${accountCode}`;
+  }
+  if (taxResult?.missing.length) {
+    errors.taxCodeB1 = `Code TVA introuvable dans SAP B1 : ${taxResult.missing.join(', ')}`;
+  }
+  if (costCenterResult?.missing.length) {
+    errors.costCenter = `Centre de coût introuvable dans SAP B1 : ${costCenterResult.missing.join(', ')}`;
+  }
+
+  return errors;
 }
 
 export async function mappingRuleRoutes(app: FastifyInstance): Promise<void> {
@@ -68,13 +111,29 @@ export async function mappingRuleRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { sapUser } = request.sapSession!;
+      const { sapUser, sapCookieHeader } = request.sapSession!;
       const body = request.body;
 
       if (body.scope === 'SUPPLIER' && !body.supplierCardcode) {
         return reply
           .code(422)
           .send({ success: false, error: 'supplierCardcode obligatoire pour une règle SUPPLIER.' });
+      }
+
+      // Validation des références SAP
+      const sapErrors = await validateRefsAgainstSap(
+        sapCookieHeader,
+        body.accountCode,
+        body.taxCodeB1,
+        body.costCenter,
+      );
+
+      if (Object.keys(sapErrors).length > 0) {
+        return reply.code(422).send({
+          success: false,
+          error: Object.values(sapErrors).join(' — '),
+          data: { sapErrors },
+        });
       }
 
       const rule = await prisma.mappingRule.create({
@@ -121,6 +180,8 @@ export async function mappingRuleRoutes(app: FastifyInstance): Promise<void> {
         body: {
           type: 'object',
           properties: {
+            scope: { type: 'string', enum: ['GLOBAL', 'SUPPLIER'] },
+            supplierCardcode: { type: ['string', 'null'], maxLength: 50 },
             matchKeyword: { type: ['string', 'null'], maxLength: 200 },
             matchTaxRate: { type: ['number', 'null'] },
             accountCode: { type: 'string', minLength: 1, maxLength: 20 },
@@ -134,17 +195,69 @@ export async function mappingRuleRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const { id } = request.params;
-      const { sapUser } = request.sapSession!;
+      const { sapUser, sapCookieHeader } = request.sapSession!;
 
       const existing = await prisma.mappingRule.findUnique({ where: { id } });
       if (!existing) return reply.code(404).send({ success: false, error: 'Règle introuvable.' });
 
-      const { matchKeyword, matchTaxRate, accountCode, costCenter, taxCodeB1, confidence, active } =
-        request.body;
+      const {
+        scope,
+        supplierCardcode,
+        matchKeyword,
+        matchTaxRate,
+        accountCode,
+        costCenter,
+        taxCodeB1,
+        confidence,
+        active,
+      } = request.body;
+
+      // Cohérence scope/supplierCardcode
+      const newScope = scope ?? existing.scope;
+      const newSupplierCardcode =
+        newScope === 'GLOBAL'
+          ? null
+          : supplierCardcode !== undefined
+            ? supplierCardcode
+            : existing.supplierCardcode;
+      if (newScope === 'SUPPLIER' && !newSupplierCardcode) {
+        return reply
+          .code(422)
+          .send({ success: false, error: 'supplierCardcode obligatoire pour une règle SUPPLIER.' });
+      }
+
+      // Valider uniquement les champs SAP modifiés
+      const accountToCheck =
+        accountCode !== undefined && accountCode !== existing.accountCode ? accountCode : undefined;
+      const taxToCheck =
+        taxCodeB1 !== undefined && taxCodeB1 !== existing.taxCodeB1 ? taxCodeB1 : undefined;
+      const centerToCheck =
+        costCenter !== undefined && costCenter !== existing.costCenter ? costCenter : undefined;
+
+      if (accountToCheck !== undefined || taxToCheck !== undefined || centerToCheck !== undefined) {
+        const sapErrors = await validateRefsAgainstSap(
+          sapCookieHeader,
+          accountToCheck,
+          taxToCheck,
+          centerToCheck,
+        );
+
+        if (Object.keys(sapErrors).length > 0) {
+          return reply.code(422).send({
+            success: false,
+            error: Object.values(sapErrors).join(' — '),
+            data: { sapErrors },
+          });
+        }
+      }
 
       const updated = await prisma.mappingRule.update({
         where: { id },
         data: {
+          ...(scope !== undefined ? { scope, supplierCardcode: newSupplierCardcode } : {}),
+          ...(supplierCardcode !== undefined && scope === undefined
+            ? { supplierCardcode: newSupplierCardcode }
+            : {}),
           ...(matchKeyword !== undefined ? { matchKeyword } : {}),
           ...(matchTaxRate !== undefined ? { matchTaxRate } : {}),
           ...(accountCode !== undefined ? { accountCode } : {}),

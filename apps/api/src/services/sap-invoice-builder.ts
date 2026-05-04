@@ -23,6 +23,8 @@ export interface InvoiceData {
   docDate: Date;
   dueDate: Date | null;
   currency: string;
+  // Taux de change document/devise locale (1 si même devise). Requis par SAP B1 quand DocCurrency est fourni.
+  docRate?: number;
 }
 
 export interface LineData {
@@ -67,9 +69,8 @@ function resolveAccountCode(l: LineData): string | null {
 function resolveTaxCode(l: LineData, taxRateMap: Record<string, string>): string | null {
   if (l.chosenTaxCodeB1) return l.chosenTaxCodeB1;
   if (l.suggestedTaxCodeB1) return l.suggestedTaxCodeB1;
-  if (l.taxRate !== null) {
-    return taxRateMap[Number(l.taxRate).toFixed(2)] ?? null;
-  }
+  const rate = l.taxRate?.toString();
+  if (rate && taxRateMap[rate]) return taxRateMap[rate];
   return null;
 }
 
@@ -79,7 +80,7 @@ export function resolveLineForSap(
 ): ResolvedLineForSap {
   return {
     accountCode: resolveAccountCode(line),
-    costCenter: line.chosenCostCenter ?? line.suggestedCostCenter ?? null,
+    costCenter: line.chosenCostCenter ?? null,
     taxCode: resolveTaxCode(line, taxRateMap),
   };
 }
@@ -124,7 +125,10 @@ export function buildPurchaseDocPayload(
     TaxDate: toISODate(invoice.docDate),
     NumAtCard: invoice.docNumberPa,
     Comments: `PA: ${invoice.paSource} / msg ${invoice.paMessageId}`,
+    U_PA_REF: invoice.paMessageId,
     DocCurrency: invoice.currency,
+    // DocRate requis par SAP B1 quand DocCurrency est fourni — évite [OPCH.DocRate] = 0.
+    DocRate: invoice.docRate ?? 1,
     DocumentLines: documentLines,
   };
   if (attachmentEntry > 0) payload.AttachmentEntry = attachmentEntry;
@@ -247,6 +251,7 @@ export function buildJournalEntryPayload(
   const payload: Record<string, unknown> = {
     Memo: `${invoice.docNumberPa} — ${invoice.supplierNameRaw}`,
     Reference: invoice.docNumberPa,
+    Reference2: invoice.paMessageId,
     ReferenceDate: toISODate(invoice.docDate),
     DueDate: toISODate(invoice.dueDate ?? invoice.docDate),
     JournalEntryLines: jeLines,

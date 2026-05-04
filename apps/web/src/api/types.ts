@@ -7,6 +7,7 @@ export type {
   InvoiceLine,
   InvoiceFile,
   InvoiceDetail,
+  SupplierExtracted,
   AuditAction,
   AuditOutcome,
   AuditEntry,
@@ -16,4 +17,7 @@ export type {
   SapExecutionPolicy,
   SapValidationIssue,
   SapValidationReport,
+  SapPurchaseInvoiceRef,
+  LinkSapResult,
+  LinkSapConflict,
 } from '@pa-sap-bridge/shared';

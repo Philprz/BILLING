@@ -7,19 +7,32 @@ import {
   findInvoiceFiles,
   type FindInvoicesParams,
 } from '../repositories/invoice.repository';
+import type { InvoiceStatus } from '@pa-sap-bridge/database';
 import { requireSession } from '../middleware/require-session';
 import {
   uploadAttachment,
   createPurchaseDoc,
   createJournalEntry,
+  findPurchaseInvoiceByNumAtCard,
+  attachFileToExistingPurchaseInvoice,
+  patchBusinessPartnerFiscal,
   SapSlError,
+  type SapPurchaseInvoiceRef,
 } from '../services/sap-sl.service';
 import { buildPurchaseDocPayload, buildJournalEntryPayload } from '../services/sap-invoice-builder';
 import { sendPaStatus } from '../services/pa-status.service';
 import { resolveSapExecutionPolicy } from '../services/sap-policy.service';
 import { validateInvoiceForSapPost } from '../services/sap-validation.service';
+import {
+  validateCachedAccount,
+  isCachePopulated,
+} from '../services/chart-of-accounts-cache.service';
+import { searchChartOfAccounts } from '../services/sap-sl.service';
+import { resolveTaxCode } from '../services/tax-code-resolver.service';
 import { applyLearningAfterPost } from '../services/learning.service';
 import { enrichInvoiceById, enrichPendingInvoices } from '../services/enrichment.service';
+import { learnFromManualChoice } from '../services/learning.service';
+import { parseInvoiceXml } from '../services/xml-parser.service';
 import {
   buildPaStatusPayload,
   computeNextRetryAt,
@@ -30,11 +43,19 @@ import {
 } from '@pa-sap-bridge/database';
 import type { Prisma } from '@pa-sap-bridge/database';
 
-const INVOICE_STATUSES = ['NEW', 'TO_REVIEW', 'READY', 'POSTED', 'REJECTED', 'ERROR'] as const;
+const INVOICE_STATUSES = [
+  'NEW',
+  'TO_REVIEW',
+  'READY',
+  'POSTED',
+  'LINKED',
+  'REJECTED',
+  'ERROR',
+] as const;
 const SORT_FIELDS = ['receivedAt', 'docDate', 'totalInclTax', 'status', 'supplierNameRaw'] as const;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
-const TERMINAL_STATUSES = new Set(['POSTED', 'REJECTED', 'ERROR']);
+const TERMINAL_STATUSES = new Set(['POSTED', 'LINKED', 'REJECTED']);
 
 interface PostInvoiceBody {
   integrationMode: 'SERVICE_INVOICE' | 'JOURNAL_ENTRY';
@@ -49,6 +70,8 @@ interface PatchLineBody {
   chosenAccountCode?: string | null;
   chosenCostCenter?: string | null;
   chosenTaxCodeB1?: string | null;
+  taxCodeLockedByUser?: boolean;
+  accountCodeLockedByUser?: boolean;
 }
 
 interface RejectInvoiceBody {
@@ -100,6 +123,15 @@ function buildValidationErrorMessage(validationReport: {
   return `${validationReport.issues[0].message} (+${validationReport.issues.length - 1} autre(s) erreur(s))`;
 }
 
+const ACTIVE_STATUSES: InvoiceStatus[] = ['NEW', 'TO_REVIEW', 'READY', 'ERROR'];
+
+function parseStatusParam(raw?: string): FindInvoicesParams['status'] {
+  if (!raw || raw === 'ALL') return undefined;
+  if (raw === 'ACTIVE') return ACTIVE_STATUSES;
+  if ((INVOICE_STATUSES as readonly string[]).includes(raw)) return raw as InvoiceStatus;
+  return undefined;
+}
+
 export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
   // ────────────────────────────────────────────────────────────────────────────
   // GET /api/invoices
@@ -116,7 +148,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           properties: {
             page: { type: 'integer', minimum: 1, default: 1 },
             limit: { type: 'integer', minimum: 1, maximum: MAX_LIMIT, default: DEFAULT_LIMIT },
-            status: { type: 'string', enum: [...INVOICE_STATUSES] },
+            status: { type: 'string', maxLength: 100 },
             paSource: { type: 'string', maxLength: 100 },
             supplierCardcode: { type: 'string', maxLength: 50 },
             dateFrom: { type: 'string', format: 'date' },
@@ -139,7 +171,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       const params: FindInvoicesParams = {
         page,
         limit,
-        status: q.status as FindInvoicesParams['status'],
+        status: parseStatusParam(q.status),
         paSource: q.paSource,
         supplierCardcode: q.supplierCardcode,
         dateFrom: q.dateFrom,
@@ -174,7 +206,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       const { items } = await findInvoices({
         page: 1,
         limit: 5000,
-        status: q.status as FindInvoicesParams['status'],
+        status: parseStatusParam(q.status),
         paSource: q.paSource,
         supplierCardcode: q.supplierCardcode,
         dateFrom: q.dateFrom,
@@ -664,18 +696,26 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       });
 
       // Les codes TVA invalides sont non-bloquants : on retire le code du payload
-      // plutôt que de bloquer l'intégration. Les autres erreurs (supplier, compte) restent bloquantes.
-      const hardErrors = validationReport.issues.filter((i) => i.code !== 'INVALID_TAX_CODE');
+      // Codes TVA et centres de coût invalides : non-bloquants (neutralisés dans le payload).
+      // Les autres erreurs (supplier, compte comptable, statut) restent bloquantes.
+      const hardErrors = validationReport.issues.filter(
+        (i) => i.code !== 'INVALID_TAX_CODE' && i.code !== 'INVALID_COST_CENTER',
+      );
       const invalidTaxCodes = new Set(
         validationReport.issues
           .filter((i) => i.code === 'INVALID_TAX_CODE' && i.value)
+          .map((i) => i.value as string),
+      );
+      const invalidCostCenters = new Set(
+        validationReport.issues
+          .filter((i) => i.code === 'INVALID_COST_CENTER' && i.value)
           .map((i) => i.value as string),
       );
 
       if (hardErrors.length > 0) {
         return reply.code(422).send({
           success: false,
-          error: buildValidationErrorMessage(validationReport),
+          error: buildValidationErrorMessage({ issues: hardErrors }),
           data: {
             validationReport,
             policy: executionPolicy,
@@ -683,28 +723,42 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // Lignes avec codes TVA invalides neutralisés (chosenTaxCodeB1 et suggestedTaxCodeB1 → null)
-      const cleanedLines =
-        invalidTaxCodes.size > 0
-          ? invoice.lines.map((l) => ({
-              ...l,
-              chosenTaxCodeB1:
-                l.chosenTaxCodeB1 && invalidTaxCodes.has(l.chosenTaxCodeB1)
-                  ? null
-                  : l.chosenTaxCodeB1,
-              suggestedTaxCodeB1:
-                l.suggestedTaxCodeB1 && invalidTaxCodes.has(l.suggestedTaxCodeB1)
-                  ? null
-                  : l.suggestedTaxCodeB1,
-            }))
-          : invoice.lines;
+      // Neutralisation des codes TVA et centres de coût introuvables dans SAP
+      const cleanedLines = invoice.lines.map((l) => ({
+        ...l,
+        chosenTaxCodeB1:
+          l.chosenTaxCodeB1 && invalidTaxCodes.has(l.chosenTaxCodeB1) ? null : l.chosenTaxCodeB1,
+        suggestedTaxCodeB1:
+          l.suggestedTaxCodeB1 && invalidTaxCodes.has(l.suggestedTaxCodeB1)
+            ? null
+            : l.suggestedTaxCodeB1,
+        chosenCostCenter:
+          l.chosenCostCenter && invalidCostCenters.has(l.chosenCostCenter)
+            ? null
+            : l.chosenCostCenter,
+        suggestedCostCenter:
+          l.suggestedCostCenter && invalidCostCenters.has(l.suggestedCostCenter)
+            ? null
+            : l.suggestedCostCenter,
+      }));
 
+      const warnings: string[] = [];
       if (invalidTaxCodes.size > 0) {
-        attachmentWarning = `Code(s) TVA ignoré(s) car introuvable(s) dans SAP : ${[...invalidTaxCodes].join(', ')}`;
+        warnings.push(`Code(s) TVA ignoré(s) : ${[...invalidTaxCodes].join(', ')}`);
         app.log.warn(
           { invoiceId: id, invalidTaxCodes: [...invalidTaxCodes] },
           'Codes TVA invalides ignorés',
         );
+      }
+      if (invalidCostCenters.size > 0) {
+        warnings.push(`Centre(s) de coût ignoré(s) : ${[...invalidCostCenters].join(', ')}`);
+        app.log.warn(
+          { invoiceId: id, invalidCostCenters: [...invalidCostCenters] },
+          'Centres de coût invalides ignorés',
+        );
+      }
+      if (warnings.length > 0) {
+        attachmentWarning = warnings.join(' | ');
       }
 
       if (executionPolicy.effectivePostPolicy === 'disabled') {
@@ -1066,6 +1120,180 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/:id/link-sap                                  (Voie B)
+  // Rattache une facture PA à une facture SAP B1 créée manuellement.
+  //
+  // Comportement :
+  //   1. Recherche la facture SAP via NumAtCard = docNumberPa
+  //   2. Si 0 candidat  → 404 avec message français
+  //   3. Si N candidats → 409 avec liste des candidats (pas de choix automatique)
+  //   4. Si 1 candidat  → upload PJ + PATCH + statut LINKED + audit LINK_SAP
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Params: { id: string } }>(
+    '/api/invoices/:id/link-sap',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { sapCookieHeader, sapUser } = request.sapSession!;
+      const requestMeta = getRequestMeta(request);
+
+      // ── 1. Charger la facture avec ses fichiers ────────────────────────────
+      const invoice = await prisma.invoice.findUnique({
+        where: { id },
+        include: { files: true },
+      });
+
+      if (!invoice) {
+        return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      }
+
+      // ── 2. Garde-fous métier ──────────────────────────────────────────────
+      const nonLinkableStatuses = new Set(['POSTED', 'LINKED', 'REJECTED']);
+      if (nonLinkableStatuses.has(invoice.status)) {
+        return reply.code(422).send({
+          success: false,
+          error: `Impossible de rattacher une facture au statut "${invoice.status}". Statuts acceptés : NEW, TO_REVIEW, READY, ERROR.`,
+        });
+      }
+
+      // ── 3. Recherche SAP par NumAtCard ────────────────────────────────────
+      let searchResult: Awaited<ReturnType<typeof findPurchaseInvoiceByNumAtCard>>;
+      try {
+        searchResult = await findPurchaseInvoiceByNumAtCard(
+          sapCookieHeader,
+          invoice.docNumberPa,
+          invoice.supplierB1Cardcode ?? undefined,
+        );
+      } catch (err) {
+        const message =
+          err instanceof SapSlError
+            ? err.sapDetail
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        await createAuditLogBestEffort({
+          action: 'LINK_SAP',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: message,
+          payloadBefore: { status: invoice.status },
+          payloadAfter: { stage: 'SAP_SEARCH_ERROR', numAtCard: invoice.docNumberPa },
+          ...requestMeta,
+        });
+        return reply.code(502).send({ success: false, error: message });
+      }
+
+      if (searchResult.found === 'none') {
+        return reply.code(404).send({
+          success: false,
+          error: `Aucune facture SAP trouvée avec le numéro de référence "${invoice.docNumberPa}". Vérifiez que la facture a bien été saisie dans SAP B1 avec ce numéro dans le champ Vendor Ref / NumAtCard.`,
+        });
+      }
+
+      if (searchResult.found === 'many') {
+        return reply.code(409).send({
+          success: false,
+          error: `${searchResult.invoices.length} factures SAP correspondent au numéro "${invoice.docNumberPa}". Rattachement automatique impossible — sélection manuelle requise.`,
+          data: { candidates: searchResult.invoices satisfies SapPurchaseInvoiceRef[] },
+        });
+      }
+
+      const sapInvoice = searchResult.invoice;
+
+      // ── 4. Upload pièce jointe sur la facture SAP existante ───────────────
+      // Priorité : XML > PDF > premier fichier disponible
+      const fileToUpload =
+        invoice.files.find((f) => f.kind === 'XML') ??
+        invoice.files.find((f) => f.kind === 'PDF') ??
+        invoice.files[0];
+
+      let sapAttachmentEntry: number | null = null;
+
+      if (fileToUpload) {
+        try {
+          sapAttachmentEntry = await attachFileToExistingPurchaseInvoice(
+            sapCookieHeader,
+            sapInvoice.docEntry,
+            fileToUpload.path,
+            sapInvoice.attachmentEntry,
+          );
+        } catch (err) {
+          const message =
+            err instanceof SapSlError
+              ? err.sapDetail
+              : err instanceof Error
+                ? err.message
+                : String(err);
+          await createAuditLogBestEffort({
+            action: 'LINK_SAP',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: message,
+            payloadBefore: { status: invoice.status },
+            payloadAfter: {
+              stage: 'ATTACHMENT_ERROR',
+              numAtCard: invoice.docNumberPa,
+              sapDocEntry: sapInvoice.docEntry,
+              sapDocNum: sapInvoice.docNum,
+            },
+            ...requestMeta,
+          });
+          return reply.code(422).send({ success: false, error: message });
+        }
+      }
+
+      // ── 5. Persistance DB ─────────────────────────────────────────────────
+      const now = new Date();
+      await prisma.invoice.update({
+        where: { id },
+        data: {
+          status: 'LINKED',
+          sapDocEntry: sapInvoice.docEntry,
+          sapDocNum: sapInvoice.docNum,
+          sapAttachmentEntry,
+          sapAttachmentUploadedAt: sapAttachmentEntry !== null ? now : null,
+          statusReason: 'Facture SAP existante rattachée via NumAtCard',
+        },
+      });
+
+      // ── 6. Audit ──────────────────────────────────────────────────────────
+      await createAuditLog({
+        action: 'LINK_SAP',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadBefore: { status: invoice.status },
+        payloadAfter: {
+          status: 'LINKED',
+          numAtCard: invoice.docNumberPa,
+          sapDocEntry: sapInvoice.docEntry,
+          sapDocNum: sapInvoice.docNum,
+          cardCode: sapInvoice.cardCode,
+          attachmentEntry: sapAttachmentEntry,
+        },
+        ...requestMeta,
+      });
+
+      const updated = await findInvoiceById(id);
+      return reply.send({ success: true, data: updated });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
   // PATCH /api/invoices/:id/supplier
   // Force le CardCode SAP B1 (override du matching automatique).
   // ────────────────────────────────────────────────────────────────────────────
@@ -1096,12 +1324,10 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       const invoice = await prisma.invoice.findUnique({ where: { id } });
       if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
       if (TERMINAL_STATUSES.has(invoice.status)) {
-        return reply
-          .code(422)
-          .send({
-            success: false,
-            error: `Modification impossible au statut "${invoice.status}".`,
-          });
+        return reply.code(422).send({
+          success: false,
+          error: `Modification impossible au statut "${invoice.status}".`,
+        });
       }
 
       await prisma.invoice.update({
@@ -1109,6 +1335,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         data: {
           supplierB1Cardcode,
           supplierMatchConfidence: supplierB1Cardcode ? 100 : 0,
+          supplierMatchReason: supplierB1Cardcode ? 'Sélection manuelle utilisateur' : null,
         },
       });
 
@@ -1153,6 +1380,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             chosenAccountCode: { type: ['string', 'null'], maxLength: 20 },
             chosenCostCenter: { type: ['string', 'null'], maxLength: 20 },
             chosenTaxCodeB1: { type: ['string', 'null'], maxLength: 20 },
+            taxCodeLockedByUser: { type: 'boolean' },
           },
         },
       },
@@ -1167,17 +1395,59 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
       if (TERMINAL_STATUSES.has(invoice.status)) {
-        return reply
-          .code(422)
-          .send({
-            success: false,
-            error: `Modification impossible au statut "${invoice.status}".`,
-          });
+        return reply.code(422).send({
+          success: false,
+          error: `Modification impossible au statut "${invoice.status}".`,
+        });
       }
       const line = invoice.lines[0];
       if (!line) return reply.code(404).send({ success: false, error: 'Ligne introuvable' });
 
-      const { chosenAccountCode, chosenCostCenter, chosenTaxCodeB1 } = request.body;
+      const {
+        chosenAccountCode,
+        chosenCostCenter,
+        chosenTaxCodeB1,
+        taxCodeLockedByUser,
+        accountCodeLockedByUser,
+      } = request.body;
+      if (chosenAccountCode !== undefined && chosenAccountCode !== null) {
+        const cacheReady = await isCachePopulated();
+        if (cacheReady) {
+          const accountValidation = await validateCachedAccount(chosenAccountCode);
+          if (!accountValidation.ok) {
+            // Cache incomplet ? Vérifie directement dans SAP avant de rejeter.
+            const { sapCookieHeader } = request.sapSession!;
+            let confirmedInSap = false;
+            try {
+              const live = await searchChartOfAccounts(sapCookieHeader, chosenAccountCode);
+              confirmedInSap = live.some(
+                (a) => a.acctCode === chosenAccountCode && a.activeAccount,
+              );
+            } catch {
+              /* SAP injoignable — on refuse */
+            }
+
+            if (!confirmedInSap) {
+              return reply.code(422).send({
+                success: false,
+                error: `La ligne ${line.lineNo} utilise le compte ${chosenAccountCode}, qui n'existe pas ou n'est pas imputable dans SAP B1.`,
+                code: 'INVALID_SAP_ACCOUNT',
+              });
+            }
+          }
+        }
+      }
+
+      // Quand l'utilisateur définit explicitement un compte, on verrouille automatiquement
+      // pour éviter que le ré-enrichissement automatique l'écrase.
+      const lockAccount =
+        accountCodeLockedByUser !== undefined
+          ? accountCodeLockedByUser
+          : chosenAccountCode !== undefined && chosenAccountCode !== null
+            ? true
+            : chosenAccountCode === null
+              ? false
+              : undefined;
 
       await prisma.invoiceLine.update({
         where: { id: lineId },
@@ -1185,6 +1455,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           ...(chosenAccountCode !== undefined ? { chosenAccountCode } : {}),
           ...(chosenCostCenter !== undefined ? { chosenCostCenter } : {}),
           ...(chosenTaxCodeB1 !== undefined ? { chosenTaxCodeB1 } : {}),
+          ...(taxCodeLockedByUser !== undefined ? { taxCodeLockedByUser } : {}),
+          ...(lockAccount !== undefined ? { accountCodeLockedByUser: lockAccount } : {}),
         },
       });
 
@@ -1201,13 +1473,78 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           chosenAccountCode: line.chosenAccountCode,
           chosenCostCenter: line.chosenCostCenter,
           chosenTaxCodeB1: line.chosenTaxCodeB1,
+          taxCodeLockedByUser: line.taxCodeLockedByUser,
         },
-        payloadAfter: { lineNo: line.lineNo, chosenAccountCode, chosenCostCenter, chosenTaxCodeB1 },
+        payloadAfter: {
+          lineNo: line.lineNo,
+          chosenAccountCode,
+          chosenCostCenter,
+          chosenTaxCodeB1,
+          taxCodeLockedByUser,
+        },
         ...getRequestMeta(request),
       });
 
+      // Apprentissage immédiat : crée/renforce une règle fournisseur, puis ré-enrichit
+      // les autres lignes non verrouillées de la même facture (best-effort, non bloquant).
+      if (chosenAccountCode) {
+        learnFromManualChoice({ invoiceId: id, lineId, chosenAccountCode, sapUser })
+          .then(() => enrichInvoiceById(id))
+          .catch(() => {});
+      }
+
       const updated = await findInvoiceById(id);
       return reply.send({ success: true, data: updated });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/:id/lines/:lineId/resolve-tax-code
+  // Résout le code TVA SAP B1 optimal pour un compte comptable donné.
+  // Utilisé par le front pour pre-remplir le code TVA quand l'utilisateur
+  // change le compte comptable, sans déclencher une sauvegarde.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Params: { id: string; lineId: string }; Body: { accountCode: string } }>(
+    '/api/invoices/:id/lines/:lineId/resolve-tax-code',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'lineId'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            lineId: { type: 'string', format: 'uuid' },
+          },
+        },
+        body: {
+          type: 'object',
+          required: ['accountCode'],
+          properties: {
+            accountCode: { type: 'string', minLength: 1, maxLength: 20 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id, lineId } = request.params;
+      const { accountCode } = request.body;
+
+      const invoice = await prisma.invoice.findUnique({
+        where: { id },
+        include: { lines: { where: { id: lineId }, select: { taxRate: true } } },
+      });
+      if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      const line = invoice.lines[0];
+      if (!line) return reply.code(404).send({ success: false, error: 'Ligne introuvable' });
+
+      const resolution = await resolveTaxCode({
+        supplierCardCode: invoice.supplierB1Cardcode,
+        accountCode,
+        taxRate: line.taxRate ? Number(line.taxRate) : null,
+      });
+
+      return reply.send({ success: true, data: resolution });
     },
   );
 
@@ -1244,12 +1581,10 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
       if (TERMINAL_STATUSES.has(invoice.status)) {
-        return reply
-          .code(422)
-          .send({
-            success: false,
-            error: `Modification impossible au statut "${invoice.status}".`,
-          });
+        return reply.code(422).send({
+          success: false,
+          error: `Modification impossible au statut "${invoice.status}".`,
+        });
       }
 
       await prisma.invoice.update({
@@ -1430,11 +1765,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(404).send({ success: false, error: 'Facture introuvable' });
       }
 
-      const sendableStatuses = ['POSTED', 'REJECTED'];
+      // POSTED et LINKED (Voie B) → VALIDATED ; REJECTED → REJECTED
+      const sendableStatuses = ['POSTED', 'LINKED', 'REJECTED'];
       if (!sendableStatuses.includes(invoice.status)) {
         return reply.code(422).send({
           success: false,
-          error: `Retour de statut impossible depuis le statut "${invoice.status}". Statuts acceptés : POSTED, REJECTED.`,
+          error: `Retour de statut impossible depuis le statut "${invoice.status}". Statuts acceptés : POSTED, LINKED, REJECTED.`,
         });
       }
 
@@ -1559,6 +1895,226 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── POST /api/invoices/:id/re-parse-lines ──────────────────────────────────
+  // Relit le fichier XML source et remplace les lignes en base.
+  app.post<{ Params: { id: string } }>(
+    '/api/invoices/:id/re-parse-lines',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { sapUser } = request.sapSession!;
+
+      const invoice = await prisma.invoice.findUnique({
+        where: { id },
+        select: { id: true, status: true },
+      });
+      if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      if (['POSTED', 'REJECTED'].includes(invoice.status)) {
+        return reply.code(422).send({
+          success: false,
+          error: `Impossible de ré-analyser une facture au statut ${invoice.status}`,
+        });
+      }
+
+      // Trouver le fichier XML source
+      const xmlFile = await prisma.invoiceFile.findFirst({
+        where: { invoiceId: id, kind: 'XML' },
+        select: { path: true },
+        orderBy: { id: 'asc' },
+      });
+      if (!xmlFile) {
+        return reply.code(422).send({
+          success: false,
+          error: 'Aucun fichier XML trouvé pour cette facture',
+        });
+      }
+      if (!fs.existsSync(xmlFile.path)) {
+        return reply.code(422).send({
+          success: false,
+          error: `Fichier XML introuvable sur disque : ${path.basename(xmlFile.path)}`,
+        });
+      }
+
+      // Ré-analyse
+      const xmlContent = fs.readFileSync(xmlFile.path, 'utf-8');
+      const filename = path
+        .basename(xmlFile.path)
+        .replace(/^[^-]+-[^-]+-/, '')
+        .replace(/\.[^.]+$/, '');
+      const parsed = parseInvoiceXml(xmlContent, filename);
+
+      if (parsed.lines.length === 0) {
+        return reply.code(422).send({
+          success: false,
+          error: 'Aucune ligne trouvée dans le fichier XML',
+        });
+      }
+
+      // Remplace les lignes en base (transaction)
+      await prisma.$transaction([
+        prisma.invoiceLine.deleteMany({ where: { invoiceId: id } }),
+        prisma.invoiceLine.createMany({
+          data: parsed.lines.map((l) => ({
+            invoiceId: id,
+            lineNo: l.lineNo,
+            description: l.description,
+            quantity: l.quantity,
+            unitPrice: l.unitPrice,
+            amountExclTax: l.amountExclTax,
+            taxCode: l.taxCode,
+            taxRate: l.taxRate,
+            taxAmount: l.taxAmount,
+            amountInclTax: l.amountInclTax,
+          })),
+        }),
+      ]);
+
+      // Ré-enrichissement immédiat pour résoudre les comptes comptables
+      await enrichInvoiceById(id).catch(() => {});
+
+      await createAuditLogBestEffort({
+        action: 'EDIT_MAPPING',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadAfter: { stage: 'RE_PARSE_LINES_OK', linesCount: parsed.lines.length },
+        ...getRequestMeta(request),
+      });
+
+      const updated = await findInvoiceById(id);
+      return reply.send({ success: true, data: updated });
+    },
+  );
+
+  // ── POST /api/invoices/:id/push-supplier-fiscal ───────────────────────────
+  // Pousse les identifiants fiscaux extraits de la facture (SIRET/SIREN + TVA)
+  // vers la fiche BusinessPartner SAP B1 du fournisseur associé.
+  // Source : invoice.supplierExtracted.siret | siren | vatNumber
+  // Cible  : SAP B1 → TaxId0 (N° identification entreprise) + FederalTaxID (TVA)
+  app.post<{ Params: { id: string } }>(
+    '/api/invoices/:id/push-supplier-fiscal',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { sapCookieHeader, sapUser } = request.sapSession!;
+
+      const invoice = await prisma.invoice.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          supplierB1Cardcode: true,
+          supplierExtracted: true,
+        },
+      });
+
+      if (!invoice) {
+        return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      }
+      if (!invoice.supplierB1Cardcode) {
+        return reply
+          .code(422)
+          .send({ success: false, error: 'Aucun fournisseur SAP B1 associé à cette facture.' });
+      }
+
+      const extracted = invoice.supplierExtracted as {
+        siret?: string | null;
+        siren?: string | null;
+        vatNumber?: string | null;
+      } | null;
+
+      const federalTaxId = extracted?.vatNumber?.trim() || null;
+
+      if (!federalTaxId) {
+        return reply.code(422).send({
+          success: false,
+          error:
+            'La facture ne contient pas de numéro de TVA intracommunautaire à pousser vers SAP B1. Le SIRET/SIREN doit être saisi manuellement dans la fiche fournisseur SAP B1.',
+        });
+      }
+
+      try {
+        await patchBusinessPartnerFiscal(sapCookieHeader, invoice.supplierB1Cardcode, {
+          federalTaxId,
+        });
+      } catch (err) {
+        const message =
+          err instanceof SapSlError
+            ? err.sapDetail
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        const httpCode = err instanceof SapSlError ? err.httpStatus : 502;
+
+        await createAuditLogBestEffort({
+          action: 'EDIT_MAPPING',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: message,
+          payloadAfter: {
+            stage: 'PUSH_SUPPLIER_FISCAL_ERROR',
+            cardCode: invoice.supplierB1Cardcode,
+          },
+          ...getRequestMeta(request),
+        });
+
+        return reply.code(httpCode).send({ success: false, error: message });
+      }
+
+      // Mise à jour du cache local fournisseurs
+      await prisma.supplierCache
+        .update({
+          where: { cardcode: invoice.supplierB1Cardcode },
+          data: { syncAt: new Date() },
+        })
+        .catch(() => {}); // cache best-effort
+
+      await createAuditLogBestEffort({
+        action: 'EDIT_MAPPING',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadAfter: {
+          stage: 'PUSH_SUPPLIER_FISCAL_OK',
+          cardCode: invoice.supplierB1Cardcode,
+          federalTaxId,
+        },
+        ...getRequestMeta(request),
+      });
+
+      return reply.send({
+        success: true,
+        data: {
+          cardCode: invoice.supplierB1Cardcode,
+          taxId0: null,
+          federalTaxId,
+        },
+      });
+    },
+  );
+
   // ── POST /api/invoices/re-enrich-all ──────────────────────────────────────
   // Batch : re-applique le matching sur toutes les factures NEW/TO_REVIEW.
   app.post(
@@ -1595,7 +2151,7 @@ async function recalculateInvoiceStatus(invoiceId: string): Promise<void> {
   const hasSupplier = !!inv.supplierB1Cardcode;
   const allLinesHaveAccount =
     inv.lines.length > 0 &&
-    inv.lines.every((l) => (l.chosenAccountCode ?? l.suggestedAccountCode) !== null);
+    inv.lines.every((l) => l.chosenAccountCode !== null && l.chosenTaxCodeB1 !== null);
 
   const newStatus = hasSupplier && allLinesHaveAccount ? 'READY' : 'TO_REVIEW';
 
@@ -1605,7 +2161,7 @@ async function recalculateInvoiceStatus(invoiceId: string): Promise<void> {
     parts.push(
       inv.lines.length === 0
         ? 'aucune ligne structurée'
-        : 'compte comptable manquant sur une ou plusieurs lignes',
+        : 'compte comptable choisi ou code TVA B1 manquant sur une ou plusieurs lignes',
     );
 
   await prisma.invoice.update({

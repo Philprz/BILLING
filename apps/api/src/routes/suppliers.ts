@@ -1,60 +1,42 @@
 import type { FastifyInstance } from 'fastify';
 import { findSuppliers } from '../repositories/supplier.repository';
 import { requireSession } from '../middleware/require-session';
-import { prisma } from '@pa-sap-bridge/database';
-import { normalizeSapCookieHeader } from '../services/sap-auth.service';
+import { createAuditLogBestEffort, prisma } from '@pa-sap-bridge/database';
 import { createBusinessPartner, SapSlError } from '../services/sap-sl.service';
+import {
+  getSuppliersSyncStatus,
+  syncSuppliersFromSap,
+} from '../services/sap-suppliers-sync.service';
 
 interface CreateSupplierBody {
   cardCode: string;
   cardName: string;
   federalTaxId?: string;
+  vatRegNum?: string;
+  street?: string;
+  street2?: string;
+  city?: string;
+  postalCode?: string;
+  country?: string;
+  email?: string;
+  phone?: string;
+  invoiceId?: string;
+}
+
+function getRequestMeta(request: { ip: string; headers: Record<string, unknown> }) {
+  return {
+    ipAddress: request.ip,
+    userAgent:
+      typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
+  };
 }
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
-const SAP_BASE_URL = (process.env.SAP_REST_BASE_URL ?? '').replace(/\/$/, '');
-
 interface SupplierListQuery {
   page?: number;
   limit?: number;
   search?: string;
-}
-
-interface SapBpRow {
-  CardCode: string;
-  CardName: string;
-  FederalTaxID?: string;
-  VATRegistrationNumber?: string;
-}
-
-async function fetchSapSuppliers(sapCookie: string): Promise<SapBpRow[]> {
-  const cookie = normalizeSapCookieHeader(sapCookie);
-  const all: SapBpRow[] = [];
-  let skip = 0;
-  const top = 100;
-
-  for (;;) {
-    const url =
-      `${SAP_BASE_URL}/BusinessPartners` +
-      `?$select=CardCode,CardName,FederalTaxID,VATRegistrationNumber` +
-      `&$filter=CardType eq 'cSupplier' and Frozen eq 'tNO'` +
-      `&$top=${top}&$skip=${skip}`;
-
-    const res = await fetch(url, { headers: { Cookie: cookie } });
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText);
-      throw new Error(`SAP BusinessPartners (${res.status}): ${text}`);
-    }
-
-    const body = (await res.json()) as { value: SapBpRow[] };
-    const rows = body.value ?? [];
-    all.push(...rows);
-    if (rows.length < top) break;
-    skip += top;
-  }
-
-  return all;
 }
 
 export async function supplierRoutes(app: FastifyInstance): Promise<void> {
@@ -89,47 +71,54 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ── POST /api/suppliers-cache/sync ─────────────────────────────────────────
-  // Pulls BusinessPartners (CardType=cSupplier) from SAP and upserts into local cache.
-  app.post('/api/suppliers-cache/sync', { preHandler: requireSession }, async (request, reply) => {
-    const { sapCookieHeader } = request.sapSession!;
-
-    let sapRows: SapBpRow[];
-    try {
-      sapRows = await fetchSapSuppliers(sapCookieHeader);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+  // ── POST /api/suppliers/sync ───────────────────────────────────────────────
+  app.post('/api/suppliers/sync', { preHandler: requireSession }, async (request, reply) => {
+    const { sapCookieHeader, sapUser } = request.sapSession!;
+    const result = await syncSuppliersFromSap(sapCookieHeader, sapUser);
+    if (result.errors.length > 0 && result.total === 0) {
       return reply
         .code(502)
-        .send({ success: false, error: `Erreur SAP lors de la synchronisation : ${msg}` });
+        .send({ success: false, error: result.errors[0].message, data: result });
     }
+    return reply.send({ success: true, data: result });
+  });
 
-    let upserted = 0;
-    for (const row of sapRows) {
-      if (!row.CardCode) continue;
-      await prisma.supplierCache.upsert({
-        where: { cardcode: row.CardCode },
-        create: {
-          cardcode: row.CardCode,
-          cardname: row.CardName ?? '',
-          federaltaxid: row.FederalTaxID ?? null,
-          vatregnum: row.VATRegistrationNumber ?? null,
-        },
-        update: {
-          cardname: row.CardName ?? '',
-          federaltaxid: row.FederalTaxID ?? null,
-          vatregnum: row.VATRegistrationNumber ?? null,
-          syncAt: new Date(),
-        },
-      });
-      upserted++;
-    }
-
+  // Compatibilité avec l'ancien front.
+  app.post('/api/suppliers-cache/sync', { preHandler: requireSession }, async (request, reply) => {
+    const { sapCookieHeader, sapUser } = request.sapSession!;
+    const result = await syncSuppliersFromSap(sapCookieHeader, sapUser);
     return reply.send({
-      success: true,
-      data: { upserted, total: sapRows.length },
+      success: result.errors.length === 0,
+      data: { ...result, upserted: result.inserted + result.updated },
+      error: result.errors[0]?.message,
     });
   });
+
+  app.get('/api/suppliers/sync/status', { preHandler: requireSession }, async (_request, reply) => {
+    return reply.send({ success: true, data: await getSuppliersSyncStatus() });
+  });
+
+  app.get<{ Querystring: { q?: string; limit?: number } }>(
+    '/api/suppliers/search',
+    {
+      preHandler: requireSession,
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            q: { type: 'string', maxLength: 100 },
+            limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query.q?.trim();
+      const limit = Math.min(request.query.limit ?? 20, 50);
+      const { items, total } = await findSuppliers({ page: 1, limit, search: q });
+      return reply.send({ success: true, data: { items, total } });
+    },
+  );
 
   // ── POST /api/suppliers/create-in-sap ──────────────────────────────────────
   // Crée un fournisseur dans SAP B1 et l'ajoute au cache local.
@@ -145,19 +134,49 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
             cardCode: { type: 'string', minLength: 1, maxLength: 15 },
             cardName: { type: 'string', minLength: 1, maxLength: 100 },
             federalTaxId: { type: 'string', maxLength: 32 },
+            vatRegNum: { type: 'string', maxLength: 32 },
+            street: { type: 'string', maxLength: 200 },
+            street2: { type: 'string', maxLength: 200 },
+            city: { type: 'string', maxLength: 100 },
+            postalCode: { type: 'string', maxLength: 20 },
+            country: { type: 'string', maxLength: 3 },
+            email: { type: 'string', maxLength: 200 },
+            phone: { type: 'string', maxLength: 50 },
+            invoiceId: { type: 'string', format: 'uuid' },
           },
         },
       },
     },
     async (request, reply) => {
-      const { cardCode, cardName, federalTaxId } = request.body;
-      const { sapCookieHeader } = request.sapSession!;
+      const {
+        cardCode,
+        cardName,
+        federalTaxId,
+        vatRegNum,
+        street,
+        street2,
+        city,
+        postalCode,
+        country,
+        email,
+        phone,
+        invoiceId,
+      } = request.body;
+      const { sapCookieHeader, sapUser } = request.sapSession!;
 
       try {
         const result = await createBusinessPartner(sapCookieHeader, {
           cardCode,
           cardName,
           federalTaxId,
+          vatRegNum,
+          street,
+          street2,
+          city,
+          postalCode,
+          country,
+          email,
+          phone,
         });
 
         await prisma.supplierCache.upsert({
@@ -166,8 +185,49 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
             cardcode: result.cardCode,
             cardname: cardName,
             federaltaxid: federalTaxId ?? null,
+            vatregnum: vatRegNum ?? null,
+            cardtype: 'cSupplier',
+            validFor: true,
+            rawPayload: {
+              source: 'create-in-sap',
+              cardCode: result.cardCode,
+              cardName,
+              federalTaxId: federalTaxId ?? null,
+              vatRegNum: vatRegNum ?? null,
+            },
+            lastSyncAt: new Date(),
           },
-          update: { cardname: cardName, federaltaxid: federalTaxId ?? null, syncAt: new Date() },
+          update: {
+            cardname: cardName,
+            federaltaxid: federalTaxId ?? null,
+            vatregnum: vatRegNum ?? null,
+            cardtype: 'cSupplier',
+            validFor: true,
+            syncAt: new Date(),
+            lastSyncAt: new Date(),
+          },
+        });
+
+        await createAuditLogBestEffort({
+          action: 'CREATE_SUPPLIER',
+          entityType: 'INVOICE',
+          entityId: invoiceId ?? null,
+          sapUser,
+          outcome: 'OK',
+          payloadAfter: {
+            cardCode: result.cardCode,
+            cardName,
+            federalTaxId: federalTaxId ?? null,
+            vatRegNum: vatRegNum ?? null,
+            street: street ?? null,
+            street2: street2 ?? null,
+            city: city ?? null,
+            postalCode: postalCode ?? null,
+            country: country ?? null,
+            email: email ?? null,
+            phone: phone ?? null,
+          },
+          ...getRequestMeta(request),
         });
 
         return reply
@@ -181,6 +241,23 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
               ? err.message
               : String(err);
         const httpStatus = err instanceof SapSlError ? err.httpStatus : 502;
+
+        await createAuditLogBestEffort({
+          action: 'CREATE_SUPPLIER',
+          entityType: 'INVOICE',
+          entityId: invoiceId ?? null,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: msg,
+          payloadAfter: {
+            cardCode,
+            cardName,
+            federalTaxId: federalTaxId ?? null,
+            vatRegNum: vatRegNum ?? null,
+          },
+          ...getRequestMeta(request),
+        });
+
         return reply.code(httpStatus).send({ success: false, error: msg });
       }
     },

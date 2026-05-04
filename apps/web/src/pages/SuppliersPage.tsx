@@ -1,7 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Building2, Search, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { apiGetSuppliers, type SupplierCache } from '../api/suppliers.api';
-import { apiSyncSuppliers } from '../api/settings.api';
+import {
+  apiGetSuppliers,
+  apiGetSuppliersSyncStatus,
+  apiSyncSuppliers,
+  type SupplierCache,
+  type SupplierSyncStatus,
+  type SupplierSyncResult,
+} from '../api/suppliers.api';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { formatDate } from '../lib/utils';
@@ -14,7 +20,8 @@ export default function SuppliersPage() {
   const [inputValue, setInputValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<{ upserted: number; total: number } | null>(null);
+  const [syncResult, setSyncResult] = useState<SupplierSyncResult | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SupplierSyncStatus | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -25,6 +32,7 @@ export default function SuppliersPage() {
       const res = await apiGetSuppliers(q || undefined);
       setSuppliers(res.items);
       setTotal(res.total);
+      setSyncStatus(await apiGetSuppliersSyncStatus());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur de chargement');
     } finally {
@@ -62,9 +70,9 @@ export default function SuppliersPage() {
       <div className="page-header">
         <div>
           <p className="page-eyebrow">Référentiel</p>
-          <h1 className="page-title">Fournisseurs SAP</h1>
           <p className="page-subtitle">
             {total} fournisseur{total !== 1 ? 's' : ''} en cache local
+            {syncStatus?.lastSyncAt ? ` · dernière sync ${formatDate(syncStatus.lastSyncAt)}` : ''}
           </p>
         </div>
         <Button onClick={handleSync} disabled={syncing} size="sm">
@@ -76,8 +84,16 @@ export default function SuppliersPage() {
       {syncResult && (
         <div className="alert-info text-sm">
           <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
-          Synchronisation terminée — {syncResult.upserted} fournisseur
-          {syncResult.upserted !== 1 ? 's' : ''} mis à jour (total SAP : {syncResult.total}).
+          Synchronisation terminée — {syncResult.inserted} créé
+          {syncResult.inserted !== 1 ? 's' : ''}, {syncResult.updated} mis à jour,{' '}
+          {syncResult.disabled} désactivé{syncResult.disabled !== 1 ? 's' : ''} (total SAP :{' '}
+          {syncResult.total}).
+        </div>
+      )}
+      {(syncResult?.errors.length || syncStatus?.lastError) && (
+        <div className="alert-error text-sm">
+          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+          {syncResult?.errors[0]?.message ?? syncStatus?.lastError}
         </div>
       )}
       {syncError && (
@@ -105,7 +121,7 @@ export default function SuppliersPage() {
               <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
                 className="app-input h-9 pl-9 text-xs w-64 font-normal"
-                placeholder="CardCode, nom, SIREN…"
+                placeholder="Rechercher par code SAP, nom, identifiant PA, SIREN/SIRET, TVA…"
                 value={inputValue}
                 onChange={(e) => handleInput(e.target.value)}
               />
@@ -131,12 +147,15 @@ export default function SuppliersPage() {
               <table className="data-table" aria-label="Liste des fournisseurs">
                 <thead>
                   <tr>
-                    <th>CardCode</th>
-                    <th>Nom</th>
-                    <th>SIREN / FederalTaxID</th>
-                    <th>N° TVA intracommunautaire</th>
-                    <th className="text-right">Factures</th>
-                    <th>Dernière sync</th>
+                    <th>Code fournisseur SAP</th>
+                    <th>Nom fournisseur</th>
+                    <th>Identifiant fournisseur PA</th>
+                    <th>TVA intracommunautaire</th>
+                    <th>SIREN</th>
+                    <th>SIRET</th>
+                    <th>Ville / Pays</th>
+                    <th className="text-right">Nb factures</th>
+                    <th>Dernière synchronisation SAP</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -145,10 +164,15 @@ export default function SuppliersPage() {
                       <td className="font-mono text-xs font-semibold">{s.cardcode}</td>
                       <td className="font-medium">{s.cardname}</td>
                       <td className="font-mono text-xs text-muted-foreground">
-                        {s.federaltaxid ?? '—'}
+                        {s.pa_identifier || '—'}
                       </td>
                       <td className="font-mono text-xs text-muted-foreground">
-                        {s.vatregnum ?? '—'}
+                        {s.federaltaxid ?? '—'}
+                      </td>
+                      <td className="font-mono text-xs text-muted-foreground">{s.taxId0 ?? '—'}</td>
+                      <td className="font-mono text-xs text-muted-foreground">{s.taxId1 ?? '—'}</td>
+                      <td className="text-xs text-muted-foreground">
+                        {[s.city, s.country].filter(Boolean).join(' / ') || '—'}
                       </td>
                       <td className="text-right font-mono text-xs text-muted-foreground">
                         {s.invoiceCount > 0 ? (
@@ -157,7 +181,7 @@ export default function SuppliersPage() {
                           '—'
                         )}
                       </td>
-                      <td className="text-xs text-muted-foreground">{formatDate(s.syncAt)}</td>
+                      <td className="text-xs text-muted-foreground">{formatDate(s.lastSyncAt)}</td>
                     </tr>
                   ))}
                 </tbody>

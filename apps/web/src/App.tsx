@@ -14,6 +14,7 @@ import MappingRulesPage from './pages/MappingRulesPage';
 import SuppliersPage from './pages/SuppliersPage';
 import SettingsPage from './pages/SettingsPage';
 import PaChannelsPage from './pages/PaChannelsPage';
+import ChartOfAccountsPage from './pages/ChartOfAccountsPage';
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
               <Route path="/suppliers" element={<SuppliersPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/pa-channels" element={<PaChannelsPage />} />
+              <Route path="/chart-of-accounts" element={<ChartOfAccountsPage />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

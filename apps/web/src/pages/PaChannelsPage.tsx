@@ -34,6 +34,7 @@ interface ModalState {
   port: string;
   user: string;
   password: string;
+  sshPublicKey: string;
   remotePathIn: string;
   remotePathProcessed: string;
   remotePathOut: string;
@@ -53,6 +54,7 @@ function emptyModal(protocol: 'SFTP' | 'API' = 'SFTP'): ModalState {
     port: '',
     user: '',
     password: '',
+    sshPublicKey: '',
     remotePathIn: '',
     remotePathProcessed: '',
     remotePathOut: '',
@@ -74,6 +76,7 @@ function channelToModal(ch: PaChannel): ModalState {
     port: ch.port !== null ? String(ch.port) : '',
     user: ch.user ?? '',
     password: '',
+    sshPublicKey: ch.sshPublicKey ?? '',
     remotePathIn: ch.remotePathIn ?? '',
     remotePathProcessed: ch.remotePathProcessed ?? '',
     remotePathOut: ch.remotePathOut ?? '',
@@ -143,6 +146,7 @@ export default function PaChannelsPage() {
         port: modal.port ? parseInt(modal.port, 10) : null,
         user: modal.user.trim() || null,
         password: modal.password || null,
+        sshPublicKey: modal.sshPublicKey.trim() || null,
         remotePathIn: modal.remotePathIn.trim() || null,
         remotePathProcessed: modal.remotePathProcessed.trim() || null,
         remotePathOut: modal.remotePathOut.trim() || null,
@@ -407,209 +411,80 @@ export default function PaChannelsPage() {
                 </div>
               )}
 
-              {/* Nom + protocole */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="col-span-2 space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Nom *
-                  </label>
-                  <input
-                    className="input w-full"
-                    value={modal.name}
-                    onChange={(e) => setModal((m) => m && { ...m, name: e.target.value })}
-                    placeholder="Ex. : SFTP Fournisseur A"
-                  />
-                </div>
-                {modal.mode === 'create' && (
-                  <div className="col-span-2 space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Protocole *
-                    </label>
-                    <div className="flex gap-2">
-                      {(['SFTP', 'API'] as const).map((p) => (
-                        <button
-                          key={p}
-                          onClick={() => setModal((m) => m && { ...m, protocol: p })}
-                          className={`flex-1 rounded-md border py-2 text-sm font-medium transition-colors ${
-                            modal.protocol === p
-                              ? 'border-primary bg-primary/10 text-primary'
-                              : 'border-border text-muted-foreground hover:border-foreground/30'
-                          }`}
-                        >
-                          {p === 'SFTP' ? (
-                            <>
-                              <HardDrive className="inline h-3.5 w-3.5 mr-1.5" />
-                              SFTP
-                            </>
-                          ) : (
-                            <>
-                              <Wifi className="inline h-3.5 w-3.5 mr-1.5" />
-                              API
-                            </>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+              {/* Nom */}
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Nom *
+                </label>
+                <input
+                  className="input w-full"
+                  value={modal.name}
+                  onChange={(e) => setModal((m) => m && { ...m, name: e.target.value })}
+                  placeholder="Ex. : SFTP Fournisseur A"
+                />
               </div>
 
-              {/* Champs SFTP */}
-              {modal.protocol === 'SFTP' && (
-                <div className="space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                    Connexion SFTP
-                  </p>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="col-span-2 space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Hôte</label>
-                      <input
-                        className="input w-full"
-                        value={modal.host}
-                        onChange={(e) => setModal((m) => m && { ...m, host: e.target.value })}
-                        placeholder="sftp.exemple.com"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Port</label>
-                      <input
-                        className="input w-full"
-                        type="number"
-                        value={modal.port}
-                        onChange={(e) => setModal((m) => m && { ...m, port: e.target.value })}
-                        placeholder="22"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">
-                        Utilisateur
-                      </label>
-                      <input
-                        className="input w-full"
-                        value={modal.user}
-                        onChange={(e) => setModal((m) => m && { ...m, user: e.target.value })}
-                        placeholder="user"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">
-                        Mot de passe
-                      </label>
-                      <input
-                        className="input w-full"
-                        type="password"
-                        value={modal.password}
-                        onChange={(e) => setModal((m) => m && { ...m, password: e.target.value })}
-                        placeholder={modal.mode === 'edit' ? '(inchangé si vide)' : ''}
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground pt-1">
-                    Chemins distants
-                  </p>
-                  <div className="space-y-2">
-                    {[
-                      { key: 'remotePathIn', label: 'Dossier entrant' },
-                      { key: 'remotePathProcessed', label: 'Dossier traités' },
-                      { key: 'remotePathOut', label: 'Dossier sortants' },
-                    ].map(({ key, label }) => (
-                      <div key={key} className="space-y-1">
-                        <label className="text-xs font-medium text-muted-foreground">{label}</label>
-                        <input
-                          className="input w-full font-mono text-xs"
-                          value={(modal as unknown as Record<string, string>)[key]}
-                          onChange={(e) => setModal((m) => m && { ...m, [key]: e.target.value })}
-                          placeholder="/remote/path"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Champs API */}
-              {modal.protocol === 'API' && (
-                <div className="space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                    Connexion API
-                  </p>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">URL de base</label>
+              {/* Connexion SFTP */}
+              <div className="space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  Connexion SFTP
+                </p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2 space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">Hôte</label>
                     <input
                       className="input w-full"
-                      value={modal.apiBaseUrl}
-                      onChange={(e) => setModal((m) => m && { ...m, apiBaseUrl: e.target.value })}
-                      placeholder="https://api.exemple.com/v1"
+                      value={modal.host}
+                      onChange={(e) => setModal((m) => m && { ...m, host: e.target.value })}
+                      placeholder="sftp.exemple.com"
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Type d'auth</label>
-                    <select
+                    <label className="text-xs font-medium text-muted-foreground">Port</label>
+                    <input
                       className="input w-full"
-                      value={modal.apiAuthType}
-                      onChange={(e) =>
-                        setModal(
-                          (m) =>
-                            m && { ...m, apiAuthType: e.target.value as ModalState['apiAuthType'] },
-                        )
-                      }
-                    >
-                      <option value="">— aucune —</option>
-                      <option value="BASIC">HTTP Basic</option>
-                      <option value="API_KEY">API Key</option>
-                      <option value="OAUTH2">OAuth 2</option>
-                    </select>
+                      type="number"
+                      value={modal.port}
+                      onChange={(e) => setModal((m) => m && { ...m, port: e.target.value })}
+                      placeholder="22"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">Utilisateur</label>
+                    <input
+                      className="input w-full"
+                      value={modal.user}
+                      onChange={(e) => setModal((m) => m && { ...m, user: e.target.value })}
+                      placeholder="user"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">
-                      Credentials (JSON)
+                      Mot de passe
                     </label>
-                    <textarea
-                      className="input w-full font-mono text-xs"
-                      rows={4}
-                      value={modal.apiCredentials}
-                      onChange={(e) =>
-                        setModal((m) => m && { ...m, apiCredentials: e.target.value })
-                      }
-                      placeholder={
-                        modal.mode === 'edit'
-                          ? '(inchangé si vide)'
-                          : '{"username":"...","password":"..."}'
-                      }
+                    <input
+                      className="input w-full"
+                      type="password"
+                      value={modal.password}
+                      onChange={(e) => setModal((m) => m && { ...m, password: e.target.value })}
+                      placeholder={modal.mode === 'edit' ? '(inchangé si vide)' : ''}
                     />
                   </div>
                 </div>
-              )}
-
-              {/* Polling + Actif */}
-              <div className="grid grid-cols-2 gap-3 border-t border-border pt-4">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    Intervalle polling (s)
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Clé publique SSH du connecteur
                   </label>
-                  <input
-                    className="input w-full"
-                    type="number"
-                    min={10}
-                    max={86400}
-                    value={modal.pollIntervalSeconds}
-                    onChange={(e) =>
-                      setModal((m) => m && { ...m, pollIntervalSeconds: e.target.value })
-                    }
+                  <textarea
+                    className="input w-full font-mono text-xs leading-relaxed"
+                    rows={3}
+                    value={modal.sshPublicKey}
+                    onChange={(e) => setModal((m) => m && { ...m, sshPublicKey: e.target.value })}
+                    placeholder="ssh-rsa AAAA... (à ajouter dans authorized_keys du serveur distant)"
+                    spellCheck={false}
                   />
-                </div>
-                <div className="flex items-end pb-1">
-                  <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                    <input
-                      type="checkbox"
-                      checked={modal.active}
-                      onChange={(e) => setModal((m) => m && { ...m, active: e.target.checked })}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                    Canal actif
-                  </label>
                 </div>
               </div>
             </div>

@@ -44,6 +44,7 @@ export function parseFile(absolutePath: string, ext: string): ParsedInvoice {
       totalTax: '0',
       totalInclTax: '0',
       lines: [],
+      supplierExtracted: null,
     };
   }
 

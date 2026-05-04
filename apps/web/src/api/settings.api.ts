@@ -31,15 +31,15 @@ export const SETTING_META: Record<
     type: 'json',
   },
   AP_TAX_ACCOUNT_MAP: {
-    label: 'Mapping taux TVA → compte TVA déductible',
+    label: 'Comptes TVA récupérable par taux',
     description:
-      'Objet JSON : clé = taux en % (ex. "20.00"), valeur = compte comptable SAP (ex. "445660").',
+      "Pour chaque taux de TVA (20 %, 10 %…), indique le compte comptable SAP où enregistrer la TVA récupérable sur achats. Exemple : 20 % → compte 445660. Si ce paramètre n'est pas renseigné, la TVA ne sera pas ventilée sur un compte dédié.",
     type: 'json',
   },
   AP_ACCOUNT_CODE: {
-    label: 'Compte fournisseur par défaut',
+    label: 'Compte de dettes fournisseurs',
     description:
-      'Compte de contrepartie fournisseur (AccountCode SAP B1) utilisé pour les écritures.',
+      'Numéro de compte comptable où sont enregistrées les sommes dues aux fournisseurs (le "à payer"). Utilisé automatiquement lors de la création des écritures dans SAP quand aucun compte spécifique n\'est défini pour le fournisseur concerné.',
     type: 'string',
   },
   AMOUNT_GAP_ALERT_THRESHOLD: {
@@ -48,8 +48,29 @@ export const SETTING_META: Record<
     type: 'number',
   },
   DEFAULT_SAP_SERIES: {
-    label: 'Série SAP B1 par défaut',
-    description: "Numéro de série (Series) utilisé par défaut lors de l'intégration SAP B1.",
+    label: 'Séquence de numérotation SAP',
+    description:
+      "Détermine comment SAP numérote les factures qu'il reçoit de cette passerelle. Si SAP B1 utilise plusieurs séquences (ex : une pour les achats courants, une pour les imports), indiquez ici laquelle utiliser. Laissez vide pour utiliser la séquence par défaut de SAP.",
+    type: 'string',
+  },
+  DEFAULT_ENERGY_ACCOUNT_CODE: {
+    label: 'Compte énergie / électricité',
+    description: 'Compte SAP B1 imputable utilisé par le fallback énergie.',
+    type: 'string',
+  },
+  DEFAULT_MAINTENANCE_ACCOUNT_CODE: {
+    label: 'Compte maintenance',
+    description: 'Compte SAP B1 imputable utilisé par le fallback maintenance.',
+    type: 'string',
+  },
+  DEFAULT_HOSTING_ACCOUNT_CODE: {
+    label: 'Compte hébergement / cloud',
+    description: 'Compte SAP B1 imputable utilisé par le fallback hébergement, serveur et cloud.',
+    type: 'string',
+  },
+  DEFAULT_SUPPLIES_ACCOUNT_CODE: {
+    label: 'Compte fournitures',
+    description: 'Compte SAP B1 imputable utilisé par le fallback fournitures et consommables.',
     type: 'string',
   },
 };
@@ -63,12 +84,6 @@ export async function apiPutSetting(key: string, value: unknown): Promise<Settin
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ value }),
-  });
-}
-
-export async function apiSyncSuppliers(): Promise<{ upserted: number; total: number }> {
-  return apiFetch<{ upserted: number; total: number }>('/api/suppliers-cache/sync', {
-    method: 'POST',
   });
 }
 

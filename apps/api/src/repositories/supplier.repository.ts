@@ -6,7 +6,20 @@ export interface SupplierCacheDto {
   cardname: string;
   federaltaxid: string | null;
   vatregnum: string | null;
+  taxId0: string | null;
+  taxId1: string | null;
+  taxId2: string | null;
+  phone1: string | null;
+  email: string | null;
+  address: string | null;
+  city: string | null;
+  zipCode: string | null;
+  country: string | null;
+  validFor: boolean;
+  /** Identifiant PA (Plateforme Agréée) pour routage des factures électroniques. */
+  pa_identifier: string | null;
   syncAt: string;
+  lastSyncAt: string;
   invoiceCount: number;
 }
 
@@ -28,6 +41,11 @@ export async function findSuppliers(
           { cardname: { contains: search, mode: 'insensitive' as const } },
           { cardcode: { contains: search, mode: 'insensitive' as const } },
           { federaltaxid: { contains: search, mode: 'insensitive' as const } },
+          { vatregnum: { contains: search, mode: 'insensitive' as const } },
+          { taxId0: { contains: search, mode: 'insensitive' as const } },
+          { taxId1: { contains: search, mode: 'insensitive' as const } },
+          { taxId2: { contains: search, mode: 'insensitive' as const } },
+          { pa_identifier: { contains: search, mode: 'insensitive' as const } },
         ],
       }
     : {};
@@ -46,7 +64,19 @@ export async function findSuppliers(
     cardname: s.cardname,
     federaltaxid: s.federaltaxid,
     vatregnum: s.vatregnum,
+    taxId0: s.taxId0,
+    taxId1: s.taxId1,
+    taxId2: s.taxId2,
+    phone1: s.phone1,
+    email: s.email,
+    address: s.address,
+    city: s.city,
+    zipCode: s.zipCode,
+    country: s.country,
+    validFor: s.validFor,
+    pa_identifier: s.pa_identifier,
     syncAt: s.syncAt.toISOString(),
+    lastSyncAt: s.lastSyncAt.toISOString(),
     invoiceCount: countMap.get(s.cardcode) ?? 0,
   }));
 

@@ -6,6 +6,10 @@ const STATUS_CONFIG: Record<InvoiceStatus, { label: string; className: string }>
   TO_REVIEW: { label: 'À réviser', className: 'border-warning/30 bg-warning/10 text-warning' },
   READY: { label: 'Prête', className: 'border-primary/30 bg-primary/10 text-primary' },
   POSTED: { label: 'Intégrée', className: 'border-success/30 bg-success/10 text-success' },
+  LINKED: {
+    label: 'Rattachée SAP',
+    className: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
+  },
   REJECTED: {
     label: 'Rejetée',
     className: 'border-destructive/30 bg-destructive/10 text-destructive',

@@ -44,6 +44,8 @@ enum InvoiceStatus {
   READY
   /// Intégrée dans SAP B1
   POSTED
+  /// Rattachée à une facture SAP créée manuellement (Voie B)
+  LINKED
   /// Rejetée (motif dans status_reason)
   REJECTED
   /// Erreur technique lors de l'intégration
@@ -79,9 +81,12 @@ enum AuditAction {
   APPROVE
   REJECT
   POST_SAP
+  LINK_SAP
   SEND_STATUS_PA
   SYSTEM_ERROR
   CONFIG_CHANGE
+  CREATE_SUPPLIER
+  SYNC_SUPPLIERS
 }
 
 /// Type d'entité référencée dans l'audit
@@ -131,6 +136,8 @@ model Invoice {
   supplierB1Cardcode      String?          @map("supplier_b1_cardcode")
   /// Score de matching fournisseur 0-100
   supplierMatchConfidence Int              @default(0) @map("supplier_match_confidence")
+  /// Raison du dernier matching fournisseur
+  supplierMatchReason     String?          @map("supplier_match_reason")
   docNumberPa             String           @map("doc_number_pa")
   docDate                 DateTime         @db.Date @map("doc_date")
   dueDate                 DateTime?        @db.Date @map("due_date")
@@ -151,12 +158,15 @@ model Invoice {
   sapAttachmentUploadedAt DateTime?        @map("sap_attachment_uploaded_at") @db.Timestamptz(6)
   /// Horodatage d'envoi du statut vers la PA
   paStatusSentAt          DateTime?        @map("pa_status_sent_at") @db.Timestamptz(6)
+  /// Données fournisseur extraites du XML (adresse, TVA, SIREN, contact) pour pré-remplissage SAP B1
+  supplierExtracted       Json?            @map("supplier_extracted")
   createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   lines InvoiceLine[]
   files InvoiceFile[]
 
+  @@unique([docNumberPa, supplierPaIdentifier], name: "uq_invoices_doc_supplier")
   @@index([status], name: "idx_invoices_status")
   @@index([paSource], name: "idx_invoices_pa_source")
   @@index([docDate], name: "idx_invoices_doc_date")
@@ -197,6 +207,10 @@ model InvoiceLine {
   chosenCostCenter           String? @map("chosen_cost_center")
   /// Code TVA SAP B1 retenu (ex. S1, S3)
   chosenTaxCodeB1            String? @map("chosen_tax_code_b1")
+  /// true = code TVA verrouillé par l'utilisateur, ne jamais écraser automatiquement
+  taxCodeLockedByUser        Boolean @default(false) @map("tax_code_locked_by_user")
+  /// true = compte comptable verrouillé par l'utilisateur, ne jamais écraser automatiquement
+  accountCodeLockedByUser    Boolean @default(false) @map("account_code_locked_by_user")
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
@@ -228,19 +242,42 @@ model InvoiceFile {
 // Cache local des BP SAP B1 pour matching rapide
 // ============================================================
 model SupplierCache {
-  id           String   @id @default(uuid()) @db.Uuid
+  id            String   @id @default(uuid()) @db.Uuid
   /// CardCode SAP B1 (identifiant unique BP)
-  cardcode     String   @unique
-  cardname     String
-  /// NIF / SIREN (FederalTaxID dans SAP B1)
-  federaltaxid String?
+  cardcode      String   @unique
+  cardname      String
+  cardtype      String?
+  /// NIF / SIREN (FederalTaxID dans SAP B1) — conservé pour audit et matching fiscal
+  federaltaxid  String?
   /// Numéro de TVA intracommunautaire
-  vatregnum    String?
+  vatregnum     String?
+  /// Champs fiscaux localisés SAP B1 FR. TaxId0 contient souvent SIRET/SIREN selon paramétrage.
+  taxId0        String?  @map("tax_id0")
+  taxId1        String?  @map("tax_id1")
+  taxId2        String?  @map("tax_id2")
+  phone1        String?
+  email         String?
+  address       String?
+  city          String?
+  zipCode       String?  @map("zip_code")
+  country       String?
+  validFor      Boolean  @default(true) @map("valid_for")
+  rawPayload    Json     @default("{}") @map("raw_payload") @db.JsonB
+  lastSyncAt    DateTime @default(now()) @map("last_sync_at") @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Identifiant PA (Plateforme Agréée) du fournisseur pour routage des factures électroniques.
+  /// TODO: mapper depuis SAP B1 ou annuaire PA quand la source sera connue.
+  pa_identifier String?
   /// Dernière synchronisation depuis SAP B1
-  syncAt       DateTime @default(now()) @map("sync_at") @db.Timestamptz(6)
+  syncAt        DateTime @default(now()) @map("sync_at") @db.Timestamptz(6)
 
+  @@index([cardcode], name: "idx_suppliers_cache_cardcode")
   @@index([cardname], name: "idx_suppliers_cache_cardname")
-  @@index([federaltaxid], name: "idx_suppliers_cache_taxid")
+  @@index([federaltaxid], name: "idx_suppliers_cache_federaltaxid")
+  @@index([vatregnum], name: "idx_suppliers_cache_vatregnum")
+  @@index([taxId0], name: "idx_suppliers_cache_tax_id0")
+  @@index([validFor], name: "idx_suppliers_cache_valid_for")
   @@map("suppliers_cache")
 }
 
@@ -277,6 +314,44 @@ model MappingRule {
   @@index([supplierCardcode], name: "idx_mapping_rules_cardcode")
   @@index([confidence], name: "idx_mapping_rules_confidence")
   @@map("mapping_rules")
+}
+
+// ============================================================
+// Table : chart_of_accounts_cache
+// Cache local du plan comptable SAP B1
+// ============================================================
+model ChartOfAccountCache {
+  id            String   @id @default(uuid()) @db.Uuid
+  acctCode      String   @unique @map("acct_code")
+  acctName      String   @map("acct_name")
+  activeAccount Boolean  @default(false) @map("active_account")
+  postable      Boolean  @default(false)
+  accountLevel  Int?     @map("account_level")
+  groupMask     Int?     @map("group_mask")
+  syncAt        DateTime @default(now()) @map("sync_at") @db.Timestamptz(6)
+
+  @@index([acctName], name: "idx_chart_accounts_name")
+  @@index([activeAccount, postable], name: "idx_chart_accounts_usable")
+  @@map("chart_of_accounts_cache")
+}
+
+// ============================================================
+// Table : vat_group_cache
+// Cache local des groupes TVA SAP B1 (VatGroups / SalesTaxCodes)
+// ============================================================
+model VatGroupCache {
+  id       String  @id @default(uuid()) @db.Uuid
+  code     String  @unique
+  name     String
+  /// Taux TVA en pourcentage (ex. 20.00)
+  rate     Decimal @db.Decimal(5, 2)
+  active   Boolean @default(true)
+  /// Payload brut retourné par SAP (pour debug)
+  raw      Json?
+  syncAt   DateTime @default(now()) @map("sync_at") @db.Timestamptz(6)
+
+  @@index([rate], name: "idx_vat_group_cache_rate")
+  @@map("vat_group_cache")
 }
 
 // ============================================================
@@ -322,6 +397,8 @@ model PaChannel {
   user    String?
   /// Mot de passe chiffré (AES-GCM, clé = SESSION_ENC_KEY)
   passwordEncrypted   String? @map("password_encrypted")
+  /// Clé publique SSH du connecteur (pour auth par clé côté serveur SFTP)
+  sshPublicKey        String? @map("ssh_public_key")
   remotePathIn        String? @map("remote_path_in")
   remotePathProcessed String? @map("remote_path_processed")
   /// Chemin de dépôt des fichiers de statut retour (CDC §9)

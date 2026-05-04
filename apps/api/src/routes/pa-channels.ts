@@ -18,6 +18,7 @@ interface CreateBody {
   port?: number | null;
   user?: string | null;
   password?: string | null;
+  sshPublicKey?: string | null;
   remotePathIn?: string | null;
   remotePathProcessed?: string | null;
   remotePathOut?: string | null;
@@ -34,6 +35,7 @@ interface PatchBody {
   port?: number | null;
   user?: string | null;
   password?: string | null;
+  sshPublicKey?: string | null;
   remotePathIn?: string | null;
   remotePathProcessed?: string | null;
   remotePathOut?: string | null;
@@ -75,6 +77,7 @@ export async function paChannelRoutes(app: FastifyInstance): Promise<void> {
             port: { type: ['number', 'null'], minimum: 1, maximum: 65535 },
             user: { type: ['string', 'null'], maxLength: 100 },
             password: { type: ['string', 'null'], maxLength: 500 },
+            sshPublicKey: { type: ['string', 'null'], maxLength: 4096 },
             remotePathIn: { type: ['string', 'null'], maxLength: 500 },
             remotePathProcessed: { type: ['string', 'null'], maxLength: 500 },
             remotePathOut: { type: ['string', 'null'], maxLength: 500 },
@@ -99,6 +102,7 @@ export async function paChannelRoutes(app: FastifyInstance): Promise<void> {
           port: b.port ?? null,
           user: b.user ?? null,
           passwordEncrypted: b.password ?? null,
+          sshPublicKey: b.sshPublicKey ?? null,
           remotePathIn: b.remotePathIn ?? null,
           remotePathProcessed: b.remotePathProcessed ?? null,
           remotePathOut: b.remotePathOut ?? null,
@@ -145,6 +149,7 @@ export async function paChannelRoutes(app: FastifyInstance): Promise<void> {
             port: { type: ['number', 'null'], minimum: 1, maximum: 65535 },
             user: { type: ['string', 'null'], maxLength: 100 },
             password: { type: ['string', 'null'], maxLength: 500 },
+            sshPublicKey: { type: ['string', 'null'], maxLength: 4096 },
             remotePathIn: { type: ['string', 'null'], maxLength: 500 },
             remotePathProcessed: { type: ['string', 'null'], maxLength: 500 },
             remotePathOut: { type: ['string', 'null'], maxLength: 500 },
@@ -174,6 +179,7 @@ export async function paChannelRoutes(app: FastifyInstance): Promise<void> {
           ...(b.port !== undefined ? { port: b.port } : {}),
           ...(b.user !== undefined ? { user: b.user } : {}),
           ...(b.password !== undefined ? { passwordEncrypted: b.password } : {}),
+          ...(b.sshPublicKey !== undefined ? { sshPublicKey: b.sshPublicKey } : {}),
           ...(b.remotePathIn !== undefined ? { remotePathIn: b.remotePathIn } : {}),
           ...(b.remotePathProcessed !== undefined
             ? { remotePathProcessed: b.remotePathProcessed }

@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { buildApp } from '../../apps/api/src/app';
 import { createSession } from '../../apps/api/src/session/store';
 import { COOKIE_NAME } from '../../apps/api/src/config';
@@ -15,7 +16,8 @@ export async function buildAuthenticatedApp(user = 'vitest.user') {
     expiresAt: new Date(Date.now() + 30 * 60_000),
   });
 
-  const cookieHeader = `${COOKIE_NAME}=${app.signCookie(session.sessionId)}`;
+  const csrfToken = randomBytes(32).toString('hex');
+  const cookieHeader = `${COOKIE_NAME}=${app.signCookie(session.sessionId)}; csrf_token=${csrfToken}`;
 
-  return { app, cookieHeader, session };
+  return { app, cookieHeader, session, csrfToken };
 }

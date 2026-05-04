@@ -6,6 +6,7 @@ export interface PaChannel {
   port: number | null;
   user: string | null;
   passwordEncrypted: string | null;
+  sshPublicKey: string | null;
   remotePathIn: string | null;
   remotePathProcessed: string | null;
   remotePathOut: string | null;
@@ -27,6 +28,7 @@ export interface CreatePaChannelBody {
   port?: number | null;
   user?: string | null;
   password?: string | null;
+  sshPublicKey?: string | null;
   remotePathIn?: string | null;
   remotePathProcessed?: string | null;
   remotePathOut?: string | null;

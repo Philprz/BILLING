@@ -30,29 +30,29 @@ describe('matchSupplier', () => {
     expect(matchSupplier('FR00000000000', 'Zzz Corp', candidates)).toBeNull();
   });
 
-  // ── Priority 1 — TVA exacte (confidence 100) ─────────────────────────────
+  // ── TVA exacte ────────────────────────────────────────────────────────────
 
-  it('matches by exact VAT number with confidence 100', () => {
+  it('matches by exact VAT number', () => {
     const result = matchSupplier('FR12345678901', 'N importe quoi', candidates);
     expect(result).not.toBeNull();
     expect(result!.cardcode).toBe('F001');
-    expect(result!.confidence).toBe(100);
+    expect(result!.confidence).toBe(98);
     expect(result!.matchMethod).toContain('TVA exacte');
   });
 
   it('VAT match is case-insensitive after normalization', () => {
     const result = matchSupplier('fr12345678901', 'N importe quoi', candidates);
     expect(result?.cardcode).toBe('F001');
-    expect(result?.confidence).toBe(100);
+    expect(result?.confidence).toBe(98);
   });
 
-  // ── Priority 2 — identifiant fiscal (confidence 95) ──────────────────────
+  // ── Priority 1 — identifiant fiscal fiable ───────────────────────────────
 
-  it('matches by federal tax id with confidence 95 when VAT does not match', () => {
+  it('matches by SIRET/SIREN with confidence 100 when VAT does not match', () => {
     const result = matchSupplier('12345678901234', 'N importe quoi', candidates);
     expect(result?.cardcode).toBe('F001');
-    expect(result?.confidence).toBe(95);
-    expect(result!.matchMethod).toContain('fiscal');
+    expect(result?.confidence).toBe(100);
+    expect(result!.matchMethod).toContain('SIRET/SIREN');
   });
 
   // ── Priority 3 — nom exact normalisé (confidence 85) ─────────────────────
@@ -112,11 +112,22 @@ describe('matchSupplier', () => {
   it('returns the highest confidence match among multiple candidates', () => {
     const local: SupplierCandidate[] = [
       candidate({ cardcode: 'LOW', cardname: 'Alpha Services SARL' }), // confidence 85 (exact name)
-      candidate({ cardcode: 'HIGH', cardname: 'anything', vatregnum: 'FR12345678901' }), // confidence 100 (VAT)
+      candidate({ cardcode: 'HIGH', cardname: 'anything', vatregnum: 'FR12345678901' }), // VAT
     ];
     const result = matchSupplier('FR12345678901', 'Alpha Services SARL', local);
     expect(result?.cardcode).toBe('HIGH');
-    expect(result?.confidence).toBe(100);
+    expect(result?.confidence).toBe(98);
+  });
+
+  it('marks ambiguous exact fiscal matches as reviewable', () => {
+    const local: SupplierCandidate[] = [
+      candidate({ cardcode: 'F100', cardname: 'Alpha A', taxId0: '12345678900012' }),
+      candidate({ cardcode: 'F101', cardname: 'Alpha B', federaltaxid: '12345678900012' }),
+    ];
+    const result = matchSupplier('12345678900012', 'Alpha', local);
+    expect(result?.ambiguous).toBe(true);
+    expect(result?.confidence).toBeLessThan(80);
+    expect(result?.candidates).toHaveLength(2);
   });
 
   // ── Stop words are stripped from token matching ───────────────────────────

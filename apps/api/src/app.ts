@@ -18,6 +18,7 @@ import { paChannelRoutes } from './routes/pa-channels';
 import { uploadRoutes } from './routes/upload';
 import { workerStatusRoutes } from './routes/worker-status';
 import { sapRoutes } from './routes/sap';
+import { diagnosticsRoutes } from './routes/diagnostics';
 import { SAP_IGNORE_SSL } from './config';
 import { assertSapPolicyConfig } from './services/sap-policy.service';
 import { verifyCsrf } from './middleware/csrf';
@@ -122,6 +123,7 @@ export function buildApp(): FastifyInstance {
   app.register(uploadRoutes);
   app.register(workerStatusRoutes);
   app.register(sapRoutes);
+  app.register(diagnosticsRoutes);
 
   app.get('/api/health', async (_req, reply) => {
     let dbStatus: 'ok' | 'error' = 'error';

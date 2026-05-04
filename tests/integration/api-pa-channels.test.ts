@@ -6,11 +6,13 @@ describe.sequential('API pa-channels integration', () => {
   const createdIds: string[] = [];
   let app: Awaited<ReturnType<typeof buildAuthenticatedApp>>['app'];
   let cookieHeader: string;
+  let csrfToken: string;
 
   beforeAll(async () => {
     const built = await buildAuthenticatedApp('pa-channel.tester');
     app = built.app;
     cookieHeader = built.cookieHeader;
+    csrfToken = built.csrfToken;
   });
 
   afterAll(async () => {
@@ -49,7 +51,11 @@ describe.sequential('API pa-channels integration', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/pa-channels',
-      headers: { cookie: cookieHeader, 'content-type': 'application/json' },
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
       payload: {
         name: 'test-sftp-vitest',
         protocol: 'SFTP',
@@ -78,7 +84,11 @@ describe.sequential('API pa-channels integration', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/pa-channels',
-      headers: { cookie: cookieHeader, 'content-type': 'application/json' },
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
       payload: { protocol: 'SFTP' }, // name absent
     });
     expect(res.statusCode).toBe(400);
@@ -88,7 +98,11 @@ describe.sequential('API pa-channels integration', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/pa-channels',
-      headers: { cookie: cookieHeader, 'content-type': 'application/json' },
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
       payload: {
         name: 'test-api-vitest',
         protocol: 'API',
@@ -116,7 +130,11 @@ describe.sequential('API pa-channels integration', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: `/api/pa-channels/${id}`,
-      headers: { cookie: cookieHeader, 'content-type': 'application/json' },
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
       payload: { active: false },
     });
 
@@ -129,7 +147,11 @@ describe.sequential('API pa-channels integration', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/pa-channels/00000000-0000-0000-0000-000000000000',
-      headers: { cookie: cookieHeader, 'content-type': 'application/json' },
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
       payload: { active: true },
     });
     expect(res.statusCode).toBe(404);
@@ -142,7 +164,7 @@ describe.sequential('API pa-channels integration', () => {
     const res = await app.inject({
       method: 'DELETE',
       url: `/api/pa-channels/${id}`,
-      headers: { cookie: cookieHeader },
+      headers: { cookie: cookieHeader, 'x-csrf-token': csrfToken },
     });
 
     expect(res.statusCode).toBe(200);
@@ -157,7 +179,7 @@ describe.sequential('API pa-channels integration', () => {
     const res = await app.inject({
       method: 'DELETE',
       url: '/api/pa-channels/00000000-0000-0000-0000-000000000000',
-      headers: { cookie: cookieHeader },
+      headers: { cookie: cookieHeader, 'x-csrf-token': csrfToken },
     });
     expect(res.statusCode).toBe(404);
   });

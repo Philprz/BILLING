@@ -1,6 +1,9 @@
+import fs from 'fs';
 import { prisma } from '@pa-sap-bridge/database';
 import type { InvoiceStatus } from '@pa-sap-bridge/database';
+import type { Prisma } from '@pa-sap-bridge/database';
 import { dec, decOrNull, bigInt, isoDate, isoDateOrNull } from '../lib/serialize';
+import { parseInvoiceXml } from '../services/xml-parser.service';
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +18,7 @@ export interface InvoiceSummaryDto {
   supplierNameRaw: string;
   supplierB1Cardcode: string | null;
   supplierMatchConfidence: number;
+  supplierMatchReason: string | null;
   docNumberPa: string;
   docDate: string;
   dueDate: string | null;
@@ -52,6 +56,7 @@ export interface InvoiceLineDto {
   chosenAccountCode: string | null;
   chosenCostCenter: string | null;
   chosenTaxCodeB1: string | null;
+  taxCodeLockedByUser: boolean;
 }
 
 export interface InvoiceFileDto {
@@ -66,6 +71,7 @@ export interface InvoiceDetailDto extends InvoiceSummaryDto {
   lines: InvoiceLineDto[];
   files: InvoiceFileDto[];
   supplierInCache: boolean | null; // null = pas de CardCode assigné
+  supplierExtracted: Record<string, unknown> | null;
 }
 
 // ─── Params ──────────────────────────────────────────────────────────────────
@@ -73,7 +79,7 @@ export interface InvoiceDetailDto extends InvoiceSummaryDto {
 export interface FindInvoicesParams {
   page: number;
   limit: number;
-  status?: InvoiceStatus;
+  status?: InvoiceStatus | InvoiceStatus[];
   paSource?: string;
   supplierCardcode?: string;
   dateFrom?: string;
@@ -99,6 +105,7 @@ function mapSummary(inv: {
   supplierNameRaw: string;
   supplierB1Cardcode: string | null;
   supplierMatchConfidence: number;
+  supplierMatchReason: string | null;
   docNumberPa: string;
   docDate: Date;
   dueDate: Date | null;
@@ -127,6 +134,7 @@ function mapSummary(inv: {
     supplierNameRaw: inv.supplierNameRaw,
     supplierB1Cardcode: inv.supplierB1Cardcode,
     supplierMatchConfidence: inv.supplierMatchConfidence,
+    supplierMatchReason: inv.supplierMatchReason,
     docNumberPa: inv.docNumberPa,
     docDate: isoDate(inv.docDate),
     dueDate: isoDateOrNull(inv.dueDate),
@@ -165,6 +173,7 @@ function mapLine(l: {
   chosenAccountCode: string | null;
   chosenCostCenter: string | null;
   chosenTaxCodeB1: string | null;
+  taxCodeLockedByUser: boolean;
 }): InvoiceLineDto {
   return {
     id: l.id,
@@ -185,6 +194,7 @@ function mapLine(l: {
     chosenAccountCode: l.chosenAccountCode,
     chosenCostCenter: l.chosenCostCenter,
     chosenTaxCodeB1: l.chosenTaxCodeB1,
+    taxCodeLockedByUser: l.taxCodeLockedByUser,
   };
 }
 
@@ -196,6 +206,51 @@ function mapFile(f: {
   sha256: string;
 }): InvoiceFileDto {
   return { id: f.id, kind: f.kind, path: f.path, sizeBytes: bigInt(f.sizeBytes), sha256: f.sha256 };
+}
+
+function needsSupplierExtractedBackfill(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return true;
+  const data = value as Record<string, unknown>;
+  return [
+    data.siret,
+    data.siren,
+    data.vatNumber,
+    data.street,
+    data.city,
+    data.postalCode,
+    data.country,
+    data.email,
+    data.phone,
+  ].every((v) => v === null || v === undefined || v === '');
+}
+
+async function backfillSupplierExtractedFromXml(inv: {
+  id: string;
+  supplierExtracted: Prisma.JsonValue | null;
+  files: { kind: string; path: string }[];
+}): Promise<Record<string, unknown> | null> {
+  if (!needsSupplierExtractedBackfill(inv.supplierExtracted)) {
+    return inv.supplierExtracted as Record<string, unknown>;
+  }
+
+  const xmlFile = inv.files.find((file) => file.kind === 'XML' && fs.existsSync(file.path));
+  if (!xmlFile) return (inv.supplierExtracted as Record<string, unknown> | null) ?? null;
+
+  try {
+    const parsed = parseInvoiceXml(fs.readFileSync(xmlFile.path, 'utf8'), xmlFile.path);
+    if (!parsed.supplierExtracted) return null;
+
+    await prisma.invoice.update({
+      where: { id: inv.id },
+      data: {
+        supplierExtracted: parsed.supplierExtracted as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    return parsed.supplierExtracted as unknown as Record<string, unknown>;
+  } catch {
+    return (inv.supplierExtracted as Record<string, unknown> | null) ?? null;
+  }
 }
 
 // ─── Requêtes ─────────────────────────────────────────────────────────────────
@@ -229,7 +284,7 @@ export async function findInvoices(
   const skip = (page - 1) * limit;
 
   const where = {
-    ...(status ? { status } : {}),
+    ...(status ? (Array.isArray(status) ? { status: { in: status } } : { status }) : {}),
     ...(paSource ? { paSource } : {}),
     ...(supplierCardcode ? { supplierB1Cardcode: supplierCardcode } : {}),
     ...(direction ? { direction } : {}),
@@ -282,12 +337,14 @@ export async function findInvoiceById(id: string): Promise<InvoiceDetailDto | nu
   const supplierInCache = inv.supplierB1Cardcode
     ? (await prisma.supplierCache.count({ where: { cardcode: inv.supplierB1Cardcode } })) > 0
     : null;
+  const supplierExtracted = await backfillSupplierExtractedFromXml(inv);
 
   return {
     ...mapSummary(inv),
     lines: inv.lines.map(mapLine),
     files: inv.files.map(mapFile),
     supplierInCache,
+    supplierExtracted,
   };
 }
 

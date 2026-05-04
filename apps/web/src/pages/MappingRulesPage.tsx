@@ -11,6 +11,7 @@ import {
   Upload,
   CheckCircle2,
   XCircle,
+  Pencil,
 } from 'lucide-react';
 import {
   apiGetMappingRules,
@@ -24,6 +25,7 @@ import {
 import { apiFetch } from '../api/client';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
+import { AccountSearch } from '../components/ui/AccountSearch';
 import { toast } from '../lib/toast';
 
 function ConfidenceBadge({ value }: { value: number }) {
@@ -184,6 +186,210 @@ function TestRuleModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+interface EditRuleModalProps {
+  rule: MappingRule;
+  onSaved: (updated: MappingRule) => void;
+  onClose: () => void;
+}
+
+function EditRuleModal({ rule, onSaved, onClose }: EditRuleModalProps) {
+  const [scope, setScope] = useState<'GLOBAL' | 'SUPPLIER'>(rule.scope as 'GLOBAL' | 'SUPPLIER');
+  const [supplierCardcode, setSupplierCardcode] = useState(rule.supplierCardcode ?? '');
+  const [matchKeyword, setMatchKeyword] = useState(rule.matchKeyword ?? '');
+  const [matchTaxRate, setMatchTaxRate] = useState(
+    rule.matchTaxRate != null ? String(rule.matchTaxRate) : '',
+  );
+  const [accountCode, setAccountCode] = useState(rule.accountCode);
+  const [costCenter, setCostCenter] = useState(rule.costCenter ?? '');
+  const [taxCodeB1, setTaxCodeB1] = useState(rule.taxCodeB1 ?? '');
+  const [confidence, setConfidence] = useState(String(rule.confidence));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+    try {
+      const updated = await apiFetch<MappingRule>(`/api/mapping-rules/${rule.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope,
+          supplierCardcode: scope === 'SUPPLIER' ? supplierCardcode.trim() || null : null,
+          matchKeyword: matchKeyword.trim() || null,
+          matchTaxRate: matchTaxRate !== '' ? Number(matchTaxRate) : null,
+          accountCode: accountCode.trim(),
+          costCenter: costCenter.trim() || null,
+          taxCodeB1: taxCodeB1.trim() || null,
+          confidence: Number(confidence),
+        }),
+      });
+      onSaved(updated);
+      toast.success('Règle mise à jour');
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erreur lors de la sauvegarde');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-panel max-w-lg">
+        <h2 className="flex items-center gap-2 font-display text-2xl uppercase tracking-[0.08em] text-foreground">
+          <Pencil className="h-4 w-4 text-primary" /> Modifier la règle
+        </h2>
+
+        <form
+          onSubmit={(e) => {
+            void handleSave(e);
+          }}
+          className="space-y-3"
+        >
+          {/* Portée */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Portée</label>
+              <select
+                className="app-input h-9 text-xs"
+                value={scope}
+                onChange={(e) => {
+                  setScope(e.target.value as 'GLOBAL' | 'SUPPLIER');
+                  if (e.target.value === 'GLOBAL') setSupplierCardcode('');
+                }}
+                disabled={saving}
+              >
+                <option value="GLOBAL">Global</option>
+                <option value="SUPPLIER">Fournisseur</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                CardCode fournisseur{' '}
+                {scope === 'SUPPLIER' && <span className="text-destructive">*</span>}
+              </label>
+              <input
+                className="app-input h-9 text-xs font-mono"
+                value={supplierCardcode}
+                onChange={(e) => setSupplierCardcode(e.target.value)}
+                placeholder={scope === 'SUPPLIER' ? 'ex: V12000' : '—'}
+                disabled={saving || scope === 'GLOBAL'}
+              />
+            </div>
+          </div>
+
+          {/* Critères */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Mot-clé
+              </label>
+              <input
+                className="app-input h-9 text-xs"
+                value={matchKeyword}
+                onChange={(e) => setMatchKeyword(e.target.value)}
+                placeholder="ex: maintenance"
+                disabled={saving}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Taux TVA (%)
+              </label>
+              <input
+                className="app-input h-9 text-xs font-mono"
+                type="number"
+                step="0.01"
+                value={matchTaxRate}
+                onChange={(e) => setMatchTaxRate(e.target.value)}
+                placeholder="ex: 20"
+                disabled={saving}
+              />
+            </div>
+          </div>
+
+          {/* Compte comptable */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              Compte comptable <span className="text-destructive">*</span>
+            </label>
+            <AccountSearch
+              value={accountCode}
+              onChange={setAccountCode}
+              placeholder="Code ou libellé SAP…"
+              disabled={saving}
+              className="h-9"
+            />
+          </div>
+
+          {/* Centre + Code TVA */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Centre de coût
+              </label>
+              <input
+                className="app-input h-9 text-xs font-mono"
+                value={costCenter}
+                onChange={(e) => setCostCenter(e.target.value)}
+                placeholder="ex: ATELIER"
+                disabled={saving}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Code TVA B1
+              </label>
+              <input
+                className="app-input h-9 text-xs font-mono"
+                value={taxCodeB1}
+                onChange={(e) => setTaxCodeB1(e.target.value)}
+                placeholder="ex: S2"
+                disabled={saving}
+              />
+            </div>
+          </div>
+
+          {/* Confiance */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              Confiance : <span className="font-semibold text-foreground">{confidence}%</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={confidence}
+              onChange={(e) => setConfidence(e.target.value)}
+              disabled={saving}
+              className="w-full accent-primary"
+            />
+          </div>
+
+          {error && (
+            <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="outline" size="sm" type="button" onClick={onClose} disabled={saving}>
+              Annuler
+            </Button>
+            <Button size="sm" type="submit" disabled={saving || !accountCode.trim()}>
+              {saving ? 'Enregistrement…' : 'Enregistrer'}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function MappingRulesPage() {
   const [rules, setRules] = useState<MappingRule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -191,6 +397,7 @@ export default function MappingRulesPage() {
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [editRule, setEditRule] = useState<MappingRule | null>(null);
   const [showTest, setShowTest] = useState(false);
   const [importing, setImporting] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
@@ -264,6 +471,15 @@ export default function MappingRulesPage() {
 
   return (
     <div className="app-page">
+      {editRule && (
+        <EditRuleModal
+          rule={editRule}
+          onSaved={(updated) =>
+            setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)))
+          }
+          onClose={() => setEditRule(null)}
+        />
+      )}
       {showTest && <TestRuleModal onClose={() => setShowTest(false)} />}
 
       <div className="page-header">
@@ -352,6 +568,7 @@ export default function MappingRulesPage() {
                     <th className="text-right">Usages</th>
                     <th>Actif</th>
                     <th />
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -401,6 +618,15 @@ export default function MappingRulesPage() {
                           ) : (
                             <ToggleLeft className="h-5 w-5" />
                           )}
+                        </button>
+                      </td>
+                      <td>
+                        <button
+                          onClick={() => setEditRule(rule)}
+                          className="rounded-lg p-1 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:bg-muted/60 hover:text-foreground"
+                          title="Modifier"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
                         </button>
                       </td>
                       <td className="text-right">

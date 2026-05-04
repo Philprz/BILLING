@@ -62,6 +62,72 @@ async function findMatchingRule(
   return null;
 }
 
+// ─── Apprentissage immédiat lors d'un choix manuel ───────────────────────────
+
+/**
+ * Appelé dès qu'un utilisateur valide manuellement un compte comptable pour une ligne.
+ * Crée ou renforce une règle fournisseur (confidence 85) pour que les autres lignes
+ * similaires de la même facture et les factures futures bénéficient du même choix.
+ */
+export async function learnFromManualChoice({
+  invoiceId: _invoiceId,
+  lineId,
+  chosenAccountCode,
+  sapUser,
+}: {
+  invoiceId: string;
+  lineId: string;
+  chosenAccountCode: string;
+  sapUser: string;
+}): Promise<void> {
+  const line = await prisma.invoiceLine.findUnique({
+    where: { id: lineId },
+    include: { invoice: { select: { supplierB1Cardcode: true } } },
+  });
+  if (!line) return;
+
+  const keyword = extractKeyword(line.description);
+  const supplierCardcode = line.invoice.supplierB1Cardcode;
+  const taxRate = line.taxRate ? Number(line.taxRate) : null;
+
+  if (!supplierCardcode) return;
+
+  const existing = await prisma.mappingRule.findFirst({
+    where: {
+      scope: 'SUPPLIER',
+      supplierCardcode,
+      accountCode: chosenAccountCode,
+      matchKeyword: keyword ?? undefined,
+      active: true,
+    },
+  });
+
+  if (existing) {
+    await prisma.mappingRule.update({
+      where: { id: existing.id },
+      data: {
+        confidence: { set: Math.min(100, existing.confidence + 5) },
+        usageCount: { increment: 1 },
+        lastUsedAt: new Date(),
+      },
+    });
+  } else {
+    await prisma.mappingRule.create({
+      data: {
+        scope: 'SUPPLIER',
+        supplierCardcode,
+        matchKeyword: keyword,
+        matchTaxRate: taxRate ?? undefined,
+        accountCode: chosenAccountCode,
+        confidence: 85, // > seuil par défaut (75) → auto-appliqué aux autres lignes similaires
+        usageCount: 1,
+        lastUsedAt: new Date(),
+        createdByUser: sapUser,
+      },
+    });
+  }
+}
+
 // ─── Point d'entrée ───────────────────────────────────────────────────────────
 
 export async function applyLearningAfterPost(input: LearningInput): Promise<void> {

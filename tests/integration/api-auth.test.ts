@@ -51,7 +51,7 @@ describe.sequential('API auth session lifecycle', () => {
   });
 
   it('extends the web session when SAP keepalive succeeds', async () => {
-    const { app, cookieHeader, session } = await buildAuthenticatedApp('keepalive.user');
+    const { app, cookieHeader, session, csrfToken } = await buildAuthenticatedApp('keepalive.user');
     const previousExpiresAt = session.expiresAt.getTime();
 
     vi.stubGlobal(
@@ -62,7 +62,7 @@ describe.sequential('API auth session lifecycle', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/auth/keepalive',
-      headers: { cookie: cookieHeader },
+      headers: { cookie: cookieHeader, 'x-csrf-token': csrfToken },
     });
 
     expect(response.statusCode).toBe(200);
@@ -73,7 +73,7 @@ describe.sequential('API auth session lifecycle', () => {
   });
 
   it('invalidates the local session when SAP keepalive fails', async () => {
-    const { app, cookieHeader } = await buildAuthenticatedApp('keepalive.user');
+    const { app, cookieHeader, csrfToken } = await buildAuthenticatedApp('keepalive.user');
 
     vi.stubGlobal(
       'fetch',
@@ -83,7 +83,7 @@ describe.sequential('API auth session lifecycle', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/auth/keepalive',
-      headers: { cookie: cookieHeader },
+      headers: { cookie: cookieHeader, 'x-csrf-token': csrfToken },
     });
 
     expect(response.statusCode).toBe(401);

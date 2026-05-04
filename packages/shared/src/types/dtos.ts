@@ -2,7 +2,14 @@
 // DTOs de l'API PA-SAP Bridge — contrat front ↔ back
 // ---------------------------------------------------------------------------
 
-export type InvoiceStatus = 'NEW' | 'TO_REVIEW' | 'READY' | 'POSTED' | 'REJECTED' | 'ERROR';
+export type InvoiceStatus =
+  | 'NEW'
+  | 'TO_REVIEW'
+  | 'READY'
+  | 'POSTED'
+  | 'LINKED'
+  | 'REJECTED'
+  | 'ERROR';
 export type InvoiceDirection = 'INVOICE' | 'CREDIT_NOTE';
 export type FileKind = 'PDF' | 'XML' | 'ATTACHMENT';
 
@@ -17,6 +24,7 @@ export interface InvoiceSummary {
   supplierNameRaw: string;
   supplierB1Cardcode: string | null;
   supplierMatchConfidence: number;
+  supplierMatchReason: string | null;
   docNumberPa: string;
   docDate: string;
   dueDate: string | null;
@@ -53,6 +61,7 @@ export interface InvoiceLine {
   chosenAccountCode: string | null;
   chosenCostCenter: string | null;
   chosenTaxCodeB1: string | null;
+  taxCodeLockedByUser: boolean;
 }
 
 export interface InvoiceFile {
@@ -63,11 +72,30 @@ export interface InvoiceFile {
   sha256: string;
 }
 
+export interface SupplierExtracted {
+  endpointId?: string | null;
+  partyIdentificationIds?: string[];
+  taxCompanyIds?: string[];
+  legalCompanyId?: string | null;
+  siren: string | null;
+  siret: string | null;
+  vatNumber: string | null;
+  fullAddress?: string | null;
+  street: string | null;
+  street2: string | null;
+  city: string | null;
+  postalCode: string | null;
+  country: string | null;
+  email: string | null;
+  phone: string | null;
+}
+
 export interface InvoiceDetail extends InvoiceSummary {
   lines: InvoiceLine[];
   files: InvoiceFile[];
   paStatusSentAt?: string | null;
   supplierInCache: boolean | null;
+  supplierExtracted: SupplierExtracted | null;
 }
 
 export type AuditAction =
@@ -79,9 +107,12 @@ export type AuditAction =
   | 'APPROVE'
   | 'REJECT'
   | 'POST_SAP'
+  | 'LINK_SAP'
   | 'SEND_STATUS_PA'
   | 'SYSTEM_ERROR'
-  | 'CONFIG_CHANGE';
+  | 'CONFIG_CHANGE'
+  | 'CREATE_SUPPLIER'
+  | 'SYNC_SUPPLIERS';
 
 export type AuditOutcome = 'OK' | 'ERROR';
 
@@ -130,12 +161,34 @@ export interface SapExecutionPolicy {
 }
 
 export interface SapValidationIssue {
-  severity: 'ERROR';
+  severity: 'ERROR' | 'WARNING';
   code: string;
   message: string;
   lineNo?: number;
   field?: string;
   value?: string | null;
+}
+
+export interface SapPurchaseInvoiceRef {
+  docEntry: number;
+  docNum: number;
+  cardCode: string;
+  cardName: string;
+  numAtCard: string;
+  docDate: string;
+  docTotal: number;
+  attachmentEntry: number | null;
+}
+
+export interface LinkSapResult {
+  status: 'LINKED';
+  sapDocEntry: number;
+  sapDocNum: number;
+  attachmentEntry: number | null;
+}
+
+export interface LinkSapConflict {
+  candidates: SapPurchaseInvoiceRef[];
 }
 
 export interface SapValidationReport {

@@ -30,9 +30,9 @@ const lineWithAccount: LineData = {
   taxRate: dec(20),
   taxAmount: dec(20),
   amountInclTax: dec(120),
-  chosenAccountCode: null,
-  suggestedAccountCode: '601000',
-  chosenTaxCodeB1: null,
+  chosenAccountCode: '601000',
+  suggestedAccountCode: null,
+  chosenTaxCodeB1: 'S1',
   suggestedTaxCodeB1: null,
 };
 
@@ -45,14 +45,14 @@ const lineWithoutAccount: LineData = {
 
 describe('sap-invoice-builder', () => {
   it('builds a purchase payload and skips lines without account code', () => {
-    const result = buildPurchaseDocPayload(
-      invoice,
-      [lineWithAccount, lineWithoutAccount],
-      789,
-      { '20.00': 'S1' },
-    );
+    const result = buildPurchaseDocPayload(invoice, [lineWithAccount, lineWithoutAccount], 789, {
+      '20.00': 'S1',
+    });
 
-    const payload = result.payload as { DocumentLines: Array<Record<string, unknown>>; AttachmentEntry: number };
+    const payload = result.payload as {
+      DocumentLines: Array<Record<string, unknown>>;
+      AttachmentEntry: number;
+    };
 
     expect(result.skippedLines).toEqual([2]);
     expect(payload.AttachmentEntry).toBe(789);
@@ -64,14 +64,12 @@ describe('sap-invoice-builder', () => {
   });
 
   it('builds a balanced journal entry payload', () => {
-    const result = buildJournalEntryPayload(
-      invoice,
-      [lineWithAccount],
-      321,
-      { '20.00': 'S1' },
-    );
+    const result = buildJournalEntryPayload(invoice, [lineWithAccount], 321, { '20.00': 'S1' });
 
-    const payload = result.payload as { JournalEntryLines: Array<Record<string, unknown>>; AttachmentEntry: number };
+    const payload = result.payload as {
+      JournalEntryLines: Array<Record<string, unknown>>;
+      AttachmentEntry: number;
+    };
 
     expect(result.skippedLines).toEqual([]);
     expect(payload.AttachmentEntry).toBe(321);

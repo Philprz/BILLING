@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Building2, ShieldCheck, Sparkles } from 'lucide-react';
+import { ShieldCheck, Sparkles } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { apiLogin } from '../api/auth.api';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme } from '../contexts/ThemeContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -28,6 +29,7 @@ type LoginForm = z.infer<typeof loginSchema>;
 export default function LoginPage() {
   const navigate = useNavigate();
   const { user, refresh } = useAuth();
+  const { theme } = useTheme();
   const [serverError, setServerError] = useState<string | null>(null);
 
   const {
@@ -64,19 +66,18 @@ export default function LoginPage() {
 
       <div className="relative grid w-full max-w-6xl gap-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
         <section className="space-y-6 text-center lg:text-left">
-          <p className="page-eyebrow">IT Spirit</p>
           <div className="space-y-4">
-            <div className="inline-flex h-16 w-16 items-center justify-center rounded-[1.4rem] border border-border/70 bg-brand-gradient shadow-brand">
-              <Building2 className="h-8 w-8 text-primary-foreground" />
+            <div>
+              <img
+                src={theme === 'dark' ? '/LogoITS_sombre.png' : '/LogoITS_clair.png'}
+                alt="IT Spirit"
+                className="h-40 w-auto"
+              />
             </div>
             <div className="space-y-3">
               <h1 className="font-display text-5xl uppercase tracking-[0.12em] text-foreground">
-                Billing
+                NOVA - PA
               </h1>
-              <p className="max-w-xl text-base leading-7 text-muted-foreground">
-                Une interface de facturation orientee exploitation, alignee sur l’identite IT
-                Spirit: contrastes nets, hierarchie claire et accents premium utiles.
-              </p>
             </div>
           </div>
 
@@ -110,7 +111,7 @@ export default function LoginPage() {
             </CardTitle>
             <p className="text-sm text-muted-foreground">
               Saisissez vos identifiants SAP Business One Service Layer pour ouvrir votre session
-              BILLING.
+              NOVA - PA.
             </p>
           </CardHeader>
           <CardContent>

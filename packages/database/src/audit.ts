@@ -165,6 +165,18 @@ export function buildAuditSummary(input: AuditSummaryInput): string {
       const reason = readString(payloadAfter, 'reason');
       return reason ? `Rejet: ${reason}` : 'Rejet manuel';
     }
+    case 'LINK_SAP': {
+      const sapDocNum = readNumber(payloadAfter, 'sapDocNum');
+      const numAtCard = readString(payloadAfter, 'numAtCard');
+      const attachmentEntry = readNumber(payloadAfter, 'attachmentEntry');
+      const parts = [
+        'Rattachement SAP',
+        numAtCard ? `NumAtCard ${numAtCard}` : null,
+        sapDocNum ? `DocNum ${sapDocNum}` : null,
+        attachmentEntry ? `PJ AbsEntry ${attachmentEntry}` : null,
+      ].filter(Boolean);
+      return parts.join(' · ');
+    }
     case 'POST_SAP': {
       if (stage === 'SAP_VALIDATION_OK') {
         return 'Validation SAP OK';

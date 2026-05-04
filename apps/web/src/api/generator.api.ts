@@ -5,16 +5,23 @@ export interface GenLine {
   quantity: number;
   unitPrice: number;
   taxRate: number;
+  accountingCode: string; // Compte de charge classe 6 (obligatoire, ex: 622600)
+  accountingLabel?: string; // Libellé du compte (affiché dans le PDF)
 }
 
 export interface GenSupplier {
   name: string;
+  legalForm?: string;
   address?: string;
   city?: string;
   postalCode?: string;
   country?: string;
   taxId?: string;
   siret?: string;
+  iban?: string;
+  bic?: string;
+  phone?: string;
+  email?: string;
 }
 
 export interface InvoiceGenData {
@@ -25,6 +32,8 @@ export interface InvoiceGenData {
   direction: 'INVOICE' | 'CREDIT_NOTE';
   supplier: GenSupplier;
   buyerName?: string;
+  buyerSiret?: string;
+  buyerVatNumber?: string;
   lines: GenLine[];
   note?: string;
 }
@@ -44,6 +53,7 @@ export interface GeneratedInvoice {
   xmlContent: string;
   xmlFilename: string;
   pdfFilename: string;
+  zipFilename: string;
   summary: {
     invoiceNumber: string;
     direction: string;
@@ -65,7 +75,9 @@ export interface SapSupplier {
   vatregnum: string | null;
 }
 
-export async function apiSearchSapSuppliers(search: string): Promise<{ items: SapSupplier[]; total: number }> {
+export async function apiSearchSapSuppliers(
+  search: string,
+): Promise<{ items: SapSupplier[]; total: number }> {
   return apiFetch(`/api/invoice-generator/suppliers?search=${encodeURIComponent(search)}&limit=20`);
 }
 

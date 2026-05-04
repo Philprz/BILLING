@@ -5,7 +5,6 @@ import {
   FileText,
   LayoutDashboard,
   LogOut,
-  Building2,
   ScrollText,
   FlaskConical,
   Sparkles,
@@ -15,18 +14,21 @@ import {
   Cable,
   ChevronLeft,
   ChevronRight,
+  BookOpen,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import { ThemeToggle } from '../ui/theme-toggle';
 
 const NAV = [
   { to: '/', label: 'Tableau de bord', icon: LayoutDashboard, end: true },
-  { to: '/invoices', label: 'Factures', icon: FileText, end: false },
-  { to: '/suppliers', label: 'Fournisseurs', icon: Users, end: false },
+  { to: '/invoices', label: 'Liste des factures', icon: FileText, end: false },
+  { to: '/suppliers', label: 'Fournisseurs SAP', icon: Users, end: false },
   { to: '/mapping-rules', label: 'Règles mappage', icon: BookmarkCheck, end: false },
   { to: '/audit', label: 'Audit', icon: ScrollText, end: false },
   { to: '/pa-channels', label: 'Canaux PA', icon: Cable, end: false },
+  { to: '/chart-of-accounts', label: 'Plan comptable SAP', icon: BookOpen, end: false },
   { to: '/settings', label: 'Paramètres', icon: Settings2, end: false },
   { to: '/invoice-generator', label: 'Générateur de test', icon: FlaskConical, end: false },
 ];
@@ -34,6 +36,7 @@ const NAV = [
 export function AppLayout() {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
+  const { theme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -66,8 +69,12 @@ export function AppLayout() {
         {collapsed ? (
           /* ── Mode réduit : logo + toggle empilés, centrés ── */
           <div className="hidden lg:flex flex-col items-center gap-2 border-b border-sidebar-border/70 py-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-sidebar-border/70 bg-brand-gradient shadow-brand">
-              <Building2 className="h-5 w-5 text-primary-foreground" />
+            <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl">
+              <img
+                src={theme === 'dark' ? '/LogoITS_sombre.png' : '/LogoITS_clair.png'}
+                alt="IT Spirit"
+                className="h-10 w-10 object-contain"
+              />
             </div>
             <button
               onClick={() => setCollapsed(false)}
@@ -80,15 +87,16 @@ export function AppLayout() {
         ) : (
           /* ── Mode déployé : logo + texte + toggle sur une ligne ── */
           <div className="flex items-center gap-4 border-b border-sidebar-border/70 px-5 py-5">
-            <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl border border-sidebar-border/70 bg-brand-gradient shadow-brand">
-              <Building2 className="h-7 w-7 text-primary-foreground" />
+            <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center overflow-hidden rounded-2xl">
+              <img
+                src={theme === 'dark' ? '/LogoITS_sombre.png' : '/LogoITS_clair.png'}
+                alt="IT Spirit"
+                className="h-14 w-14 object-contain"
+              />
             </div>
             <div className="min-w-0">
               <p className="font-display text-xl uppercase tracking-[0.18em] text-sidebar-foreground">
-                Billing
-              </p>
-              <p className="text-xs uppercase tracking-[0.26em] text-sidebar-foreground/60">
-                IT Spirit
+                NOVA - PA
               </p>
             </div>
             <button
@@ -98,17 +106,6 @@ export function AppLayout() {
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
-          </div>
-        )}
-
-        {!collapsed && (
-          <div className="hidden border-b border-sidebar-border/70 px-5 py-4 text-xs text-sidebar-foreground/70 lg:block">
-            <p className="uppercase tracking-[0.28em] text-sidebar-foreground/50">Plateforme</p>
-            <p className="mt-1 text-sm text-sidebar-foreground/90">Facturation electronique</p>
-            <p className="mt-2 leading-5 text-sidebar-foreground/60">
-              Interface premium orientee exploitation, avec lecture rapide des statuts et des
-              actions.
-            </p>
           </div>
         )}
 
@@ -149,10 +146,8 @@ export function AppLayout() {
               </div>
               {user && (
                 <div className="mt-3 space-y-1">
-                  <p className="text-sm font-semibold text-sidebar-foreground">{user.user}</p>
-                  <p className="font-mono text-[11px] text-sidebar-foreground/60">
-                    {user.companyDb}
-                  </p>
+                  <p className="text-sm font-semibold text-sidebar-foreground">{user.companyDb}</p>
+                  <p className="font-mono text-[11px] text-sidebar-foreground/60">{user.user}</p>
                 </div>
               )}
             </div>
@@ -177,26 +172,17 @@ export function AppLayout() {
         <header className="sticky top-0 z-20 border-b border-border/70 bg-background/75 backdrop-blur-xl">
           <div className="flex flex-col gap-4 px-6 py-4 lg:flex-row lg:items-center lg:justify-between lg:px-8">
             <div>
-              <p className="page-eyebrow">IT Spirit</p>
-              <div className="mt-1 flex items-center gap-3">
-                <h1 className="font-display text-xl uppercase tracking-[0.16em] text-foreground">
-                  {activeItem.label}
-                </h1>
-                <span className="hidden rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-primary md:inline-flex">
-                  PA-SAP Bridge
-                </span>
-              </div>
+              <h1 className="font-display text-xl uppercase tracking-[0.16em] text-foreground">
+                {activeItem.label}
+              </h1>
             </div>
 
             <div className="flex items-center gap-3 self-start lg:self-auto">
               <ThemeToggle />
               {user && (
                 <div className="rounded-2xl border border-border/80 bg-card-muted/70 px-4 py-2.5 text-right shadow-soft">
-                  <p className="text-xs uppercase tracking-[0.22em] text-muted-foreground">
-                    Utilisateur
-                  </p>
-                  <p className="text-sm font-semibold text-foreground">{user.user}</p>
-                  <p className="font-mono text-[11px] text-muted-foreground">{user.companyDb}</p>
+                  <p className="text-sm font-semibold text-foreground">{user.companyDb}</p>
+                  <p className="font-mono text-[11px] text-muted-foreground">{user.user}</p>
                 </div>
               )}
               <button

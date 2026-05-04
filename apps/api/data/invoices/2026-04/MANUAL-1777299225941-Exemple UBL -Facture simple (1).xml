@@ -1,0 +1,210 @@
+<?xml version="1.0"?>
+<Invoice xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2 COMMON-XSD/UBL-Invoice-2.1.xsd"
+ xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+ xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
+ xmlns:qdt="urn:oasis:names:specification:ubl:schema:xsd:QualifiedDatatypes-2"
+ xmlns:ccts="urn:un:unece:uncefact:documentation:2"
+ xmlns:stat="urn:oasis:names:specification:ubl:schema:xsd:DocumentStatusCode-1.0"
+ xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+ xmlns:udt="urn:un:unece:uncefact:data:draft:UnqualifiedDataTypesSchemaModule:2"
+ xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:ID>148204</cbc:ID>
+  <cbc:IssueDate>2023-07-31</cbc:IssueDate>
+  <cbc:DueDate>2023-08-30</cbc:DueDate>
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cac:OrderReference>
+    <cbc:ID>12345767890</cbc:ID>
+    <cbc:IssueDate>2023-07-25</cbc:IssueDate>
+  </cac:OrderReference>
+  <cac:AdditionalDocumentReference>
+    <cbc:ID>FICHIER_PDF_36010_110893_148204.PDF</cbc:ID>
+    <cbc:DocumentTypeCode>application/pdf</cbc:DocumentTypeCode>
+    <cbc:DocumentType>01</cbc:DocumentType>
+    <cac:Attachment>
+      <cbc:EmbeddedDocumentBinaryObject mimeCode="application/zip"></cbc:EmbeddedDocumentBinaryObject>
+    </cac:Attachment>
+  </cac:AdditionalDocumentReference>
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="FR:SIRET">123456789123</cbc:ID>
+      </cac:PartyIdentification>
+    <!--  <cac:PartyIdentification>
+        <cbc:ID schemeID="FJU">SA à conseil d'administration</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="ALV">19523145,00</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="AHO">B 601 251 614 XXXXXX</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="BU">00313</cbc:ID>
+      </cac:PartyIdentification> -->
+      <cac:PartyName>
+        <cbc:Name>XXX XXXXXX</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>XX XXX XXXXXXXXX</cbc:StreetName>
+        <cbc:CityName>XXXXXXX</cbc:CityName>
+        <cbc:PostalZone>XXXXX</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cac:TaxScheme>
+          <cbc:ID>FRXXXXXXXXXXX</cbc:ID>
+          <cbc:TaxTypeCode>FR:VAT</cbc:TaxTypeCode>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>XXXXX XXX XXXXXX</cbc:RegistrationName>
+        <cac:RegistrationAddress>
+          <cbc:StreetName>XX XXX XXXXXXXXX</cbc:StreetName>
+          <cbc:CityName>XXXXX</cbc:CityName>
+          <cbc:PostalZone>XXXXX</cbc:PostalZone>
+          <cac:Country>
+            <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+          </cac:Country>
+        </cac:RegistrationAddress>
+      </cac:PartyLegalEntity>
+    </cac:Party>
+    <cac:AccountingContact>
+      <cbc:Name>XXXX XXXXXXXXXX</cbc:Name>
+      <cbc:Telephone>XXXXXXXXXX</cbc:Telephone>
+      <cbc:ElectronicMail>XXXXXXXXXXXXXXXXXX</cbc:ElectronicMail>
+    </cac:AccountingContact>
+  </cac:AccountingSupplierParty>
+  <cac:AccountingCustomerParty>
+    <cac:Party> 
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="FR:SIRET">XXXXXXXXXXXXXX</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="FR:VAT">FRXXXXXXXXXXX</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyName>
+        <cbc:Name>XXXX XXX XXX</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>XX XXX XXXXX</cbc:StreetName>
+        <cbc:CityName>XXXXX</cbc:CityName>
+        <cbc:PostalZone>XXXXX</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+  <cac:Delivery>
+    <cbc:ActualDeliveryDate>2022-05-03</cbc:ActualDeliveryDate>
+    <cbc:ActualDeliveryTime>07:20:00</cbc:ActualDeliveryTime>
+    <cbc:LatestDeliveryDate>2022-05-19</cbc:LatestDeliveryDate>
+    <cbc:LatestDeliveryTime>06:54:00</cbc:LatestDeliveryTime>
+    <cac:DeliveryLocation>
+      <cbc:ID>1</cbc:ID>
+      <cbc:Description>XXX XXXX XXXXXX</cbc:Description>
+      <cac:Address>
+        <cbc:StreetName>1 RUE PRINCIPALE</cbc:StreetName>
+        <cbc:CityName>XXXXX</cbc:CityName>
+        <cbc:PostalZone>XXXXX</cbc:PostalZone>
+        <cac:Country>
+          <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:Address>
+    </cac:DeliveryLocation>
+  </cac:Delivery>
+  <cac:PaymentMeans>
+    <cbc:PaymentMeansCode listID="UN/ECE/4461 Subset" listAgencyID="NES" listAgencyName="XXX">20</cbc:PaymentMeansCode>
+    <cbc:PaymentDueDate>2023-08-15</cbc:PaymentDueDate>
+    <cbc:PaymentChannelCode>IBAN</cbc:PaymentChannelCode>
+    <cbc:InstructionNote>INSTRUCTIONS DE PAIEMENT EN MAJUSCULES</cbc:InstructionNote>
+    <cac:PayeeFinancialAccount>
+      <cbc:ID>FRXXXXXXXXXXX</cbc:ID>
+      <cac:FinancialInstitutionBranch>
+        <cbc:ID>9999</cbc:ID>
+      </cac:FinancialInstitutionBranch>
+    </cac:PayeeFinancialAccount>
+  </cac:PaymentMeans>
+  <cac:PaymentTerms>
+    <cbc:Note>PENALITES DE RETARD EGALES A 3 FOIS LE TAUX D INTERET LEGAL ; ET S AGISSANT D UN CLIENT PROFESSIONNEL, D UNE INDEMNITE FORFAITAIRE POUR FRAIS DE RECOUVREMENT D UN MONTANT DE 40 EUR. LORSQUE LES FRAIS DE RECOUVREMENT EXPOSES SONT SUPERIEURS A L INDEMNITE FORFAITAIRE, BOLLORE ENERGY PEUT DEMANDER UNE INDEMNITE COMPLEMENTAIRE, SUR JUSTIFICATIF</cbc:Note>
+    <cbc:SettlementDiscountPercent>05.0</cbc:SettlementDiscountPercent>
+    <cbc:Amount currencyID="EUR">54.00</cbc:Amount>
+  </cac:PaymentTerms>
+ <cac:AllowanceCharge>
+   <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+   <cbc:AllowanceChargeReasonCode>1</cbc:AllowanceChargeReasonCode>
+   <cbc:AllowanceChargeReason>LIBELLE CHARGE OU REMISE</cbc:AllowanceChargeReason>
+   <cbc:Amount currencyID="EUR">0.0</cbc:Amount>
+   <cac:TaxCategory>
+     <cbc:Percent>0.00</cbc:Percent>
+     <cbc:TaxExemptionReason>XX XXXX</cbc:TaxExemptionReason>
+     <cac:TaxScheme>
+       <cbc:ID>VAT</cbc:ID>
+       <cbc:Name>VAT</cbc:Name>
+     </cac:TaxScheme>
+   </cac:TaxCategory>
+ </cac:AllowanceCharge>
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">442.63</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">2213.13</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">442.63</cbc:TaxAmount>
+      <cbc:Percent>20.0</cbc:Percent>
+      <cac:TaxCategory>
+        <cbc:TaxExemptionReason>XXX XXX</cbc:TaxExemptionReason>
+        <cac:TaxScheme>
+          <cbc:ID>DEBIT</cbc:ID>
+          <cbc:TaxTypeCode>TVA</cbc:TaxTypeCode>
+        </cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+  <cac:LegalMonetaryTotal>
+    <cbc:TaxExclusiveAmount currencyID="EUR">2213.13</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">2655.76</cbc:TaxInclusiveAmount>
+    <cbc:AllowanceTotalAmount currencyID="EUR">0.0</cbc:AllowanceTotalAmount>
+    <cbc:PrepaidAmount currencyID="EUR">2000.00</cbc:PrepaidAmount>
+    <cbc:PayableAmount currencyID="EUR">2655.76</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:Note>DESCRIPTION DU PRODUIT</cbc:Note>
+    <cbc:InvoicedQuantity unitCode="MTQ">1.492</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">2213.13</cbc:LineExtensionAmount>
+    <cac:Delivery>
+      <cbc:ID>1</cbc:ID>
+      <cbc:ActualDeliveryDate>2023-07-31</cbc:ActualDeliveryDate>
+      <cbc:LatestDeliveryDate>2023-07-31</cbc:LatestDeliveryDate>
+    </cac:Delivery>
+    <cac:AllowanceCharge>
+      <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+      <cbc:AllowanceChargeReasonCode>1</cbc:AllowanceChargeReasonCode>
+      <cbc:AllowanceChargeReason>LIBELLE CHARGE OU REMISE</cbc:AllowanceChargeReason>
+      <cbc:Amount currencyID="EUR">0.0</cbc:Amount>
+    </cac:AllowanceCharge>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="EUR">442.63</cbc:TaxAmount>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>XXXXX</cbc:Name>
+      <cac:StandardItemIdentification>
+        <cbc:ID>020101</cbc:ID>
+      </cac:StandardItemIdentification>
+      <cac:ClassifiedTaxCategory>
+        <cbc:Percent>20.0</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>020101</cbc:ID>
+          <cbc:Name></cbc:Name>
+          <cbc:TaxTypeCode>TVA</cbc:TaxTypeCode>
+        </cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="EUR">1780.0</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+</Invoice>
