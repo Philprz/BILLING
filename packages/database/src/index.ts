@@ -1,20 +1,12 @@
 export { prisma } from './client';
-export {
-  createAuditLog,
-  createAuditLogBestEffort,
-  buildAuditSummary,
-} from './audit';
+export { createAuditLog, createAuditLogBestEffort, buildAuditSummary } from './audit';
 export {
   buildPaStatusPayload,
   computeNextRetryAt,
   getPaStatusRetryPolicy,
   isPaStatusRetryDue,
 } from './pa-status';
-export type {
-  PaStatusOutcome,
-  PaStatusPayload,
-  PaStatusRetryPolicy,
-} from './pa-status';
+export type { PaStatusOutcome, PaStatusPayload, PaStatusRetryPolicy } from './pa-status';
 
 // Re-export des types Prisma pour éviter aux consommateurs
 // d'importer directement depuis @prisma/client
@@ -27,6 +19,7 @@ export type {
   AuditLog,
   PaChannel,
   Setting,
+  AppUser,
   InvoiceDirection,
   InvoiceFormat,
   InvoiceStatus,
@@ -38,6 +31,7 @@ export type {
   AuditOutcome,
   PaProtocol,
   PaAuthType,
+  Role,
   Prisma,
 } from '@prisma/client';
 

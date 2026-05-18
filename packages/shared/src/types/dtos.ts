@@ -138,8 +138,12 @@ export interface PaginatedResult<T> {
   totalPages: number;
 }
 
+export type AuthRole = 'ADMIN' | 'ACCOUNTANT' | 'VIEWER';
+
 export interface AuthUser {
   user: string;
+  displayName: string;
+  role: AuthRole;
   companyDb: string;
   expiresAt: string;
 }

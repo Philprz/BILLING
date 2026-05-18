@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 const PA_SOURCE_LABELS: Record<string, string> = {
   MANUAL_UPLOAD: 'Téléchargée',
@@ -1406,13 +1406,50 @@ export default function InvoiceDetailPage() {
     setInvoice(updatedInvoice);
   }, [id]);
 
+  // Garde-fou : un seul auto-enrich par montage, même si l'effet ré-évalue.
+  const autoEnrichDone = useRef<string | null>(null);
+
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    reloadInvoice()
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Erreur'))
-      .finally(() => setLoading(false));
-  }, [id, reloadInvoice]);
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const fresh = await apiGetInvoice(id);
+        if (cancelled) return;
+
+        // Auto re-enrichissement au chargement si la facture est en TO_REVIEW
+        // avec des lignes dépourvues de compte ou de code TVA. La logique côté
+        // serveur (enrichInvoiceById) respecte les verrous manuels — on peut
+        // donc déclencher sans risque d'écraser une édition utilisateur.
+        const needsAutoEnrich =
+          fresh.status === 'TO_REVIEW' &&
+          fresh.lines.length > 0 &&
+          fresh.lines.some(
+            (l) => (!l.chosenAccountCode || !l.chosenTaxCodeB1) && !l.taxCodeLockedByUser,
+          ) &&
+          autoEnrichDone.current !== id;
+
+        if (needsAutoEnrich) {
+          autoEnrichDone.current = id;
+          const enriched = await apiReEnrichInvoice(id).catch(() => null);
+          if (cancelled) return;
+          setInvoice(enriched ?? fresh);
+        } else {
+          setInvoice(fresh);
+        }
+      } catch (err: unknown) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Erreur');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
 
   // Keyboard shortcuts — V: valider, R: rejeter, ?: aide
   const [showKeyHelp, setShowKeyHelp] = useState(false);
@@ -2261,8 +2298,11 @@ export default function InvoiceDetailPage() {
                   </div>
                 )}
 
-                {/* Mise à jour TVA intracommunautaire depuis la facture */}
-                {['READY', 'TO_REVIEW', 'ERROR'].includes(invoice.status) &&
+                {/* Mise à jour TVA intracommunautaire depuis la facture — fallback manuel.
+                    En READY/TO_REVIEW, l'auto-patch côté serveur (POST /:id/post) prend en
+                    charge ce cas automatiquement, donc on n'affiche le bouton qu'après
+                    un échec d'intégration (status ERROR). */}
+                {invoice.status === 'ERROR' &&
                   invoice.supplierB1Cardcode &&
                   invoice.supplierExtracted?.vatNumber && (
                     <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs space-y-2">

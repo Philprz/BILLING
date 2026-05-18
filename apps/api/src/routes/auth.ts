@@ -2,9 +2,10 @@ import '@fastify/cookie';
 import { randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { sapLogin, sapLogout, sapPing, SapAuthError } from '../services/sap-auth.service';
-import { createSession, getSession, deleteSession, updateSession } from '../session/store';
-import { createAuditLogBestEffort } from '@pa-sap-bridge/database';
-import { COOKIE_NAME, resolveSessionDurationMinutes } from '../config';
+import { createSession, getSession, deleteSession, slideIdleExpiry } from '../session/store';
+import type { AppRole } from '../session/store';
+import { createAuditLogBestEffort, prisma } from '@pa-sap-bridge/database';
+import { COOKIE_NAME, IDLE_TIMEOUT_MINUTES, ABSOLUTE_TIMEOUT_MINUTES } from '../config';
 
 // Sociétés SAP autorisées (issues des variables d'env uniquement)
 const ALLOWED_COMPANIES = new Set(
@@ -19,9 +20,8 @@ interface LoginBody {
   password: string;
 }
 
-function computeSessionExpiry(sessionTimeoutMinutes: number): Date {
-  const durationMinutes = resolveSessionDurationMinutes(sessionTimeoutMinutes);
-  return new Date(Date.now() + durationMinutes * 60 * 1000);
+function nowPlusMinutes(minutes: number): Date {
+  return new Date(Date.now() + minutes * 60_000);
 }
 
 function setSessionCookie(reply: FastifyReply, sessionId: string, expiresAt: Date): void {
@@ -84,13 +84,65 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           password,
         );
 
-        const expiresAt = computeSessionExpiry(sessionTimeoutMinutes);
+        // SAP a validé les credentials. On vérifie que l'utilisateur est
+        // provisionné côté NOVA PA (rôle + flag active) — sinon 403.
+        const appUser = await prisma.appUser.findUnique({
+          where: {
+            uq_app_users_sap_company: { sapUsername: userName, companyDb },
+          },
+        });
+
+        if (!appUser) {
+          await createAuditLogBestEffort({
+            action: 'LOGIN',
+            entityType: 'SYSTEM',
+            sapUser: userName,
+            outcome: 'ERROR',
+            ipAddress: request.ip,
+            userAgent: request.headers['user-agent'] ?? null,
+            errorMessage: 'USER_NOT_PROVISIONED',
+            payloadAfter: { companyDb },
+          });
+          return reply.code(403).send({
+            success: false,
+            error: 'USER_NOT_PROVISIONED',
+          });
+        }
+
+        if (!appUser.active) {
+          await createAuditLogBestEffort({
+            action: 'LOGIN',
+            entityType: 'SYSTEM',
+            sapUser: userName,
+            outcome: 'ERROR',
+            ipAddress: request.ip,
+            userAgent: request.headers['user-agent'] ?? null,
+            errorMessage: 'USER_DISABLED',
+            payloadAfter: { companyDb },
+          });
+          return reply.code(403).send({
+            success: false,
+            error: 'USER_DISABLED',
+          });
+        }
+
+        // Maj best-effort de la dernière connexion (n'empêche pas l'auth si échec)
+        await prisma.appUser
+          .update({ where: { id: appUser.id }, data: { lastLoginAt: new Date() } })
+          .catch(() => undefined);
+
+        const idleExpiresAt = nowPlusMinutes(IDLE_TIMEOUT_MINUTES);
+        const absoluteExpiresAt = nowPlusMinutes(ABSOLUTE_TIMEOUT_MINUTES);
         const session = createSession({
           b1Session,
           sapCookieHeader,
           companyDb,
           sapUser: userName,
-          expiresAt,
+          userId: appUser.id,
+          displayName: appUser.displayName,
+          role: appUser.role as AppRole,
+          idleExpiresAt,
+          absoluteExpiresAt,
           sessionTimeoutMinutes,
         });
 
@@ -102,27 +154,31 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           outcome: 'OK',
           ipAddress: request.ip,
           userAgent: request.headers['user-agent'] ?? null,
-          payloadAfter: { companyDb, sessionTimeoutMinutes },
+          payloadAfter: { companyDb, sessionTimeoutMinutes, role: appUser.role },
         });
 
         // Cookie httpOnly signé — le navigateur ne voit jamais le B1SESSION
-        setSessionCookie(reply, session.sessionId, expiresAt);
-        setCsrfCookie(reply, expiresAt);
+        setSessionCookie(reply, session.sessionId, session.expiresAt);
+        setCsrfCookie(reply, session.expiresAt);
 
         return reply.send({
           success: true,
           data: {
             user: userName,
+            displayName: appUser.displayName,
+            role: appUser.role,
             companyDb,
-            expiresAt: expiresAt.toISOString(),
+            expiresAt: session.expiresAt.toISOString(),
           },
         });
       } catch (err) {
         const isAuth = err instanceof SapAuthError;
-        const message = isAuth ? err.message : 'Erreur de connexion SAP';
-        const httpCode = isAuth ? err.statusCode : 502;
+        // SAP a refusé les credentials → 401 INVALID_CREDENTIALS.
+        // SAP injoignable / erreur réseau / autre → 503 SAP_UNREACHABLE.
+        const isInvalidCreds = isAuth && err.statusCode === 401;
+        const errorCode = isInvalidCreds ? 'INVALID_CREDENTIALS' : 'SAP_UNREACHABLE';
+        const httpCode = isInvalidCreds ? 401 : 503;
 
-        // Audit login KO (best-effort, sans masquer l'erreur principale)
         await createAuditLogBestEffort({
           action: 'LOGIN',
           entityType: 'SYSTEM',
@@ -130,11 +186,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           outcome: 'ERROR',
           ipAddress: request.ip,
           userAgent: request.headers['user-agent'] ?? null,
-          errorMessage: err instanceof Error ? err.message : String(err),
+          errorMessage: `${errorCode}: ${err instanceof Error ? err.message : String(err)}`,
           payloadAfter: { companyDb },
         });
 
-        return reply.code(httpCode).send({ success: false, error: message });
+        return reply.code(httpCode).send({ success: false, error: errorCode });
       }
     },
   );
@@ -189,6 +245,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       success: true,
       data: {
         user: session.sapUser,
+        displayName: session.displayName,
+        role: session.role,
         companyDb: session.companyDb,
         expiresAt: session.expiresAt.toISOString(),
       },
@@ -216,20 +274,25 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!pingOk) {
       deleteSession(session.sessionId);
       reply.clearCookie(COOKIE_NAME, { path: '/' });
-      return reply.code(401).send({ success: false, error: 'Session SAP expirée ou invalide' });
+      return reply.code(401).send({ success: false, error: 'SESSION_EXPIRED' });
     }
 
-    const expiresAt = computeSessionExpiry(session.sessionTimeoutMinutes);
-    updateSession(session.sessionId, { expiresAt });
-    setSessionCookie(reply, session.sessionId, expiresAt);
-    setCsrfCookie(reply, expiresAt);
+    const updated = slideIdleExpiry(session.sessionId, IDLE_TIMEOUT_MINUTES);
+    if (!updated) {
+      reply.clearCookie(COOKIE_NAME, { path: '/' });
+      return reply.code(401).send({ success: false, error: 'SESSION_EXPIRED' });
+    }
+    setSessionCookie(reply, updated.sessionId, updated.expiresAt);
+    setCsrfCookie(reply, updated.expiresAt);
 
     return reply.send({
       success: true,
       data: {
-        user: session.sapUser,
-        companyDb: session.companyDb,
-        expiresAt: expiresAt.toISOString(),
+        user: updated.sapUser,
+        displayName: updated.displayName,
+        role: updated.role,
+        companyDb: updated.companyDb,
+        expiresAt: updated.expiresAt.toISOString(),
       },
     });
   });

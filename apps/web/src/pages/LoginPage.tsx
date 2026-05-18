@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ShieldCheck, Sparkles } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { apiLogin } from '../api/auth.api';
+import { ApiError } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { Button } from '../components/ui/button';
@@ -25,6 +25,23 @@ const loginSchema = z.object({
 });
 
 type LoginForm = z.infer<typeof loginSchema>;
+
+function mapLoginError(err: unknown): string {
+  if (err instanceof ApiError) {
+    switch (err.code) {
+      case 'USER_NOT_PROVISIONED':
+        return "Votre compte SAP est valide mais n'est pas autorisé sur NOVA - PA. Contactez l'administrateur.";
+      case 'USER_DISABLED':
+        return "Votre accès NOVA - PA a été désactivé. Contactez l'administrateur.";
+      case 'INVALID_CREDENTIALS':
+        return 'Identifiants SAP incorrects.';
+      case 'SAP_UNREACHABLE':
+        return 'SAP Business One est injoignable. Réessayez dans un instant.';
+    }
+    return err.message;
+  }
+  return err instanceof Error ? err.message : 'Erreur de connexion.';
+}
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -52,7 +69,7 @@ export default function LoginPage() {
       await refresh();
       navigate('/', { replace: true });
     } catch (err) {
-      setServerError(err instanceof Error ? err.message : 'Erreur de connexion.');
+      setServerError(mapLoginError(err));
     }
   };
 
@@ -65,42 +82,15 @@ export default function LoginPage() {
       </div>
 
       <div className="relative grid w-full max-w-6xl gap-8 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
-        <section className="space-y-6 text-center lg:text-left">
-          <div className="space-y-4">
-            <div>
-              <img
-                src={theme === 'dark' ? '/LogoITS_sombre.png' : '/LogoITS_clair.png'}
-                alt="IT Spirit"
-                className="h-40 w-auto"
-              />
-            </div>
-            <div className="space-y-3">
-              <h1 className="font-display text-5xl uppercase tracking-[0.12em] text-foreground">
-                NOVA - PA
-              </h1>
-            </div>
-          </div>
-
-          <div className="grid gap-3 text-left sm:grid-cols-2">
-            <div className="panel-surface-muted p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <Sparkles className="h-4 w-4 text-primary" />
-                Experience guidee
-              </div>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Connexion rapide au Service Layer SAP Business One, sans changer les flux existants.
-              </p>
-            </div>
-            <div className="panel-surface-muted p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <ShieldCheck className="h-4 w-4 text-success" />
-                Lecture metier priorisee
-              </div>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Etats, erreurs et actions critiques restent visibles immediatement pour l’operateur.
-              </p>
-            </div>
-          </div>
+        <section className="flex flex-col items-center space-y-8 text-center lg:items-start lg:text-left">
+          <img
+            src={theme === 'dark' ? '/LogoITS_sombre.png' : '/LogoITS_clair.png'}
+            alt="IT Spirit"
+            className="h-80 w-auto lg:h-[28rem]"
+          />
+          <h1 className="font-display text-5xl uppercase tracking-[0.12em] text-foreground lg:text-6xl">
+            NOVA - PA
+          </h1>
         </section>
 
         <Card className="mx-auto w-full max-w-lg border-border/80 bg-card/90">
@@ -159,11 +149,6 @@ export default function LoginPage() {
                 Se connecter
               </Button>
             </form>
-
-            <div className="mt-6 rounded-2xl border border-border/70 bg-card-muted/70 px-4 py-3 text-xs leading-6 text-muted-foreground">
-              Les identifiants utilises sont ceux de SAP Business One Service Layer. L’application
-              reste integralement en francais et conserve les flux metier existants.
-            </div>
           </CardContent>
         </Card>
       </div>

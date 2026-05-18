@@ -104,6 +104,13 @@ enum AuditOutcome {
   ERROR
 }
 
+/// Rôles applicatifs NOVA PA (indépendants des rôles SAP B1)
+enum Role {
+  ADMIN
+  ACCOUNTANT
+  VIEWER
+}
+
 /// Protocole du canal PA
 enum PaProtocol {
   SFTP
@@ -419,6 +426,29 @@ model PaChannel {
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("pa_channels")
+}
+
+// ============================================================
+// Table : app_users
+// Porte le rôle applicatif NOVA PA et active/désactive l'accès
+// indépendamment de SAP. SAP B1 reste le seul système d'auth :
+// cette table ne stocke ni mot de passe, ni token.
+// ============================================================
+model AppUser {
+  id          String    @id @default(uuid()) @db.Uuid
+  /// Identifiant SAP B1 (UserCode) — clé naturelle de jointure avec les credentials saisis au login
+  sapUsername String    @map("sap_username")
+  /// CompanyDB SAP B1 sur laquelle l'utilisateur est autorisé
+  companyDb   String    @map("company_db")
+  displayName String    @map("display_name")
+  role        Role      @default(VIEWER)
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(6)
+
+  @@unique([sapUsername, companyDb], name: "uq_app_users_sap_company")
+  @@index([sapUsername], name: "idx_app_users_sap_username")
+  @@map("app_users")
 }
 
 // ============================================================

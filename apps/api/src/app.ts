@@ -19,9 +19,11 @@ import { uploadRoutes } from './routes/upload';
 import { workerStatusRoutes } from './routes/worker-status';
 import { sapRoutes } from './routes/sap';
 import { diagnosticsRoutes } from './routes/diagnostics';
-import { SAP_IGNORE_SSL } from './config';
+import { SAP_IGNORE_SSL, COOKIE_NAME } from './config';
 import { assertSapPolicyConfig } from './services/sap-policy.service';
 import { verifyCsrf } from './middleware/csrf';
+import { SapSessionExpiredError } from './services/sap-auth.service';
+import { deleteSession } from './session/store';
 
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
@@ -93,6 +95,26 @@ export function buildApp(): FastifyInstance {
   });
 
   app.addHook('preHandler', verifyCsrf);
+
+  // ── Handler global : SAP a répondu 401 → B1SESSION expiré.
+  // On purge la session NOVA PA et on renvoie 401 SESSION_EXPIRED.
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof SapSessionExpiredError) {
+      const raw = request.cookies?.[COOKIE_NAME] ?? '';
+      const unsigned = raw ? request.unsignCookie(raw) : null;
+      if (unsigned?.valid && unsigned.value) {
+        deleteSession(unsigned.value);
+      }
+      reply.clearCookie(COOKIE_NAME, { path: '/' });
+      request.log.warn({ ctx: error.message }, 'B1SESSION expiré côté SAP — session purgée');
+      return reply.code(401).send({ success: false, error: 'SESSION_EXPIRED' });
+    }
+    request.log.error({ err: error }, 'Erreur non gérée');
+    const e = error as { statusCode?: number; message?: string };
+    return reply
+      .code(e.statusCode ?? 500)
+      .send({ success: false, error: e.message ?? 'Erreur serveur' });
+  });
 
   // ── OpenAPI (CDC §2) ────────────────────────────────────────────────────────
   app.register(swagger, {

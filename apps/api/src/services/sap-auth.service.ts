@@ -13,6 +13,18 @@ export class SapAuthError extends Error {
   }
 }
 
+/**
+ * Levée quand SAP B1 retourne 401 sur un appel post-login : le B1SESSION
+ * stocké côté serveur n'est plus valide. Le handler global purge alors la
+ * session NOVA PA et renvoie 401 SESSION_EXPIRED au front.
+ */
+export class SapSessionExpiredError extends Error {
+  constructor(context = 'B1SESSION expiré') {
+    super(context);
+    this.name = 'SapSessionExpiredError';
+  }
+}
+
 export interface SapLoginResult {
   b1Session: string;
   sapCookieHeader: string;

@@ -15,10 +15,13 @@ describe.sequential('API auth session lifecycle', () => {
     return new Response(JSON.stringify(body), { status, headers });
   }
 
-  it('caps local session lifetime to the SAP timeout returned at login', async () => {
+  it('uses the NOVA PA idle timeout regardless of SAP SessionTimeout', async () => {
     const app = buildApp();
     await app.ready();
 
+    // SAP annonce un SessionTimeout court (20 min) — la spec NOVA PA dit qu'on
+    // l'ignore et qu'on applique nos propres timeouts (idle 30 min, absolu 8h).
+    // Si le B1SESSION expire avant côté SAP, l'helper sapFetch interceptera le 401.
     const loginResponse = jsonResponse({ SessionTimeout: 20 }, 200, [
       ['content-type', 'application/json'],
       ['set-cookie', 'B1SESSION=LOGIN-SESSION; Path=/; HttpOnly'],
@@ -42,10 +45,45 @@ describe.sequential('API auth session lifecycle', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    const expiresAt = new Date(response.json().data.expiresAt);
-    const remainingMs = expiresAt.getTime() - Date.now();
-    expect(remainingMs).toBeLessThanOrEqual(20 * 60_000 + 5_000);
-    expect(remainingMs).toBeGreaterThan(18 * 60_000);
+    const body = response.json().data;
+    expect(body.user).toBe('manager');
+    expect(body.role).toBe('ADMIN');
+    expect(body.displayName).toContain('Manager');
+    const remainingMs = new Date(body.expiresAt).getTime() - Date.now();
+    // expiresAt = min(idle 30min, absolu 8h) = ~30 min
+    expect(remainingMs).toBeGreaterThan(28 * 60_000);
+    expect(remainingMs).toBeLessThanOrEqual(30 * 60_000 + 5_000);
+
+    await app.close();
+  });
+
+  it('rejects with USER_NOT_PROVISIONED when SAP user has no app_users entry', async () => {
+    const app = buildApp();
+    await app.ready();
+
+    const loginResponse = jsonResponse({ SessionTimeout: 30 }, 200, [
+      ['content-type', 'application/json'],
+      ['set-cookie', 'B1SESSION=LOGIN-SESSION; Path=/; HttpOnly'],
+    ]);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => loginResponse),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'content-type': 'application/json' },
+      payload: {
+        companyDb: 'SBODemoFR',
+        userName: 'not_in_app_users_' + Date.now(),
+        password: 'secret',
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toBe('USER_NOT_PROVISIONED');
 
     await app.close();
   });
@@ -87,7 +125,7 @@ describe.sequential('API auth session lifecycle', () => {
     });
 
     expect(response.statusCode).toBe(401);
-    expect(response.json().error).toContain('Session SAP expirée');
+    expect(response.json().error).toBe('SESSION_EXPIRED');
 
     const meResponse = await app.inject({
       method: 'GET',

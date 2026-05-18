@@ -23,7 +23,7 @@ export default defineConfig({
   preview: {
     port: 4173,
     host: true,
-    allowedHosts: ['billing.itspirit.ovh'],
+    allowedHosts: ['billing.itspirit.ovh', 'nova-pa.itspirit.ovh'],
     proxy: {
       '/api': {
         target: 'http://localhost:3002',

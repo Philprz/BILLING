@@ -2,6 +2,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -9,6 +10,7 @@ export class ApiError extends Error {
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+export const AUTH_EXPIRED_EVENT = 'nova-pa:auth-expired';
 
 function getCsrfToken(): string {
   return (
@@ -17,6 +19,15 @@ function getCsrfToken(): string {
       .find((r) => r.startsWith('csrf_token='))
       ?.split('=')[1] ?? ''
   );
+}
+
+// Endpoints d'authentification : un 401 sur /api/auth/login n'est PAS une
+// session expirée — c'est un credential rejeté. On ne déclenche pas l'event
+// global de redirection dans ce cas.
+const AUTH_ENDPOINT_PREFIXES = ['/api/auth/login'];
+
+function isAuthEndpoint(url: string): boolean {
+  return AUTH_ENDPOINT_PREFIXES.some((p) => url.startsWith(p));
 }
 
 export async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
@@ -30,19 +41,26 @@ export async function apiFetch<T>(url: string, options?: RequestInit): Promise<T
     headers: { ...csrfHeaders, ...options?.headers },
   });
 
-  if (res.status === 401) {
-    throw new ApiError('Session expirée', 401);
-  }
-
-  let body: { success: boolean; data?: T; error?: string };
+  type Envelope = { success: boolean; data?: T; error?: string };
+  let body: Envelope | null = null;
   try {
-    body = await res.json();
+    body = (await res.json()) as Envelope;
   } catch {
+    if (res.status === 401 && !isAuthEndpoint(url)) {
+      window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT));
+    }
     throw new ApiError(`Réponse invalide du serveur (HTTP ${res.status})`, res.status);
   }
 
-  if (!res.ok || !body.success) {
-    throw new ApiError(body.error ?? `Erreur serveur (${res.status})`, res.status);
+  const errorCode = body?.error;
+
+  if (res.status === 401 && !isAuthEndpoint(url)) {
+    window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT));
+    throw new ApiError(errorCode ?? 'SESSION_EXPIRED', 401, errorCode);
+  }
+
+  if (!res.ok || !body?.success) {
+    throw new ApiError(errorCode ?? `Erreur serveur (${res.status})`, res.status, errorCode);
   }
 
   return body.data as T;

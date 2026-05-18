@@ -698,16 +698,82 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       // Les codes TVA invalides sont non-bloquants : on retire le code du payload
       // Codes TVA et centres de coût invalides : non-bloquants (neutralisés dans le payload).
       // Les autres erreurs (supplier, compte comptable, statut) restent bloquantes.
-      const hardErrors = validationReport.issues.filter(
+      let effectiveReport = validationReport;
+      let hardErrors = effectiveReport.issues.filter(
         (i) => i.code !== 'INVALID_TAX_CODE' && i.code !== 'INVALID_COST_CENTER',
       );
+
+      // Auto-réparation FederalTaxID : si le seul (ou un des) blocage est l'absence
+      // de TVA intracom sur le BP SAP et que la facture en contient un, on patche
+      // la fiche BP automatiquement puis on rejoue la validation.
+      const missingVatIssue = hardErrors.find((i) => i.code === 'MISSING_VAT_IDENTIFIER');
+      const supplierExtracted = invoice.supplierExtracted as {
+        vatNumber?: string | null;
+      } | null;
+      const autoVatNumber = supplierExtracted?.vatNumber?.trim() || null;
+
+      if (missingVatIssue && autoVatNumber && invoice.supplierB1Cardcode) {
+        try {
+          await patchBusinessPartnerFiscal(sapCookieHeader, invoice.supplierB1Cardcode, {
+            federalTaxId: autoVatNumber,
+          });
+
+          await createAuditLogBestEffort({
+            action: 'EDIT_MAPPING',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'OK',
+            payloadAfter: {
+              stage: 'AUTO_PUSH_SUPPLIER_FISCAL_OK',
+              cardCode: invoice.supplierB1Cardcode,
+              federalTaxId: autoVatNumber,
+            },
+            ...requestMeta,
+          });
+
+          // Re-valider après le patch
+          effectiveReport = await validateInvoiceForSapPost(
+            invoice,
+            integrationMode,
+            sapCookieHeader,
+            taxRateMap,
+          );
+          hardErrors = effectiveReport.issues.filter(
+            (i) => i.code !== 'INVALID_TAX_CODE' && i.code !== 'INVALID_COST_CENTER',
+          );
+        } catch (patchErr) {
+          // L'auto-patch a échoué : on retombe sur le 422 normal avec l'erreur d'origine.
+          const patchMessage =
+            patchErr instanceof SapSlError
+              ? patchErr.sapDetail
+              : patchErr instanceof Error
+                ? patchErr.message
+                : String(patchErr);
+
+          await createAuditLogBestEffort({
+            action: 'EDIT_MAPPING',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: patchMessage,
+            payloadAfter: {
+              stage: 'AUTO_PUSH_SUPPLIER_FISCAL_ERROR',
+              cardCode: invoice.supplierB1Cardcode,
+            },
+            ...requestMeta,
+          });
+        }
+      }
+
       const invalidTaxCodes = new Set(
-        validationReport.issues
+        effectiveReport.issues
           .filter((i) => i.code === 'INVALID_TAX_CODE' && i.value)
           .map((i) => i.value as string),
       );
       const invalidCostCenters = new Set(
-        validationReport.issues
+        effectiveReport.issues
           .filter((i) => i.code === 'INVALID_COST_CENTER' && i.value)
           .map((i) => i.value as string),
       );
@@ -717,7 +783,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           success: false,
           error: buildValidationErrorMessage({ issues: hardErrors }),
           data: {
-            validationReport,
+            validationReport: effectiveReport,
             policy: executionPolicy,
           },
         });
@@ -778,7 +844,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             integrationMode,
             companyDb,
             policy: executionPolicy,
-            validationReport,
+            validationReport: effectiveReport,
           },
           ...requestMeta,
         });
@@ -990,7 +1056,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             companyDb,
             simulate: executionPolicy.effectivePostPolicy === 'simulate',
             policy: executionPolicy,
-            validationReport,
+            validationReport: effectiveReport,
           },
           ...requestMeta,
         });
@@ -1013,7 +1079,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             companyDb,
             simulate: executionPolicy.effectivePostPolicy === 'simulate',
             policy: executionPolicy,
-            validationReport,
+            validationReport: effectiveReport,
           },
           ...requestMeta,
         });
@@ -1023,7 +1089,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           error: message,
           sapCode,
           data: {
-            validationReport,
+            validationReport: effectiveReport,
             policy: executionPolicy,
           },
         });
@@ -1071,7 +1137,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         companyDb,
         simulate: executionPolicy.effectivePostPolicy === 'simulate',
         policy: executionPolicy,
-        validationReport,
+        validationReport: effectiveReport,
       };
 
       await createAuditLogBestEffort({
@@ -1112,7 +1178,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           simulate: executionPolicy.effectivePostPolicy === 'simulate',
           status: 'POSTED',
           attachmentWarning,
-          validationReport,
+          validationReport: effectiveReport,
           policy: executionPolicy,
         },
       });

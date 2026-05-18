@@ -1,6 +1,11 @@
 import { createAuditLogBestEffort, prisma } from '@pa-sap-bridge/database';
 import type { Prisma } from '@pa-sap-bridge/database';
-import { normalizeSapCookieHeader, sapLogin, sapLogout } from './sap-auth.service';
+import {
+  normalizeSapCookieHeader,
+  sapLogin,
+  sapLogout,
+  SapSessionExpiredError,
+} from './sap-auth.service';
 
 const SAP_BASE_URL = (process.env.SAP_REST_BASE_URL ?? '').replace(/\/$/, '');
 const DEFAULT_PAGE_SIZE = 200;
@@ -122,6 +127,7 @@ export async function fetchSuppliersFromSap(
       headers: { Cookie: cookie, Prefer: `odata.maxpagesize=${pageSize}` },
     });
     if (!res.ok) {
+      if (res.status === 401) throw new SapSessionExpiredError('synchro fournisseurs');
       const text = await res.text().catch(() => res.statusText);
       throw new Error(`SAP BusinessPartners (${res.status}) : ${text.slice(0, 500)}`);
     }

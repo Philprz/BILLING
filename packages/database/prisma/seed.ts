@@ -81,6 +81,25 @@ const DEFAULT_SETTINGS: Array<{ key: string; value: unknown; description: string
   },
 ];
 
+// Liste statique des utilisateurs applicatifs NOVA PA.
+// SAP B1 reste le seul système d'authentification : cette table ne stocke
+// ni mot de passe ni token. Elle sert uniquement à porter le rôle et le flag
+// active. Compléter manuellement au fil des onboardings.
+const APP_USERS: Array<{
+  sapUsername: string;
+  companyDb: string;
+  displayName: string;
+  role: 'ADMIN' | 'ACCOUNTANT' | 'VIEWER';
+}> = [
+  { sapUsername: 'manager', companyDb: 'SBODemoFR', displayName: 'Manager (démo)', role: 'ADMIN' },
+  {
+    sapUsername: 'manager',
+    companyDb: 'RON_20260109',
+    displayName: 'Manager (Rondot)',
+    role: 'ADMIN',
+  },
+];
+
 async function main(): Promise<void> {
   console.log('[Seed] Démarrage du seed minimal…');
 
@@ -96,8 +115,28 @@ async function main(): Promise<void> {
     console.log(`[Seed]   ✓ settings.${setting.key}`);
   }
 
+  for (const user of APP_USERS) {
+    await prisma.appUser.upsert({
+      where: {
+        uq_app_users_sap_company: {
+          sapUsername: user.sapUsername,
+          companyDb: user.companyDb,
+        },
+      },
+      update: {
+        displayName: user.displayName,
+        role: user.role,
+      },
+      create: user,
+    });
+    console.log(`[Seed]   ✓ app_users.${user.sapUsername}@${user.companyDb} (${user.role})`);
+  }
+
   const settingCount = await prisma.setting.count();
-  console.log(`[Seed] Terminé — ${settingCount} paramètre(s) en base.`);
+  const userCount = await prisma.appUser.count();
+  console.log(
+    `[Seed] Terminé — ${settingCount} paramètre(s), ${userCount} utilisateur(s) applicatif(s).`,
+  );
 }
 
 main()

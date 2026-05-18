@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { apiKeepAlive, apiMe, apiLogout } from '../api/auth.api';
+import { AUTH_EXPIRED_EVENT } from '../api/client';
 import type { AuthUser } from '../api/types';
 
 interface AuthContextValue {
@@ -40,6 +41,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Si l'API renvoie 401 (B1SESSION expiré côté SAP, idle dépassé, etc.),
+  // on lâche l'utilisateur — l'AuthGuard prend le relais et redirige vers /login.
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+  }, []);
 
   useEffect(() => {
     if (!user) return;

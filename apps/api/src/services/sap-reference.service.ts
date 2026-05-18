@@ -239,10 +239,15 @@ export function getSupplierLegalIdentifier(bp: BpFiscalFields): string | null {
 
 /**
  * Retourne l'identifiant TVA intracommunautaire du fournisseur (ex: FR12345678901).
- * Source principale : FederalTaxID puis VATRegistrationNumber puis TaxId*.
+ * Source : FederalTaxID (champ utilisé par SAP B1 pour les documents taxables)
+ * ou VATRegistrationNumber. Les TaxId0..2 sont volontairement exclus :
+ * en localisation FR ils portent SIRET/SIREN, et SAP B1 exige spécifiquement
+ * FederalTaxID lors de la création d'un PurchaseInvoice avec code TVA taxable
+ * — un VAT placé seulement dans TaxId* ne suffit pas et provoque
+ * "[OPCH.DocRate] Enter valid federal tax ID".
  */
 export function getSupplierVatIdentifier(bp: BpFiscalFields): string | null {
-  const candidates = [bp.FederalTaxID, bp.VATRegistrationNumber, bp.TaxId0, bp.TaxId1, bp.TaxId2]
+  const candidates = [bp.FederalTaxID, bp.VATRegistrationNumber]
     .map(normalizeField)
     .filter((v): v is string => v !== null);
 

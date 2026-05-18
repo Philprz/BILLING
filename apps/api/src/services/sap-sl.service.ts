@@ -7,7 +7,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { normalizeSapCookieHeader } from './sap-auth.service';
+import { normalizeSapCookieHeader, SapSessionExpiredError } from './sap-auth.service';
 import { findClosestAccounts } from './chart-of-accounts-cache.service';
 
 const SAP_BASE_URL = (process.env.SAP_REST_BASE_URL ?? '').replace(/\/$/, '');
@@ -215,6 +215,7 @@ export async function uploadAttachment(
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError('upload pièce jointe');
     const { code, message } = parseSapError(body);
     throw new SapSlError(`Échec upload pièce jointe : ${message}`, code, response.status);
   }
@@ -256,6 +257,7 @@ export async function createPurchaseDoc(
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError(`création ${docType}`);
     const { code, message } = parseSapError(body);
     // Enrichir l'erreur AccountCode avec le code compte réel et une suggestion
     const enriched = await enrichAccountCodeError(message, payload);
@@ -312,6 +314,9 @@ export async function patchBusinessPartnerFiscal(
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new SapSessionExpiredError(`PATCH BusinessPartner ${cardCode}`);
+    }
     const data = await response.json().catch(() => ({}));
     const { code, message } = parseSapError(data);
     throw new SapSlError(
@@ -400,6 +405,7 @@ export async function createBusinessPartner(
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError('création BusinessPartner');
     const { code, message } = parseSapError(data);
     throw new SapSlError(
       `Erreur SAP BusinessPartner : ${message}`,
@@ -436,6 +442,7 @@ export async function createJournalEntry(
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError('création JournalEntry');
     const { code, message } = parseSapError(body);
     const enriched = await enrichAccountCodeError(message, payload);
     throw new SapSlError(
@@ -508,6 +515,7 @@ export async function findPurchaseInvoiceByNumAtCard(
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError('recherche NumAtCard');
     const { code, message } = parseSapError(body);
     throw new SapSlError(
       `Erreur SAP recherche NumAtCard : ${message}`,
@@ -585,6 +593,9 @@ export async function attachFileToExistingPurchaseInvoice(
   }
 
   if (!patchResponse.ok) {
+    if (patchResponse.status === 401) {
+      throw new SapSessionExpiredError(`PATCH PurchaseInvoices(${docEntry}) AttachmentEntry`);
+    }
     const patchBody = await patchResponse.json().catch(() => ({}));
     const { code, message } = parseSapError(patchBody);
     throw new SapSlError(
@@ -867,6 +878,8 @@ export async function createSapUdfPaRef(sapSessionCookie: string): Promise<UdfCr
   if (response.status === 201 || response.ok) {
     return { alreadyExists: false, fieldName: 'U_PA_REF' };
   }
+
+  if (response.status === 401) throw new SapSessionExpiredError('création UDF PA_REF');
 
   const body = await response.json().catch(() => ({}));
   const sapCode = (body as { error?: { code?: number } })?.error?.code;
