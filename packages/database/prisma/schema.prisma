@@ -48,6 +48,8 @@ enum InvoiceStatus {
   LINKED
   /// Rejetée (motif dans status_reason)
   REJECTED
+  /// En litige — suspension temporaire, échange en cours avec le fournisseur (motif dans litige_motif)
+  DISPUTED
   /// Erreur technique lors de l'intégration
   ERROR
 }
@@ -87,6 +89,10 @@ enum AuditAction {
   CONFIG_CHANGE
   CREATE_SUPPLIER
   SYNC_SUPPLIERS
+  /// Mise en litige d'une facture (motif obligatoire)
+  INVOICE_LITIGE
+  /// Levée d'un litige sur une facture (commentaire facultatif)
+  INVOICE_LITIGE_LEVE
 }
 
 /// Type d'entité référencée dans l'audit
@@ -167,6 +173,13 @@ model Invoice {
   paStatusSentAt          DateTime?        @map("pa_status_sent_at") @db.Timestamptz(6)
   /// Données fournisseur extraites du XML (adresse, TVA, SIREN, contact) pour pré-remplissage SAP B1
   supplierExtracted       Json?            @map("supplier_extracted")
+  /// Commentaire libre saisi par l'utilisateur (max 254 car. pour rester compatible Comments SAP B1).
+  /// Verrouillé après intégration SAP. Remonté dans Comments (PurchaseInvoice) ou Memo (JournalEntry).
+  comment                 String?          @map("comment")
+  /// Motif obligatoire saisi à la mise en litige (statut DISPUTED). Distinct de status_reason (rejet).
+  litigeMotif             String?          @map("litige_motif")
+  /// Horodatage de la mise en litige
+  litigeDate              DateTime?        @map("litige_date") @db.Timestamptz(6)
   createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -353,6 +366,10 @@ model VatGroupCache {
   /// Taux TVA en pourcentage (ex. 20.00)
   rate     Decimal @db.Decimal(5, 2)
   active   Boolean @default(true)
+  /// Catégorie SAP B1 : "bovcInputTax" (achats / déductible) ou "bovcOutputTax" (ventes / collectée)
+  category String? @map("category")
+  /// Compte de TVA déductible associé au code (depuis SAP raw.TaxAccount)
+  taxAccount String? @map("tax_account")
   /// Payload brut retourné par SAP (pour debug)
   raw      Json?
   syncAt   DateTime @default(now()) @map("sync_at") @db.Timestamptz(6)

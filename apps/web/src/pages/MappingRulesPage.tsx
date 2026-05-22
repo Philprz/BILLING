@@ -22,6 +22,7 @@ import {
   type MappingRule,
   type TestRuleResult,
 } from '../api/mapping-rules.api';
+import { apiGetSapVatCodes } from '../api/sap.api';
 import { apiFetch } from '../api/client';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -31,6 +32,94 @@ import { toast } from '../lib/toast';
 function ConfidenceBadge({ value }: { value: number }) {
   const color = value >= 80 ? 'text-success' : value >= 50 ? 'text-warning' : 'text-destructive';
   return <span className={`font-mono text-xs font-semibold ${color}`}>{value}%</span>;
+}
+
+interface VatOption {
+  code: string;
+  name: string;
+  rate: number;
+  active: boolean;
+}
+
+interface TaxCodeCellProps {
+  rule: MappingRule;
+  vatCodes: VatOption[];
+  vatLoading: boolean;
+  onUpdated: (updated: MappingRule) => void;
+}
+
+function TaxCodeCell({ rule, vatCodes, vatLoading, onUpdated }: TaxCodeCellProps) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const empty = !rule.taxCodeB1 || rule.taxCodeB1.trim() === '';
+
+  async function save(newCode: string) {
+    if (newCode === (rule.taxCodeB1 ?? '')) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await apiFetch<MappingRule>(`/api/mapping-rules/${rule.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taxCodeB1: newCode === '' ? null : newCode }),
+      });
+      onUpdated(updated);
+      toast.success(`Code TVA mis à jour : ${updated.taxCodeB1 ?? '(vide)'}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Échec mise à jour');
+    } finally {
+      setSaving(false);
+      setEditing(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <select
+        className="app-input h-7 text-xs font-mono"
+        defaultValue={rule.taxCodeB1 ?? ''}
+        autoFocus
+        disabled={saving}
+        onBlur={(e) => {
+          void save(e.target.value);
+        }}
+        onChange={(e) => {
+          void save(e.target.value);
+        }}
+      >
+        <option value="">— (vide)</option>
+        {vatCodes.map((v) => (
+          <option key={v.code} value={v.code}>
+            {v.code} — {v.rate}% {v.name ? `· ${v.name}` : ''}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      disabled={vatLoading || saving}
+      className={`inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-xs transition-colors hover:bg-muted/60 ${empty ? 'text-warning' : 'text-foreground'}`}
+      title={empty ? 'Code TVA manquant — cliquer pour renseigner' : 'Cliquer pour modifier'}
+    >
+      {empty ? (
+        <>
+          <AlertCircle className="h-3 w-3" />
+          <span className="font-semibold">À renseigner</span>
+        </>
+      ) : (
+        <>
+          <span>{rule.taxCodeB1}</span>
+          <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-60" />
+        </>
+      )}
+    </button>
+  );
 }
 
 function TestRuleModal({ onClose }: { onClose: () => void }) {
@@ -400,6 +489,8 @@ export default function MappingRulesPage() {
   const [editRule, setEditRule] = useState<MappingRule | null>(null);
   const [showTest, setShowTest] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [vatCodes, setVatCodes] = useState<VatOption[]>([]);
+  const [vatLoading, setVatLoading] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -415,9 +506,23 @@ export default function MappingRulesPage() {
     }
   }, []);
 
+  const loadVatCodes = useCallback(async () => {
+    setVatLoading(true);
+    try {
+      const codes = await apiGetSapVatCodes();
+      setVatCodes(codes.filter((c) => c.active));
+    } catch {
+      // Silencieux : si SAP/cache indisponible, l'édition en ligne est désactivée
+      // mais la page reste utilisable.
+    } finally {
+      setVatLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadVatCodes();
+  }, [load, loadVatCodes]);
 
   async function toggleActive(rule: MappingRule) {
     setToggling(rule.id);
@@ -468,6 +573,7 @@ export default function MappingRulesPage() {
   }
 
   const activeCount = rules.filter((r) => r.active).length;
+  const emptyTvaCount = rules.filter((r) => !r.taxCodeB1 || r.taxCodeB1.trim() === '').length;
 
   return (
     <div className="app-page">
@@ -489,6 +595,12 @@ export default function MappingRulesPage() {
           <p className="page-subtitle">
             {rules.length} règle{rules.length !== 1 ? 's' : ''} · {activeCount} active
             {activeCount !== 1 ? 's' : ''}
+            {emptyTvaCount > 0 && (
+              <>
+                {' · '}
+                <span className="font-semibold text-warning">{emptyTvaCount} sans code TVA</span>
+              </>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -595,8 +707,15 @@ export default function MappingRulesPage() {
                       <td className="font-mono text-xs text-muted-foreground">
                         {rule.costCenter ?? '—'}
                       </td>
-                      <td className="font-mono text-xs text-muted-foreground">
-                        {rule.taxCodeB1 ?? '—'}
+                      <td>
+                        <TaxCodeCell
+                          rule={rule}
+                          vatCodes={vatCodes}
+                          vatLoading={vatLoading}
+                          onUpdated={(updated) =>
+                            setRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)))
+                          }
+                        />
                       </td>
                       <td className="text-right">
                         <ConfidenceBadge value={rule.confidence} />

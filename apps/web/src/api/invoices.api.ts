@@ -89,6 +89,28 @@ export async function apiRejectInvoice(id: string, reason: string): Promise<void
   });
 }
 
+export async function apiPutInDispute(
+  id: string,
+  motif: string,
+): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/litige`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ motif }),
+  });
+}
+
+export async function apiLiftDispute(
+  id: string,
+  commentaire?: string,
+): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/lever-litige`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(commentaire ? { commentaire } : {}),
+  });
+}
+
 export interface SendStatusResult {
   paStatusSentAt: string;
   outcome: 'VALIDATED' | 'REJECTED';
@@ -112,6 +134,17 @@ export async function apiUpdateSupplier(
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ supplierB1Cardcode }),
+  });
+}
+
+export async function apiUpdateComment(
+  invoiceId: string,
+  comment: string | null,
+): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${invoiceId}/comment`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ comment }),
   });
 }
 

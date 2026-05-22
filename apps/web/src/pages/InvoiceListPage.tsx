@@ -38,6 +38,7 @@ const STATUS_OPTIONS: { value: InvoiceStatus | 'ACTIVE' | 'ALL'; label: string }
   { value: 'POSTED', label: 'Intégrées' },
   { value: 'LINKED', label: 'Rattachées SAP' },
   { value: 'REJECTED', label: 'Rejetées' },
+  { value: 'DISPUTED', label: 'En litige' },
 ];
 
 const PAGE_SIZE = 20;

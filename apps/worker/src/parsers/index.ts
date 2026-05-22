@@ -6,12 +6,16 @@
  *   UBL 2.1    → parseUbl()    ✅ implémenté
  *   CII D16B   → parseCii()    🚧 stub (détecté, rejeté explicitement)
  *   Factur-X   → combinaison PDF+CII, non géré ici (traité comme PDF_ONLY)
- *   PDF seul   → retour minimal sans lignes
+ *   PDF seul   → extraction de la couche texte + heuristiques regex
+ *                (Niveau 2 du plan d'extraction — pas d'OCR)
  */
 
 import fs from 'fs';
 import { parseUbl } from './ubl.parser';
 import { parseCii } from './cii.parser';
+import { extractPdfText } from './pdf-text';
+import { extractInvoiceFields } from './pdf-fields';
+import { extractInvoiceLines } from './pdf-lines';
 import type { ParsedInvoice } from './types';
 
 // Détection du format par namespace XML (lecture légère des 2048 premiers octets)
@@ -25,27 +29,114 @@ function detectXmlFormat(header: string): 'UBL' | 'CII' | 'UNKNOWN' {
   return 'UNKNOWN';
 }
 
-export function parseFile(absolutePath: string, ext: string): ParsedInvoice {
-  if (ext === '.pdf') {
-    // PDF seul : on crée une entrée minimale sans lignes structurées.
-    // Le nom du fichier devient le numéro de document provisoire.
-    const filename = absolutePath.split(/[\\/]/).pop() ?? 'UNKNOWN.pdf';
-    const docNum = filename.replace(/\.pdf$/i, '');
+function log(level: 'INFO' | 'WARN', msg: string): void {
+  console.log(`[Parser][${new Date().toISOString()}][${level}] ${msg}`);
+}
+
+async function parsePdf(absolutePath: string): Promise<ParsedInvoice> {
+  const filename = absolutePath.split(/[\\/]/).pop() ?? 'UNKNOWN.pdf';
+  const fallbackDocNum = filename.replace(/\.pdf$/i, '');
+
+  let extraction;
+  try {
+    extraction = await extractPdfText(absolutePath);
+  } catch (err) {
+    log('WARN', `[${filename}] Extraction texte PDF échouée — fallback minimal. ${String(err)}`);
     return {
       format: 'PDF_ONLY',
       direction: 'INVOICE',
-      docNumberPa: docNum,
+      docNumberPa: fallbackDocNum,
       docDate: new Date().toISOString().split('T')[0],
       dueDate: null,
       currency: 'EUR',
       supplierPaIdentifier: 'UNKNOWN',
-      supplierNameRaw: docNum,
+      supplierNameRaw: '',
       totalExclTax: '0',
       totalTax: '0',
       totalInclTax: '0',
       lines: [],
       supplierExtracted: null,
     };
+  }
+
+  log(
+    'INFO',
+    `[${filename}] pdf.pages=${extraction.numPages} hasTextLayer=${extraction.hasTextLayer} textLength=${extraction.rawText.length}`,
+  );
+
+  if (!extraction.hasTextLayer) {
+    // PDF scanné/image — pas d'OCR à ce niveau. On reste en PDF_ONLY pour
+    // intervention humaine ; on NE pollue PAS supplierNameRaw avec le nom
+    // du fichier (Niveau 1).
+    return {
+      format: 'PDF_ONLY',
+      direction: 'INVOICE',
+      docNumberPa: fallbackDocNum,
+      docDate: new Date().toISOString().split('T')[0],
+      dueDate: null,
+      currency: 'EUR',
+      supplierPaIdentifier: 'UNKNOWN',
+      supplierNameRaw: '',
+      totalExclTax: '0',
+      totalTax: '0',
+      totalInclTax: '0',
+      lines: [],
+      supplierExtracted: null,
+    };
+  }
+
+  const fields = extractInvoiceFields(extraction.rawText);
+  const linesResult = extractInvoiceLines(extraction.rawText);
+
+  // Validation croisée : si la somme des HT s'écarte du total déclaré de plus
+  // de 1 % (et au moins 0.05 €), on rejette les lignes — préférable à des
+  // lignes incohérentes qui empêcheraient l'auto-post SAP.
+  const declaredHT = parseFloat(fields.totalExclTax);
+  let lines = linesResult.lines;
+  let linesConfidence = linesResult.confidence;
+  if (lines.length > 0 && declaredHT > 0) {
+    const diff = Math.abs(linesResult.sumExclTax - declaredHT);
+    const tolerance = Math.max(0.05, declaredHT * 0.01);
+    if (diff > tolerance) {
+      log(
+        'WARN',
+        `[${filename}] pdf.lines.mismatch sumHT=${linesResult.sumExclTax.toFixed(2)} declaredHT=${declaredHT.toFixed(2)} — lignes rejetées`,
+      );
+      lines = [];
+      linesConfidence = 0;
+    }
+  }
+
+  log(
+    'INFO',
+    `[${filename}] pdf.extracted supplier="${fields.supplierNameRaw}" id="${fields.supplierPaIdentifier}" conf=${fields.confidence.supplier} doc="${fields.documentNumber}" date=${fields.documentDate} ttc=${fields.totalInclTax} lines=${lines.length} sumHT=${linesResult.sumExclTax.toFixed(2)} linesConf=${linesConfidence}`,
+  );
+
+  // Aucun fournisseur fiable ET aucun n° de doc : on retombe sur le nom de
+  // fichier pour le docNumber (idempotence), mais supplierNameRaw reste vide.
+  const docNumberPa = fields.documentNumber || fallbackDocNum;
+  const supplierPaIdentifier = fields.supplierPaIdentifier || 'UNKNOWN';
+
+  return {
+    format: 'PDF_ONLY',
+    direction: 'INVOICE',
+    docNumberPa,
+    docDate: fields.documentDate ?? new Date().toISOString().split('T')[0],
+    dueDate: fields.dueDate,
+    currency: fields.currency,
+    supplierPaIdentifier,
+    supplierNameRaw: fields.supplierNameRaw,
+    totalExclTax: fields.totalExclTax,
+    totalTax: fields.totalTax,
+    totalInclTax: fields.totalInclTax,
+    lines,
+    supplierExtracted: null,
+  };
+}
+
+export async function parseFile(absolutePath: string, ext: string): Promise<ParsedInvoice> {
+  if (ext === '.pdf') {
+    return parsePdf(absolutePath);
   }
 
   if (ext !== '.xml') {

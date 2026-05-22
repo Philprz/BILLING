@@ -25,6 +25,8 @@ export interface InvoiceData {
   currency: string;
   // Taux de change document/devise locale (1 si même devise). Requis par SAP B1 quand DocCurrency est fourni.
   docRate?: number;
+  // Commentaire libre utilisateur — remonté dans Comments (PurchaseInvoice) ou Memo (JournalEntry).
+  comment?: string | null;
 }
 
 export interface LineData {
@@ -117,6 +119,14 @@ export function buildPurchaseDocPayload(
     documentLines.push(docLine);
   }
 
+  // Si l'utilisateur a saisi un commentaire, il prend la place du Comments par
+  // défaut. La traçabilité PA reste portée par U_PA_REF (champ UDF dédié).
+  const userComment = invoice.comment?.trim();
+  const comments =
+    userComment && userComment.length > 0
+      ? userComment.slice(0, 254)
+      : `PA: ${invoice.paSource} / msg ${invoice.paMessageId}`;
+
   const payload: Record<string, unknown> = {
     CardCode: invoice.supplierB1Cardcode,
     DocType: 'dDocument_Service',
@@ -124,7 +134,7 @@ export function buildPurchaseDocPayload(
     DocDueDate: toISODate(invoice.dueDate ?? invoice.docDate),
     TaxDate: toISODate(invoice.docDate),
     NumAtCard: invoice.docNumberPa,
-    Comments: `PA: ${invoice.paSource} / msg ${invoice.paMessageId}`,
+    Comments: comments,
     U_PA_REF: invoice.paMessageId,
     DocCurrency: invoice.currency,
     // DocRate requis par SAP B1 quand DocCurrency est fourni — évite [OPCH.DocRate] = 0.
@@ -141,8 +151,13 @@ export function buildPurchaseDocPayload(
 //
 // Structure pour une facture :
 //   Débit  : compte de charge (amountExclTax) × N lignes
-//   Débit  : compte TVA déductible (taxAmount) × taux distinct  [si apTaxAccountMap fourni]
+//   Débit  : compte TVA déductible (taxAmount) × code TVA distinct  [si compte présent dans le cache]
 //   Crédit : compte fournisseur ShortName=CardCode (totalTtc)
+//
+// La ventilation TVA se fait par code TVA SAP (pas par taux) : chaque code a son
+// propre compte de TVA déductible dans SAP (champ TaxAccount d'OVTG), récupéré
+// au sync via VatGroupCache. Deux codes au même taux mais comptes différents
+// produisent ainsi deux lignes JE distinctes.
 //
 // Pour avoir (CREDIT_NOTE) : débit ↔ crédit inversés.
 
@@ -151,7 +166,7 @@ export function buildJournalEntryPayload(
   lines: LineData[],
   attachmentEntry: number,
   taxRateMap: Record<string, string>,
-  apTaxAccountMap: Record<string, string> = {}, // ex. {"20.00": "445660"}
+  vatAccountByCode: Record<string, string | null> = {}, // ex. {"D4": "445660"}
 ): BuildResult {
   const skippedLines: number[] = [];
   const jeLines: unknown[] = [];
@@ -161,8 +176,11 @@ export function buildJournalEntryPayload(
   let totalDebit = 0;
   let totalCredit = 0;
 
-  // TVA agrégée par taux (pour regrouper les lignes TVA)
-  const taxByRate = new Map<string, { amount: number; account: string | null }>();
+  // TVA agrégée par code TVA SAP (une ligne JE par code distinct)
+  const taxByCode = new Map<
+    string,
+    { amount: number; account: string | null; rate: number | null }
+  >();
   // Cumul TVA brut (pour calculer le TTC du fournisseur indépendamment des comptes)
   let totalTvaGross = 0;
 
@@ -192,28 +210,40 @@ export function buildJournalEntryPayload(
       totalDebit += ht;
     }
 
-    // Agréger la TVA par taux pour une ligne TVA unique par taux
-    if (tva > 0 && l.taxRate !== null) {
-      const rateKey = Number(l.taxRate).toFixed(2);
-      const taxAcct = apTaxAccountMap[rateKey] ?? null;
-      const existing = taxByRate.get(rateKey);
+    // Agréger la TVA par code TVA. Sans code résolu, pas de compte possible → on
+    // n'agrège pas (cohérent avec l'ancien comportement quand le mapping par taux
+    // n'avait pas d'entrée).
+    if (tva > 0 && resolved.taxCode) {
+      const codeKey = resolved.taxCode;
+      const taxAcct = vatAccountByCode[codeKey] ?? null;
+      const existing = taxByCode.get(codeKey);
       if (existing) {
         existing.amount += tva;
       } else {
-        taxByRate.set(rateKey, { amount: tva, account: taxAcct });
+        taxByCode.set(codeKey, {
+          amount: tva,
+          account: taxAcct,
+          rate: l.taxRate !== null ? Number(l.taxRate) : null,
+        });
       }
       totalTvaGross += tva;
     }
   }
 
-  // Lignes TVA déductible (une par taux distinct)
-  for (const [rateKey, { amount, account }] of taxByRate) {
-    if (!account) continue; // pas de compte configuré pour ce taux → skip
+  // Lignes TVA déductible (une par code TVA distinct)
+  for (const [codeKey, { amount, account, rate }] of taxByCode) {
+    if (!account) {
+      console.warn(
+        `[buildJournalEntryPayload] Code TVA "${codeKey}" sans TaxAccount dans VatGroupCache — ligne TVA ${amount.toFixed(2)} € skippée (facture ${invoice.docNumberPa}). Relancer un sync codes TVA SAP.`,
+      );
+      continue;
+    }
+    const rateLabel = rate !== null ? `${rate}%` : '';
     const tvaLine: Record<string, unknown> = {
       AccountCode: account,
       Debit: isCreditNote ? 0 : amount,
       Credit: isCreditNote ? amount : 0,
-      LineMemo: `TVA ${rateKey}%`,
+      LineMemo: `TVA ${codeKey}${rateLabel ? ` (${rateLabel})` : ''}`,
     };
     jeLines.push(tvaLine);
     if (isCreditNote) {
@@ -248,8 +278,16 @@ export function buildJournalEntryPayload(
       ? `Écriture déséquilibrée : débit ${totalDebit.toFixed(2)} ≠ crédit ${totalCredit.toFixed(2)} (écart ${imbalance.toFixed(2)} €). Vérifiez les comptes TVA dans les paramètres.`
       : null;
 
+  // Memo SAP B1 est limité à 50 caractères : on tronque. Si commentaire utilisateur
+  // saisi, il remplace le memo par défaut (la référence reste portée par Reference/Reference2).
+  const userMemo = invoice.comment?.trim();
+  const memo =
+    userMemo && userMemo.length > 0
+      ? userMemo.slice(0, 50)
+      : `${invoice.docNumberPa} — ${invoice.supplierNameRaw}`.slice(0, 50);
+
   const payload: Record<string, unknown> = {
-    Memo: `${invoice.docNumberPa} — ${invoice.supplierNameRaw}`,
+    Memo: memo,
     Reference: invoice.docNumberPa,
     Reference2: invoice.paMessageId,
     ReferenceDate: toISODate(invoice.docDate),

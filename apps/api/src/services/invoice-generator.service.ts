@@ -20,7 +20,11 @@ export interface InvoiceGenLine {
   unitCode?: string; // ex: C62, HUR — défaut C62
   unitPrice: number;
   taxRate: number; // pourcentage, ex : 20 pour 20 %
-  taxCategoryCode?: string; // S, E, K, Z — défaut S si taxRate>0, Z sinon
+  taxCategoryCode?: string; // S, E, K, Z, AE — défaut S si taxRate>0, Z sinon
+  // Requis pour catégorie E (exonéré) — code VATEX-EU-* ou équivalent
+  taxExemptionReasonCode?: string;
+  // Texte libre de justification (recommandé si catégorie E)
+  taxExemptionReason?: string;
   // cbc:AccountingCost dans InvoiceLine — compte de charge classe 6 (ex: 622600).
   // Champ UBL 2.1 standard utilisé pour transporter la référence comptable acheteur.
   accountingCode?: string;
@@ -52,6 +56,21 @@ export interface InvoiceGenData {
   buyerName?: string;
   buyerSiret?: string;
   buyerVatNumber?: string;
+  buyerLegalForm?: string;
+  buyerAddress?: string;
+  buyerCity?: string;
+  buyerPostalCode?: string;
+  buyerCountry?: string;
+  // BT-10 — référence de routage acheteur. Si absent, le numéro de facture est utilisé.
+  buyerReference?: string;
+  // BT-13 — référence de la commande acheteur
+  orderReference?: string;
+  // BT-14 — référence de la commande vendeur (Supplier Reference)
+  salesOrderId?: string;
+  // CIUS-FR : 1=Biens, 2=Services, 3=Mixte
+  typeTransaction?: '1' | '2' | '3';
+  // CIUS-FR : S=Sur les débits, E=Sur les encaissements
+  optionTVA?: 'S' | 'E';
   lines: InvoiceGenLine[];
   note?: string;
 }
@@ -194,18 +213,48 @@ export function generateUblXml(data: InvoiceGenData): string {
     return line.taxRate === 0 ? 'Z' : 'S';
   };
 
-  // Regroupement TVA par (taux + catégorie) pour TaxTotal/TaxSubtotal
-  const taxGroups = new Map<string, { rate: number; cat: string; taxable: number; tax: number }>();
+  // Regroupement TVA par (catégorie + taux + code exonération) pour TaxTotal/TaxSubtotal
+  interface TaxGroup {
+    rate: number;
+    cat: string;
+    taxable: number;
+    tax: number;
+    exemptionCode?: string;
+    exemptionReason?: string;
+  }
+  const taxGroups = new Map<string, TaxGroup>();
   for (const line of computedLines) {
     const cat = taxCatCode(line);
-    const key = `${cat}_${line.taxRate}`;
-    const g = taxGroups.get(key) ?? { rate: line.taxRate, cat, taxable: 0, tax: 0 };
+    const exCode = line.taxExemptionReasonCode ?? '';
+    const exReason = line.taxExemptionReason ?? '';
+    const key = `${cat}_${line.taxRate}_${exCode}_${exReason}`;
+    const g = taxGroups.get(key) ?? {
+      rate: line.taxRate,
+      cat,
+      taxable: 0,
+      tax: 0,
+      exemptionCode: line.taxExemptionReasonCode,
+      exemptionReason: line.taxExemptionReason,
+    };
     taxGroups.set(key, {
       ...g,
       taxable: round2(g.taxable + line.amountExclTax),
       tax: round2(g.tax + line.taxAmount),
     });
   }
+
+  const renderExemption = (code?: string, reason?: string): string =>
+    `${
+      code
+        ? `
+        <cbc:TaxExemptionReasonCode>${escapeXml(code)}</cbc:TaxExemptionReasonCode>`
+        : ''
+    }${
+      reason
+        ? `
+        <cbc:TaxExemptionReason>${escapeXml(reason)}</cbc:TaxExemptionReason>`
+        : ''
+    }`;
 
   const taxSubtotals = Array.from(taxGroups.values())
     .map(
@@ -215,7 +264,7 @@ export function generateUblXml(data: InvoiceGenData): string {
       <cbc:TaxAmount currencyID="${data.currency}">${fmt(g.tax)}</cbc:TaxAmount>
       <cac:TaxCategory>
         <cbc:ID>${g.cat}</cbc:ID>
-        <cbc:Percent>${g.rate.toFixed(2)}</cbc:Percent>
+        <cbc:Percent>${g.rate.toFixed(2)}</cbc:Percent>${renderExemption(g.exemptionCode, g.exemptionReason)}
         <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
       </cac:TaxCategory>
     </cac:TaxSubtotal>`,
@@ -241,7 +290,7 @@ export function generateUblXml(data: InvoiceGenData): string {
       <cbc:Name>${escapeXml(itemName)}</cbc:Name>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>${cat}</cbc:ID>
-        <cbc:Percent>${line.taxRate.toFixed(2)}</cbc:Percent>
+        <cbc:Percent>${line.taxRate.toFixed(2)}</cbc:Percent>${renderExemption(line.taxExemptionReasonCode, line.taxExemptionReason)}
         <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
       </cac:ClassifiedTaxCategory>
     </cac:Item>
@@ -331,12 +380,51 @@ export function generateUblXml(data: InvoiceGenData): string {
   </cac:PaymentTerms>`
     : '';
 
-  const buyerPartyId = data.buyerSiret
+  // BT-34 : EndpointID Peppol fournisseur (SIRET prioritaire, puis taxId)
+  const supplierEndpoint = data.supplier.siret
     ? `
-      <cac:PartyIdentification>
-        <cbc:ID schemeID="0002">${escapeXml(data.buyerSiret)}</cbc:ID>
-      </cac:PartyIdentification>`
-    : '';
+      <cbc:EndpointID schemeID="0009">${escapeXml(data.supplier.siret)}</cbc:EndpointID>`
+    : data.supplier.taxId
+      ? `
+      <cbc:EndpointID schemeID="9957">${escapeXml(data.supplier.taxId)}</cbc:EndpointID>`
+      : '';
+
+  const buyerName = data.buyerName ?? 'DEMO INDUSTRIE SAS';
+
+  // BT-49 : EndpointID Peppol acheteur
+  const buyerEndpoint = data.buyerSiret
+    ? `
+      <cbc:EndpointID schemeID="0009">${escapeXml(data.buyerSiret)}</cbc:EndpointID>`
+    : data.buyerVatNumber
+      ? `
+      <cbc:EndpointID schemeID="9957">${escapeXml(data.buyerVatNumber)}</cbc:EndpointID>`
+      : '';
+
+  // BT-50 à BT-56 : adresse acheteur (obligatoire EN16931)
+  const buyerAddressBlock =
+    data.buyerAddress || data.buyerCity || data.buyerPostalCode
+      ? `
+      <cac:PostalAddress>${
+        data.buyerAddress
+          ? `
+        <cbc:StreetName>${escapeXml(data.buyerAddress)}</cbc:StreetName>`
+          : ''
+      }${
+        data.buyerCity
+          ? `
+        <cbc:CityName>${escapeXml(data.buyerCity)}</cbc:CityName>`
+          : ''
+      }${
+        data.buyerPostalCode
+          ? `
+        <cbc:PostalZone>${escapeXml(data.buyerPostalCode)}</cbc:PostalZone>`
+          : ''
+      }
+        <cac:Country>
+          <cbc:IdentificationCode>${data.buyerCountry ?? 'FR'}</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>`
+      : '';
 
   const buyerTaxScheme = data.buyerVatNumber
     ? `
@@ -346,11 +434,74 @@ export function generateUblXml(data: InvoiceGenData): string {
       </cac:PartyTaxScheme>`
     : '';
 
+  // BT-44 RegistrationName + BT-47 CompanyID (CIUS-FR : SIRET obligatoire)
+  const buyerLegalEntity = `
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>${escapeXml(buyerName)}</cbc:RegistrationName>${
+          data.buyerSiret
+            ? `
+        <cbc:CompanyID schemeID="0002">${escapeXml(data.buyerSiret)}</cbc:CompanyID>`
+            : ''
+        }${
+          data.buyerLegalForm
+            ? `
+        <cbc:CompanyLegalForm>${escapeXml(data.buyerLegalForm)}</cbc:CompanyLegalForm>`
+            : ''
+        }
+      </cac:PartyLegalEntity>`;
+
+  // BT-13 / BT-14 : référence de commande.
+  // Si SalesOrderID (BT-14) est présent sans BT-13, émettre <cbc:ID>NA</cbc:ID> (UBL exige l'élément).
+  const orderReferenceBlock =
+    data.orderReference || data.salesOrderId
+      ? `
+  <cac:OrderReference>${
+    data.orderReference
+      ? `
+    <cbc:ID>${escapeXml(data.orderReference)}</cbc:ID>`
+      : `
+    <cbc:ID>NA</cbc:ID>`
+  }${
+    data.salesOrderId
+      ? `
+    <cbc:SalesOrderID>${escapeXml(data.salesOrderId)}</cbc:SalesOrderID>`
+      : ''
+  }
+  </cac:OrderReference>`
+      : '';
+
+  // CIUS-FR : TypeTransaction + OptionTVA
+  const cisuFrBlocks =
+    data.typeTransaction || data.optionTVA
+      ? `${
+          data.typeTransaction
+            ? `
+  <cac:AdditionalDocumentReference>
+    <cbc:ID>TypeTransaction</cbc:ID>
+    <cbc:DocumentDescription>${data.typeTransaction}</cbc:DocumentDescription>
+  </cac:AdditionalDocumentReference>`
+            : ''
+        }${
+          data.optionTVA
+            ? `
+  <cac:AdditionalDocumentReference>
+    <cbc:ID>OptionTVA</cbc:ID>
+    <cbc:DocumentDescription>${data.optionTVA}</cbc:DocumentDescription>
+  </cac:AdditionalDocumentReference>`
+            : ''
+        }`
+      : '';
+
+  // BT-10 : référence acheteur (code de routage Peppol).
+  // Priorité : valeur saisie, sinon orderReference (BT-13), sinon fallback calculé.
+  const effectiveBuyerReference =
+    data.buyerReference?.trim() || data.orderReference?.trim() || `REF-${data.invoiceNumber}`;
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <${rootTag} xmlns="${xmlns}" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ccts="urn:un:unece:uncefact:documentation:2" xmlns:qdt="urn:oasis:names:specification:ubl:schema:xsd:QualifiedDatatypes-2" xmlns:udt="urn:oasis:names:specification:ubl:schema:xsd:UnqualifiedDataTypes-2">
   <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
-  <cbc:CustomizationID>urn:cen.eu:en16931:2017</cbc:CustomizationID>
-  <cbc:ProfileID>B1</cbc:ProfileID>
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0</cbc:CustomizationID>
+  <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
   <cbc:ID>${escapeXml(data.invoiceNumber)}</cbc:ID>
   <cbc:IssueDate>${data.invoiceDate}</cbc:IssueDate>${
     data.dueDate
@@ -361,15 +512,15 @@ export function generateUblXml(data: InvoiceGenData): string {
   <${typeCodeTag}>${typeCode}</${typeCodeTag}>
   <cbc:DocumentCurrencyCode>${data.currency}</cbc:DocumentCurrencyCode>
   <cbc:AccountingCost>FRAIS-GESTION-CLASSE6</cbc:AccountingCost>
-  <cbc:BuyerReference>TEST-GENERATOR-2026</cbc:BuyerReference>${
+  <cbc:BuyerReference>${escapeXml(effectiveBuyerReference)}</cbc:BuyerReference>${
     data.note
       ? `
   <cbc:Note>${escapeXml(data.note)}</cbc:Note>`
       : ''
-  }
+  }${orderReferenceBlock}${cisuFrBlocks}
 
   <cac:AccountingSupplierParty>
-    <cac:Party>
+    <cac:Party>${supplierEndpoint}
       <cac:PartyName>
         <cbc:Name>${escapeXml(data.supplier.name)}</cbc:Name>
       </cac:PartyName>${supplierAddress}${supplierTaxScheme}
@@ -385,10 +536,10 @@ export function generateUblXml(data: InvoiceGenData): string {
   </cac:AccountingSupplierParty>
 
   <cac:AccountingCustomerParty>
-    <cac:Party>${buyerPartyId}
+    <cac:Party>${buyerEndpoint}
       <cac:PartyName>
-        <cbc:Name>${escapeXml(data.buyerName ?? 'DEMO INDUSTRIE SAS')}</cbc:Name>
-      </cac:PartyName>${buyerTaxScheme}
+        <cbc:Name>${escapeXml(buyerName)}</cbc:Name>
+      </cac:PartyName>${buyerAddressBlock}${buyerTaxScheme}${buyerLegalEntity}
     </cac:Party>
   </cac:AccountingCustomerParty>
 ${paymentMeans}
@@ -509,7 +660,7 @@ function writePdf(
       yRr = doc.y;
     }
 
-    // Acheteur (droite, en dessous)
+    // Acheteur (droite, en dessous) — BT-44 à BT-56 CIUS-FR
     yRr += 6;
     doc.fontSize(8).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACHETEUR', COL_R, yRr);
     yRr += 13;
@@ -519,13 +670,31 @@ function writePdf(
       .fontSize(8)
       .text(data.buyerName ?? 'DEMO INDUSTRIE SAS', COL_R, yRr, { width: PAGE_W / 2 });
     yRr = doc.y;
+    doc.font('Helvetica');
+    if (data.buyerLegalForm) {
+      doc.text(data.buyerLegalForm, COL_R, yRr, { width: PAGE_W / 2 });
+      yRr = doc.y;
+    }
+    if (data.buyerAddress) {
+      doc.text(data.buyerAddress, COL_R, yRr, { width: PAGE_W / 2 });
+      yRr = doc.y;
+    }
+    const buyerCityLine = [data.buyerPostalCode, data.buyerCity].filter(Boolean).join(' ');
+    if (buyerCityLine) {
+      doc.text(buyerCityLine, COL_R, yRr, { width: PAGE_W / 2 });
+      yRr = doc.y;
+    }
+    if (data.buyerCountry && data.buyerCountry.toUpperCase() !== 'FR') {
+      doc.text(data.buyerCountry, COL_R, yRr, { width: PAGE_W / 2 });
+      yRr = doc.y;
+    }
     if (data.buyerSiret) {
-      doc.font('Helvetica').text(`SIRET : ${data.buyerSiret}`, COL_R, yRr, { width: PAGE_W / 2 });
+      doc.text(`SIRET : ${data.buyerSiret}`, COL_R, yRr, { width: PAGE_W / 2 });
+      yRr = doc.y;
     }
     if (data.buyerVatNumber) {
-      doc
-        .font('Helvetica')
-        .text(`TVA   : ${data.buyerVatNumber}`, COL_R, doc.y, { width: PAGE_W / 2 });
+      doc.text(`TVA   : ${data.buyerVatNumber}`, COL_R, yRr, { width: PAGE_W / 2 });
+      yRr = doc.y;
     }
 
     // Ligne de séparation
@@ -538,6 +707,47 @@ function writePdf(
       .stroke();
     doc.lineWidth(1);
     let tableY = yAfterHeader + 10;
+
+    // ── Bloc RÉFÉRENCES + marqueurs CIUS-FR ───────────────────────────────────
+    // BT-10 : même logique que le XML — saisie, sinon BT-13, sinon fallback calculé.
+    const effectiveBuyerReference =
+      data.buyerReference?.trim() || data.orderReference?.trim() || `REF-${data.invoiceNumber}`;
+    const refRows: [string, string][] = [];
+    refRows.push(['Code de routage (BT-10)', effectiveBuyerReference]);
+    if (data.orderReference) {
+      refRows.push(['Bon de commande (BT-13)', data.orderReference]);
+    }
+    if (data.salesOrderId) {
+      refRows.push(['Référence vendeur (BT-14)', data.salesOrderId]);
+    }
+    if (data.typeTransaction) {
+      const labels: Record<'1' | '2' | '3', string> = {
+        '1': 'Biens',
+        '2': 'Services',
+        '3': 'Mixte',
+      };
+      refRows.push([
+        'Type de transaction (CIUS-FR)',
+        `${data.typeTransaction} — ${labels[data.typeTransaction]}`,
+      ]);
+    }
+    if (data.optionTVA) {
+      const labels: Record<'S' | 'E', string> = {
+        S: 'Sur les débits',
+        E: 'Sur les encaissements',
+      };
+      refRows.push(['Option TVA (CIUS-FR)', `${data.optionTVA} — ${labels[data.optionTVA]}`]);
+    }
+
+    doc.fontSize(7).font('Helvetica-Bold').fillColor('#1e3a5f').text('RÉFÉRENCES', LEFT, tableY);
+    tableY += 11;
+    doc.fillColor('#000000').fontSize(7.5);
+    for (const [label, value] of refRows) {
+      doc.font('Helvetica-Bold').text(`${label} :`, LEFT, tableY, { width: 180 });
+      doc.font('Helvetica').text(value, LEFT + 182, tableY, { width: PAGE_W - 182 });
+      tableY = doc.y + 1;
+    }
+    tableY += 6;
 
     // ── En-tête tableau ───────────────────────────────────────────────────────
     // Colonnes sans compte comptable (info interne non présente sur une vraie facture fournisseur)
@@ -590,27 +800,73 @@ function writePdf(
     doc.lineWidth(1);
     tableY += 8;
 
-    // ── Récapitulatif TVA par taux ────────────────────────────────────────────
-    const taxGroups = new Map<number, { taxable: number; tax: number }>();
+    // ── Récapitulatif TVA par (catégorie + taux) ─────────────────────────────
+    interface PdfTaxGroup {
+      cat: string;
+      rate: number;
+      taxable: number;
+      tax: number;
+      exemptionCode?: string;
+      exemptionReason?: string;
+    }
+    const pdfTaxGroups = new Map<string, PdfTaxGroup>();
     for (const line of computed.computedLines) {
-      const g = taxGroups.get(line.taxRate) ?? { taxable: 0, tax: 0 };
-      taxGroups.set(line.taxRate, {
+      const cat = line.taxCategoryCode ?? (line.taxRate === 0 ? 'Z' : 'S');
+      const exCode = line.taxExemptionReasonCode ?? '';
+      const exReason = line.taxExemptionReason ?? '';
+      const key = `${cat}_${line.taxRate}_${exCode}_${exReason}`;
+      const g = pdfTaxGroups.get(key) ?? {
+        cat,
+        rate: line.taxRate,
+        taxable: 0,
+        tax: 0,
+        exemptionCode: line.taxExemptionReasonCode,
+        exemptionReason: line.taxExemptionReason,
+      };
+      pdfTaxGroups.set(key, {
+        ...g,
         taxable: round2(g.taxable + line.amountExclTax),
         tax: round2(g.tax + line.taxAmount),
       });
     }
 
+    const catLabels: Record<string, string> = {
+      S: 'Standard',
+      Z: 'Taux zéro',
+      E: 'Exonéré',
+      AE: 'Autoliquidation',
+      K: 'Exonération intra-EEE',
+      G: 'Export hors UE',
+      O: 'Hors champ TVA',
+    };
+
     doc.fontSize(7).font('Helvetica-Bold').fillColor('#1e3a5f').text('TVA', LEFT, tableY);
     tableY += 10;
-    doc.font('Helvetica').fillColor('#000000');
-    for (const [rate, g] of taxGroups.entries()) {
-      doc.text(
-        `TVA ${rate}% — Base : ${g.taxable.toFixed(2)} — TVA : ${g.tax.toFixed(2)} ${data.currency}`,
-        LEFT,
-        tableY,
-        { width: PAGE_W / 2 },
-      );
+    doc.font('Helvetica').fillColor('#000000').fontSize(7);
+    for (const g of pdfTaxGroups.values()) {
+      const catLabel = catLabels[g.cat] ?? g.cat;
+      doc
+        .font('Helvetica')
+        .text(
+          `TVA ${g.rate}% [${g.cat} — ${catLabel}] — Base : ${g.taxable.toFixed(2)} — TVA : ${g.tax.toFixed(2)} ${data.currency}`,
+          LEFT,
+          tableY,
+          { width: PAGE_W },
+        );
       tableY += 10;
+      if (g.cat === 'E' && (g.exemptionCode || g.exemptionReason)) {
+        const parts: string[] = [];
+        if (g.exemptionReason) parts.push(g.exemptionReason);
+        if (g.exemptionCode) parts.push(`(${g.exemptionCode})`);
+        doc
+          .fillColor('#666666')
+          .fontSize(6.5)
+          .text(`    Motif d'exonération : ${parts.join(' ')}`, LEFT, tableY, {
+            width: PAGE_W,
+          });
+        tableY = doc.y + 1;
+        doc.fillColor('#000000').fontSize(7);
+      }
     }
     tableY += 4;
 
@@ -681,14 +937,18 @@ function writePdf(
     }
 
     // ── Pied de page ──────────────────────────────────────────────────────────
+    // Positionnement conditionnel pour éviter la page blanche : on calcule un y
+    // qui reste dans la zone imprimable et on désactive le saut de ligne auto.
+    const bottomMargin = doc.page.margins.bottom ?? 45;
+    const footerY = Math.min(Math.max(doc.y + 8, 760), doc.page.height - bottomMargin - 10);
     doc
       .fontSize(6)
       .fillColor('#aaaaaa')
       .text(
         'Mode frais de gestion — factures fournisseurs classe 6 uniquement — Document de test généré par BILLING Invoice Generator',
         LEFT,
-        790,
-        { width: PAGE_W, align: 'center' },
+        footerY,
+        { width: PAGE_W, align: 'center', lineBreak: false },
       );
 
     doc.end();

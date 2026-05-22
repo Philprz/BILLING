@@ -169,8 +169,10 @@ export default function SuppliersPage() {
                       <td className="font-mono text-xs text-muted-foreground">
                         {s.federaltaxid ?? '—'}
                       </td>
+                      <td className="font-mono text-xs text-muted-foreground">
+                        {s.taxId0 ? s.taxId0.slice(0, 9) : '—'}
+                      </td>
                       <td className="font-mono text-xs text-muted-foreground">{s.taxId0 ?? '—'}</td>
-                      <td className="font-mono text-xs text-muted-foreground">{s.taxId1 ?? '—'}</td>
                       <td className="text-xs text-muted-foreground">
                         {[s.city, s.country].filter(Boolean).join(' / ') || '—'}
                       </td>

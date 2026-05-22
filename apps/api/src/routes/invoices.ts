@@ -21,6 +21,13 @@ import {
 } from '../services/sap-sl.service';
 import { buildPurchaseDocPayload, buildJournalEntryPayload } from '../services/sap-invoice-builder';
 import { sendPaStatus } from '../services/pa-status.service';
+import {
+  assertLitigeStatusOk,
+  assertLiftLitigeStatusOk,
+  validateLitigeMotif,
+  LITIGE_MIN_MOTIF_LENGTH,
+  DISPUTABLE_STATUSES,
+} from '../services/litige.service';
 import { resolveSapExecutionPolicy } from '../services/sap-policy.service';
 import { validateInvoiceForSapPost } from '../services/sap-validation.service';
 import {
@@ -50,6 +57,7 @@ const INVOICE_STATUSES = [
   'POSTED',
   'LINKED',
   'REJECTED',
+  'DISPUTED',
   'ERROR',
 ] as const;
 const SORT_FIELDS = ['receivedAt', 'docDate', 'totalInclTax', 'status', 'supplierNameRaw'] as const;
@@ -66,6 +74,13 @@ interface PatchSupplierBody {
   supplierB1Cardcode: string | null;
 }
 
+interface PatchCommentBody {
+  comment: string | null;
+}
+
+// Limite SAP B1 sur Comments (PurchaseInvoice) — voir CDC §7.1.
+const COMMENT_MAX_LENGTH = 254;
+
 interface PatchLineBody {
   chosenAccountCode?: string | null;
   chosenCostCenter?: string | null;
@@ -76,6 +91,14 @@ interface PatchLineBody {
 
 interface RejectInvoiceBody {
   reason: string;
+}
+
+interface LitigeInvoiceBody {
+  motif: string;
+}
+
+interface LeverLitigeInvoiceBody {
+  commentaire?: string;
 }
 
 interface InvoiceListQuery {
@@ -658,13 +681,21 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // ── 2. Charger les settings puis valider contre SAP ──────────────────
-      const [taxMapSetting, taxAcctSetting] = await Promise.all([
+      // ── 2. Charger settings + cache TVA SAP puis valider contre SAP ──────
+      // Les comptes TVA déductible sont la propriété de SAP (champ TaxAccount
+      // d'OVTG, exposé sur /VatGroups), synchronisés dans VatGroupCache. On les
+      // récupère ici par code TVA (uniquement codes actifs en catégorie achats).
+      const [taxMapSetting, vatCacheRows] = await Promise.all([
         prisma.setting.findUnique({ where: { key: 'TAX_RATE_MAPPING' } }),
-        prisma.setting.findUnique({ where: { key: 'AP_TAX_ACCOUNT_MAP' } }),
+        prisma.vatGroupCache.findMany({
+          where: { active: true, category: 'bovcInputTax' },
+          select: { code: true, taxAccount: true },
+        }),
       ]);
       const taxRateMap = (taxMapSetting?.value ?? {}) as Record<string, string>;
-      const apTaxAcctMap = (taxAcctSetting?.value ?? {}) as Record<string, string>;
+      const vatAccountByCode: Record<string, string | null> = Object.fromEntries(
+        vatCacheRows.map((r) => [r.code, r.taxAccount]),
+      );
       let attachmentWarning: string | null = null;
 
       const validationReport = await validateInvoiceForSapPost(
@@ -717,6 +748,16 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           await patchBusinessPartnerFiscal(sapCookieHeader, invoice.supplierB1Cardcode, {
             federalTaxId: autoVatNumber,
           });
+
+          // Synchroniser le cache local pour que le matching fournisseur futur
+          // bénéficie immédiatement de la TVA (sinon il faut relancer une sync
+          // complète SAP pour voir le changement côté validation/matching).
+          await prisma.supplierCache
+            .update({
+              where: { cardcode: invoice.supplierB1Cardcode },
+              data: { federaltaxid: autoVatNumber, syncAt: new Date() },
+            })
+            .catch(() => {});
 
           await createAuditLogBestEffort({
             action: 'EDIT_MAPPING',
@@ -975,6 +1016,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             dueDate: invoice.dueDate,
             currency: invoice.currency,
             supplierNameRaw: invoice.supplierNameRaw,
+            comment: invoice.comment,
           };
 
           if (integrationMode === 'SERVICE_INVOICE') {
@@ -1004,7 +1046,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
               cleanedLines,
               sapAttachmentEntry,
               taxRateMap,
-              apTaxAcctMap,
+              vatAccountByCode,
             );
             if (skippedLines.length > 0) {
               throw new SapSlError(
@@ -1424,6 +1466,68 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // ────────────────────────────────────────────────────────────────────────────
+  // PATCH /api/invoices/:id/comment
+  // Met à jour le commentaire libre. Verrouillé après intégration SAP.
+  // Remonté dans Comments (PurchaseInvoice) / Memo (JournalEntry) au post.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.patch<{ Params: { id: string }; Body: PatchCommentBody }>(
+    '/api/invoices/:id/comment',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          required: ['comment'],
+          properties: {
+            comment: { type: ['string', 'null'], maxLength: COMMENT_MAX_LENGTH },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { sapUser } = request.sapSession!;
+
+      const invoice = await prisma.invoice.findUnique({ where: { id } });
+      if (!invoice) return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      if (invoice.sapDocEntry !== null) {
+        return reply.code(409).send({
+          success: false,
+          error: `Commentaire verrouillé : facture déjà intégrée dans SAP B1 (DocEntry: ${invoice.sapDocEntry}).`,
+        });
+      }
+
+      const raw = request.body.comment;
+      const next = typeof raw === 'string' ? raw.trim() : null;
+      const normalized = next && next.length > 0 ? next : null;
+
+      await prisma.invoice.update({
+        where: { id },
+        data: { comment: normalized },
+      });
+
+      await createAuditLogBestEffort({
+        action: 'EDIT_MAPPING',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadBefore: { comment: invoice.comment },
+        payloadAfter: { comment: normalized },
+        ...getRequestMeta(request),
+      });
+
+      const updated = await findInvoiceById(id);
+      return reply.send({ success: true, data: updated });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
   // PATCH /api/invoices/:id/lines/:lineId
   // Corrige les champs comptables d'une ligne (compte, centre de coût, code TVA).
   // ────────────────────────────────────────────────────────────────────────────
@@ -1714,7 +1818,14 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         },
       });
 
-      // Recalcule READY ou TO_REVIEW selon l'état réel de la facture
+      // Re-enrichissement complet : matching fournisseur + suggestions de
+      // comptes/TVA + promotion des chosen values quand la confiance suffit.
+      // Sans ça, recalculateInvoiceStatus voit des chosen values null et bloque
+      // la facture en TO_REVIEW alors qu'à l'ingestion les caches SAP n'étaient
+      // peut-être pas prêts.
+      await enrichInvoiceById(id).catch((err) => {
+        app.log.warn({ err, invoiceId: id }, 'enrichInvoiceById failed during reset');
+      });
       await recalculateInvoiceStatus(id);
 
       await createAuditLogBestEffort({
@@ -1799,6 +1910,227 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return reply.send({ success: true, data: { status: 'REJECTED', reason } });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/:id/litige
+  // Met une facture en litige (suspension temporaire, motif obligatoire ≥ 10 car.).
+  // Statuts acceptés : DISPUTABLE_STATUSES (NEW, TO_REVIEW, READY).
+  // Envoie le cycle de vie IN_DISPUTE à la PA.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Params: { id: string }; Body: LitigeInvoiceBody }>(
+    '/api/invoices/:id/litige',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          required: ['motif'],
+          properties: {
+            motif: { type: 'string', minLength: LITIGE_MIN_MOTIF_LENGTH, maxLength: 500 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const motif = (request.body.motif ?? '').trim();
+      const { sapUser } = request.sapSession!;
+      const requestMeta = getRequestMeta(request);
+
+      // Validation serveur (en plus du JSON-schema) : ne pas faire confiance au front.
+      const motifError = validateLitigeMotif(motif);
+      if (motifError && motifError.kind === 'INVALID_MOTIF') {
+        return reply.code(400).send({
+          success: false,
+          error:
+            motifError.reason === 'EMPTY'
+              ? 'Le motif du litige est obligatoire.'
+              : `Le motif du litige doit faire au moins ${LITIGE_MIN_MOTIF_LENGTH} caractères.`,
+        });
+      }
+
+      const invoice = await prisma.invoice.findUnique({ where: { id } });
+      if (!invoice) {
+        return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      }
+
+      const statusError = assertLitigeStatusOk(invoice.status);
+      if (statusError) {
+        return reply.code(409).send({
+          success: false,
+          error: `Impossible de mettre en litige une facture au statut "${invoice.status}". Statuts acceptés : ${DISPUTABLE_STATUSES.join(', ')}.`,
+        });
+      }
+
+      const litigeDate = new Date();
+
+      const updated = await prisma.invoice.update({
+        where: { id },
+        data: {
+          status: 'DISPUTED',
+          litigeMotif: motif,
+          litigeDate,
+        },
+      });
+
+      await createAuditLog({
+        action: 'INVOICE_LITIGE',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadBefore: { status: invoice.status, litigeMotif: invoice.litigeMotif },
+        payloadAfter: { status: 'DISPUTED', motif, litigeDate: litigeDate.toISOString() },
+        ...requestMeta,
+      });
+
+      // Envoi du cycle de vie IN_DISPUTE à la PA (best-effort : on n'échoue pas
+      // la mise en litige si la livraison PA échoue — un retry pourra être déclenché).
+      try {
+        const sent = await sendPaStatus(updated);
+        await createAuditLog({
+          action: 'SEND_STATUS_PA',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'OK',
+          payloadBefore: { status: 'DISPUTED', trigger: 'INVOICE_LITIGE' },
+          payloadAfter: {
+            ...sent.payload,
+            deliveryMode: sent.deliveryMode,
+            target: sent.target,
+          } satisfies Prisma.InputJsonObject,
+          ...requestMeta,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await createAuditLogBestEffort({
+          action: 'SEND_STATUS_PA',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: message,
+          payloadBefore: { status: 'DISPUTED', trigger: 'INVOICE_LITIGE' },
+          payloadAfter: { stage: 'PA_DISPUTE_NOTIFY_ERROR' },
+          ...requestMeta,
+        });
+      }
+
+      const refreshed = await findInvoiceById(id);
+      return reply.send({ success: true, data: refreshed });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/:id/lever-litige
+  // Lève un litige : la facture repasse en TO_REVIEW.
+  // Envoie le cycle de vie RECEIVED à la PA pour signaler la réouverture.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Params: { id: string }; Body: LeverLitigeInvoiceBody }>(
+    '/api/invoices/:id/lever-litige',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            commentaire: { type: 'string', maxLength: 500 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const commentaire = (request.body?.commentaire ?? '').trim();
+      const { sapUser } = request.sapSession!;
+      const requestMeta = getRequestMeta(request);
+
+      const invoice = await prisma.invoice.findUnique({ where: { id } });
+      if (!invoice) {
+        return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      }
+
+      const statusError = assertLiftLitigeStatusOk(invoice.status);
+      if (statusError) {
+        return reply.code(409).send({
+          success: false,
+          error: `Impossible de lever un litige sur une facture au statut "${invoice.status}". Seul DISPUTED est accepté.`,
+        });
+      }
+
+      const updated = await prisma.invoice.update({
+        where: { id },
+        data: {
+          status: 'TO_REVIEW',
+          // On conserve litigeMotif et litigeDate pour l'historique : ils restent
+          // visibles dans l'audit, mais n'apparaissent plus sur la fiche (front
+          // n'affiche le motif que tant que status === DISPUTED).
+        },
+      });
+
+      await createAuditLog({
+        action: 'INVOICE_LITIGE_LEVE',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadBefore: {
+          status: 'DISPUTED',
+          litigeMotif: invoice.litigeMotif,
+          litigeDate: invoice.litigeDate?.toISOString() ?? null,
+        },
+        payloadAfter: { status: 'TO_REVIEW', commentaire: commentaire || null },
+        ...requestMeta,
+      });
+
+      // Envoi RECEIVED à la PA — outcomeOverride car le statut courant TO_REVIEW
+      // ne mappe pas naturellement sur RECEIVED.
+      try {
+        const sent = await sendPaStatus(updated, 'RECEIVED');
+        await createAuditLog({
+          action: 'SEND_STATUS_PA',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'OK',
+          payloadBefore: { status: 'TO_REVIEW', trigger: 'INVOICE_LITIGE_LEVE' },
+          payloadAfter: {
+            ...sent.payload,
+            deliveryMode: sent.deliveryMode,
+            target: sent.target,
+          } satisfies Prisma.InputJsonObject,
+          ...requestMeta,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await createAuditLogBestEffort({
+          action: 'SEND_STATUS_PA',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: message,
+          payloadBefore: { status: 'TO_REVIEW', trigger: 'INVOICE_LITIGE_LEVE' },
+          payloadAfter: { stage: 'PA_RECEIVED_NOTIFY_ERROR' },
+          ...requestMeta,
+        });
+      }
+
+      const refreshed = await findInvoiceById(id);
+      return reply.send({ success: true, data: refreshed });
     },
   );
 
@@ -2215,9 +2547,16 @@ async function recalculateInvoiceStatus(invoiceId: string): Promise<void> {
   if (!inv || TERMINAL_STATUSES.has(inv.status)) return;
 
   const hasSupplier = !!inv.supplierB1Cardcode;
+  // Une ligne est utilisable pour l'intégration SAP dès qu'elle a un compte et
+  // un code TVA — peu importe qu'ils viennent du choix utilisateur ou de la
+  // suggestion (cf. resolveAccountCode/resolveTaxCode dans sap-invoice-builder).
   const allLinesHaveAccount =
     inv.lines.length > 0 &&
-    inv.lines.every((l) => l.chosenAccountCode !== null && l.chosenTaxCodeB1 !== null);
+    inv.lines.every(
+      (l) =>
+        (l.chosenAccountCode ?? l.suggestedAccountCode) !== null &&
+        (l.chosenTaxCodeB1 ?? l.suggestedTaxCodeB1) !== null,
+    );
 
   const newStatus = hasSupplier && allLinesHaveAccount ? 'READY' : 'TO_REVIEW';
 
@@ -2227,7 +2566,7 @@ async function recalculateInvoiceStatus(invoiceId: string): Promise<void> {
     parts.push(
       inv.lines.length === 0
         ? 'aucune ligne structurée'
-        : 'compte comptable choisi ou code TVA B1 manquant sur une ou plusieurs lignes',
+        : 'compte comptable ou code TVA B1 manquant sur une ou plusieurs lignes',
     );
 
   await prisma.invoice.update({

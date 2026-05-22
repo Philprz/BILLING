@@ -122,8 +122,6 @@ Content-Type: application/json
 | -------------------------------- | ------------------ | ------------------------------------------------------ |
 | `AUTO_VALIDATION_THRESHOLD`      | `80`               | Score minimum (%) pour promotion automatique NEW→READY |
 | `TAX_RATE_MAPPING`               | `{}`               | Map taux TVA % → code TVA SAP B1                       |
-| `AP_TAX_ACCOUNT_MAP`             | `{}`               | Map code TVA B1 → compte TVA à déduire                 |
-| `AP_ACCOUNT_CODE`                | `"40100000"`       | Compte fournisseur par défaut                          |
 | `SAP_POST_POLICY`                | `"real"`           | Override global de la politique d'intégration          |
 | `SAP_ATTACHMENT_POLICY`          | `"warn"`           | Comportement si upload PJ SAP échoue                   |
 | `PA_STATUS_RETRY_DELAYS_MINUTES` | `[1,5,30,120,720]` | Délais retry retour statut PA                          |

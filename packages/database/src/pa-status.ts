@@ -1,4 +1,4 @@
-export type PaStatusOutcome = 'VALIDATED' | 'REJECTED';
+export type PaStatusOutcome = 'VALIDATED' | 'REJECTED' | 'IN_DISPUTE' | 'RECEIVED';
 
 export interface PaStatusPayload {
   paMessageId: string;
@@ -66,25 +66,40 @@ export function isPaStatusRetryDue(
   return nextRetryAt !== null && nextRetryAt.getTime() <= now.getTime();
 }
 
-export function buildPaStatusPayload(invoice: {
-  paMessageId: string;
-  docNumberPa: string;
-  paSource: string;
-  status: string;
-  statusReason: string | null;
-  sapDocEntry: number | null;
-  sapDocNum: number | null;
-}): PaStatusPayload {
-  // POSTED et LINKED (Voie B) → VALIDATED ; tout autre statut terminal → REJECTED
-  const outcome: PaStatusOutcome =
-    invoice.status === 'POSTED' || invoice.status === 'LINKED' ? 'VALIDATED' : 'REJECTED';
+export function buildPaStatusPayload(
+  invoice: {
+    paMessageId: string;
+    docNumberPa: string;
+    paSource: string;
+    status: string;
+    statusReason: string | null;
+    sapDocEntry: number | null;
+    sapDocNum: number | null;
+    litigeMotif?: string | null;
+  },
+  outcomeOverride?: PaStatusOutcome,
+): PaStatusPayload {
+  // POSTED et LINKED (Voie B) → VALIDATED ; DISPUTED → IN_DISPUTE ; tout autre statut terminal → REJECTED
+  // outcomeOverride permet de forcer un outcome non dérivable du statut (ex. RECEIVED lors d'une levée de litige
+  // où la facture repasse en TO_REVIEW mais on doit signaler le retour dans le cycle PA).
+  const derivedOutcome: PaStatusOutcome =
+    invoice.status === 'POSTED' || invoice.status === 'LINKED'
+      ? 'VALIDATED'
+      : invoice.status === 'DISPUTED'
+        ? 'IN_DISPUTE'
+        : 'REJECTED';
+  const outcome = outcomeOverride ?? derivedOutcome;
+
+  // Pour IN_DISPUTE, le motif vit dans litige_motif, pas dans status_reason
+  const reason =
+    outcome === 'IN_DISPUTE' ? (invoice.litigeMotif ?? null) : (invoice.statusReason ?? null);
 
   return {
     paMessageId: invoice.paMessageId,
     docNumberPa: invoice.docNumberPa,
     paSource: invoice.paSource,
     outcome,
-    reason: invoice.statusReason ?? null,
+    reason,
     sapDocEntry: invoice.sapDocEntry,
     sapDocNum: invoice.sapDocNum,
     sentAt: new Date().toISOString(),

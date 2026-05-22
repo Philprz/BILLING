@@ -25,6 +25,8 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   CREATE_SUPPLIER: 'Création fournisseur',
   SYNC_SUPPLIERS: 'Sync fournisseurs',
   LINK_SAP: 'Rattachement SAP',
+  INVOICE_LITIGE: 'Mise en litige',
+  INVOICE_LITIGE_LEVE: 'Levée du litige',
 };
 
 const ACTION_COLOR: Record<AuditAction, string> = {
@@ -42,6 +44,8 @@ const ACTION_COLOR: Record<AuditAction, string> = {
   CREATE_SUPPLIER: 'border-success/25 bg-success/10 text-success',
   SYNC_SUPPLIERS: 'border-primary/25 bg-primary/10 text-primary',
   LINK_SAP: 'border-info/25 bg-info/10 text-info',
+  INVOICE_LITIGE: 'border-[#E67E22]/30 bg-[#E67E22]/10 text-[#E67E22]',
+  INVOICE_LITIGE_LEVE: 'border-[#E67E22]/30 bg-[#E67E22]/10 text-[#E67E22]',
 };
 
 const AUDIT_ACTIONS: AuditAction[] = [
@@ -59,6 +63,8 @@ const AUDIT_ACTIONS: AuditAction[] = [
   'CREATE_SUPPLIER',
   'SYNC_SUPPLIERS',
   'LINK_SAP',
+  'INVOICE_LITIGE',
+  'INVOICE_LITIGE_LEVE',
 ];
 
 function ActionBadge({ action }: { action: AuditAction }) {

@@ -1,4 +1,4 @@
-import { buildPaStatusPayload } from '@pa-sap-bridge/database';
+import { buildPaStatusPayload, type PaStatusOutcome } from '@pa-sap-bridge/database';
 import { deliverPaStatus, type DeliveryResult } from './pa-status-delivery';
 
 export type { DeliveryResult };
@@ -10,17 +10,21 @@ export interface SendPaStatusResult {
   target: string;
 }
 
-export async function sendPaStatus(invoice: {
-  id: string;
-  paMessageId: string;
-  docNumberPa: string;
-  paSource: string;
-  status: string;
-  statusReason: string | null;
-  sapDocEntry: number | null;
-  sapDocNum: number | null;
-}): Promise<SendPaStatusResult> {
-  const result = await deliverPaStatus(invoice);
+export async function sendPaStatus(
+  invoice: {
+    id: string;
+    paMessageId: string;
+    docNumberPa: string;
+    paSource: string;
+    status: string;
+    statusReason: string | null;
+    sapDocEntry: number | null;
+    sapDocNum: number | null;
+    litigeMotif?: string | null;
+  },
+  outcomeOverride?: PaStatusOutcome,
+): Promise<SendPaStatusResult> {
+  const result = await deliverPaStatus(invoice, outcomeOverride);
   return {
     payload: result.payload,
     deliveryMode: result.mode,

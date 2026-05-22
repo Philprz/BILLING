@@ -46,7 +46,7 @@ export async function runChannelCycle(
     const paMessageId = `${paSource}:${file.filename}`;
 
     try {
-      const parsed = parseFile(file.absolutePath, file.ext);
+      const parsed = await parseFile(file.absolutePath, file.ext);
       log(
         'INFO',
         channelName,

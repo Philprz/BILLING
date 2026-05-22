@@ -39,7 +39,7 @@ export async function runIngestionCycle(): Promise<void> {
 
     try {
       // 1. Parsing
-      const parsed = parseFile(file.absolutePath, file.ext);
+      const parsed = await parseFile(file.absolutePath, file.ext);
       log(
         'INFO',
         `[${file.filename}] Format détecté : ${parsed.format} — Doc : ${parsed.docNumberPa}`,

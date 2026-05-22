@@ -39,6 +39,19 @@ interface Preset {
 
 const S = DEMO_COMPANIES;
 
+// Acheteur de démo partagé par tous les presets — conforme EN16931 + CIUS-FR
+const DEMO_BUYER = {
+  buyerName: 'DEMO INDUSTRIE SAS',
+  buyerLegalForm: 'SAS au capital de 100 000 EUR',
+  buyerSiret: '40483304800022',
+  buyerVatNumber: 'FR12404833048',
+  buyerAddress: '12 rue de Rivoli',
+  buyerCity: 'Paris',
+  buyerPostalCode: '75001',
+  buyerCountry: 'FR',
+  optionTVA: 'E' as const,
+};
+
 const PRESETS: Preset[] = [
   // 60 — Achats / fournitures consommables
   {
@@ -63,7 +76,8 @@ const PRESETS: Preset[] = [
         phone: S.fournitures[0].phone,
         email: S.fournitures[0].email,
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '1',
       lines: [
         {
           description: 'Rames de papier A4 — 5 cartons',
@@ -107,7 +121,8 @@ const PRESETS: Preset[] = [
         phone: S.maintenance[0].phone,
         email: S.maintenance[0].email,
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '2',
       lines: [
         {
           description: 'Location bureaux — mois de mai 2026',
@@ -151,7 +166,8 @@ const PRESETS: Preset[] = [
         phone: S.informatique[0].phone,
         email: S.informatique[0].email,
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '2',
       lines: [
         {
           description: 'Prestation infogérance serveurs — avril 2026',
@@ -195,13 +211,15 @@ const PRESETS: Preset[] = [
         email: 'test@impots-fictif.fr',
         phone: '01 00 00 00 00',
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '2',
       lines: [
         {
           description: 'Taxe foncière — exercice 2026',
           quantity: 1,
           unitPrice: 4200.0,
           taxRate: 0,
+          taxCategoryCode: 'O',
           accountingCode: '635100',
           accountingLabel: 'Taxe foncière',
         },
@@ -210,6 +228,7 @@ const PRESETS: Preset[] = [
           quantity: 1,
           unitPrice: 1850.0,
           taxRate: 0,
+          taxCategoryCode: 'O',
           accountingCode: '635000',
           accountingLabel: 'Autres impôts et taxes',
         },
@@ -239,13 +258,15 @@ const PRESETS: Preset[] = [
         email: 'cotisations@urssaf-fictif.fr',
         phone: '3957',
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '2',
       lines: [
         {
           description: 'Cotisations patronales — avril 2026',
           quantity: 1,
           unitPrice: 8500.0,
           taxRate: 0,
+          taxCategoryCode: 'O',
           accountingCode: '645000',
           accountingLabel: 'Charges de sécurité sociale',
         },
@@ -254,6 +275,7 @@ const PRESETS: Preset[] = [
           quantity: 1,
           unitPrice: 340.0,
           taxRate: 0,
+          taxCategoryCode: 'O',
           accountingCode: '647000',
           accountingLabel: 'Autres charges sociales',
         },
@@ -283,7 +305,8 @@ const PRESETS: Preset[] = [
         phone: S.honoraires[0].phone,
         email: S.honoraires[0].email,
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '2',
       lines: [
         {
           description: 'Cotisation annuelle CCI — exercice 2026',
@@ -327,7 +350,8 @@ const PRESETS: Preset[] = [
         phone: S.assuranceBanque[2].phone,
         email: S.assuranceBanque[2].email,
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '2',
       lines: [
         {
           description: 'Frais de tenue de compte — 1er trimestre 2026',
@@ -342,6 +366,10 @@ const PRESETS: Preset[] = [
           quantity: 1,
           unitPrice: 1240.0,
           taxRate: 0,
+          taxCategoryCode: 'E',
+          taxExemptionReasonCode: 'VATEX-EU-135',
+          taxExemptionReason:
+            'Opérations bancaires et financières exonérées — art. 261 C CGI / art. 135 Directive 2006/112/CE',
           accountingCode: '661200',
           accountingLabel: 'Intérêts sur emprunts',
         },
@@ -371,7 +399,8 @@ const PRESETS: Preset[] = [
         phone: S.honoraires[2].phone,
         email: S.honoraires[2].email,
       } satisfies PresetSupplier,
-      buyerName: 'DEMO INDUSTRIE SAS',
+      ...DEMO_BUYER,
+      typeTransaction: '2',
       lines: [
         {
           description: 'Pénalités de retard — contrat prestation 2025',
@@ -437,6 +466,15 @@ function defaultForm(): InvoiceGenData {
       email: '',
     },
     buyerName: 'DEMO INDUSTRIE SAS',
+    buyerLegalForm: 'SAS au capital de 100 000 EUR',
+    buyerSiret: '40483304800022',
+    buyerVatNumber: 'FR12404833048',
+    buyerAddress: '12 rue de Rivoli',
+    buyerCity: 'Paris',
+    buyerPostalCode: '75001',
+    buyerCountry: 'FR',
+    typeTransaction: '2',
+    optionTVA: 'E',
     lines: [defaultLine()],
     note: '',
   };
@@ -754,13 +792,6 @@ export default function InvoiceGeneratorPage() {
                 onChange={(e) => setForm((p) => ({ ...p, dueDate: e.target.value || undefined }))}
               />
             </Field>
-            <Field label="Client (acheteur)">
-              <input
-                className={inputCls}
-                value={form.buyerName ?? ''}
-                onChange={(e) => setForm((p) => ({ ...p, buyerName: e.target.value }))}
-              />
-            </Field>
           </div>
           <div className="mt-4">
             <Field label="Note (optionnel)">
@@ -943,6 +974,176 @@ export default function InvoiceGeneratorPage() {
               Préremplir via INSEE / Pappers
             </Button>
             {enrichError && <span className="text-xs text-destructive">{enrichError}</span>}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Acheteur */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="font-display text-2xl uppercase tracking-[0.08em]">
+            Acheteur
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Champs requis par EN16931 (adresse, raison sociale) et CIUS-FR (SIRET BT-47).
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <Field label="Raison sociale *" className="col-span-2 md:col-span-2">
+              <input
+                className={inputCls}
+                value={form.buyerName ?? ''}
+                onChange={(e) => setForm((p) => ({ ...p, buyerName: e.target.value }))}
+              />
+            </Field>
+            <Field label="Forme juridique">
+              <input
+                className={inputCls}
+                value={form.buyerLegalForm ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerLegalForm: e.target.value || undefined }))
+                }
+                placeholder="SAS au capital de…"
+              />
+            </Field>
+            <Field label="SIRET (14 chiffres) *">
+              <input
+                className={inputCls}
+                value={form.buyerSiret ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerSiret: e.target.value || undefined }))
+                }
+                maxLength={14}
+                placeholder="40483304800022"
+              />
+            </Field>
+            <Field label="N° TVA intracommunautaire">
+              <input
+                className={inputCls}
+                value={form.buyerVatNumber ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerVatNumber: e.target.value || undefined }))
+                }
+                placeholder="FR12345678901"
+              />
+            </Field>
+            <Field label="Pays">
+              <input
+                className={inputCls}
+                value={form.buyerCountry ?? 'FR'}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerCountry: e.target.value || undefined }))
+                }
+                maxLength={2}
+              />
+            </Field>
+            <Field label="Adresse *" className="col-span-2 md:col-span-3">
+              <input
+                className={inputCls}
+                value={form.buyerAddress ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerAddress: e.target.value || undefined }))
+                }
+                placeholder="12 rue de Rivoli"
+              />
+            </Field>
+            <Field label="Code postal *">
+              <input
+                className={inputCls}
+                value={form.buyerPostalCode ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerPostalCode: e.target.value || undefined }))
+                }
+                maxLength={10}
+              />
+            </Field>
+            <Field label="Ville *" className="col-span-2">
+              <input
+                className={inputCls}
+                value={form.buyerCity ?? ''}
+                onChange={(e) => setForm((p) => ({ ...p, buyerCity: e.target.value || undefined }))}
+              />
+            </Field>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Références & conformité */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="font-display text-2xl uppercase tracking-[0.08em]">
+            Références & conformité
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            BT-10 / BT-13 / BT-14 (Peppol BIS) et extensions CIUS-FR (réforme B2B 2026).
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <Field label="Référence acheteur (BT-10)">
+              <input
+                className={inputCls}
+                value={form.buyerReference ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerReference: e.target.value || undefined }))
+                }
+                placeholder="défaut : numéro de facture"
+              />
+            </Field>
+            <Field label="Référence commande acheteur (BT-13)">
+              <input
+                className={inputCls}
+                value={form.orderReference ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, orderReference: e.target.value || undefined }))
+                }
+                placeholder="Ex : BC-2026-00042 (référence bon de commande acheteur)"
+              />
+            </Field>
+            <Field label="Référence commande vendeur (BT-14)">
+              <input
+                className={inputCls}
+                value={form.salesOrderId ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, salesOrderId: e.target.value || undefined }))
+                }
+                placeholder="Ex : PRO-2026-888 (référence interne vendeur)"
+              />
+            </Field>
+            <Field label="Type transaction (CIUS-FR)">
+              <select
+                className={inputCls}
+                value={form.typeTransaction ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({
+                    ...p,
+                    typeTransaction: (e.target.value as '1' | '2' | '3' | '') || undefined,
+                  }))
+                }
+              >
+                <option value="">—</option>
+                <option value="1">1 — Biens</option>
+                <option value="2">2 — Services</option>
+                <option value="3">3 — Mixte</option>
+              </select>
+            </Field>
+            <Field label="Option TVA (CIUS-FR)">
+              <select
+                className={inputCls}
+                value={form.optionTVA ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({
+                    ...p,
+                    optionTVA: (e.target.value as 'S' | 'E' | '') || undefined,
+                  }))
+                }
+              >
+                <option value="">—</option>
+                <option value="S">S — Sur les débits</option>
+                <option value="E">E — Sur les encaissements</option>
+              </select>
+            </Field>
           </div>
         </CardContent>
       </Card>

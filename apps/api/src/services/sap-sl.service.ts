@@ -735,11 +735,37 @@ export async function fetchChartOfAccounts(sapSessionCookie: string): Promise<Ac
 
 // ─── Groupes TVA (VatGroups) ──────────────────────────────────────────────────
 
+/**
+ * Interprète le flag actif/inactif d'un enregistrement VatGroup SAP B1.
+ * - `Inactive: "tYES"` → actif=false ; `Inactive: "tNO"` → actif=true
+ * - `Active: "tYES"`/`"tNO"` → mapping direct
+ * - booleans : `Inactive` → inversé, `Active` → direct
+ * - sinon, on considère actif par défaut.
+ */
+function parseSapActive(r: Record<string, unknown>): boolean {
+  const inactive = r['Inactive'];
+  if (inactive !== undefined) {
+    if (typeof inactive === 'boolean') return !inactive;
+    if (inactive === 'tYES' || inactive === 'Y' || inactive === 'YES') return false;
+    if (inactive === 'tNO' || inactive === 'N' || inactive === 'NO') return true;
+    return true;
+  }
+  const active = r['Active'];
+  if (active !== undefined) {
+    if (typeof active === 'boolean') return active;
+    if (active === 'tYES' || active === 'Y' || active === 'YES') return true;
+    if (active === 'tNO' || active === 'N' || active === 'NO') return false;
+  }
+  return true;
+}
+
 export interface VatGroupEntry {
   code: string;
   name: string;
   rate: number;
   active: boolean;
+  category: string | null;
+  taxAccount: string | null;
   raw: Record<string, unknown>;
 }
 
@@ -773,18 +799,28 @@ export async function fetchVatGroups(sapSessionCookie: string): Promise<VatGroup
       .map((r) => {
         const code = String(r['Code'] ?? r['VatCode'] ?? r['TaxCode'] ?? '').trim();
         const name = String(r['Name'] ?? r['VatName'] ?? r['TaxName'] ?? code).trim();
-        const rateRaw = r['Rate'] ?? r['VatRate'] ?? r['TaxRate'] ?? r['Percent'] ?? 0;
-        const rate = typeof rateRaw === 'number' ? rateRaw : parseFloat(String(rateRaw)) || 0;
-        const activeRaw = r['Inactive'] ?? r['Active'];
-        let active: boolean;
-        if (typeof activeRaw === 'boolean') {
-          active = r['Inactive'] !== undefined ? !activeRaw : activeRaw;
-        } else if (activeRaw === 'tNO' || activeRaw === 'N' || activeRaw === 'NO') {
-          active = r['Inactive'] !== undefined ? false : true;
-        } else {
-          active = true;
+        // Le taux peut être au niveau racine ou dans la première ligne VatGroups_Lines
+        let rateRaw: unknown = r['Rate'] ?? r['VatRate'] ?? r['TaxRate'] ?? r['Percent'];
+        if (rateRaw == null) {
+          const lines = r['VatGroups_Lines'];
+          if (Array.isArray(lines) && lines.length > 0) {
+            const firstLine = lines[0] as Record<string, unknown>;
+            rateRaw = firstLine['Rate'];
+          }
         }
-        return { code, name, rate, active, raw: r };
+        const rate = typeof rateRaw === 'number' ? rateRaw : parseFloat(String(rateRaw ?? 0)) || 0;
+        // SAP B1 utilise les enums "tYES"/"tNO" pour Inactive/Active ; aussi accepter booleans et N/NO.
+        const active = parseSapActive(r);
+        const category =
+          typeof r['Category'] === 'string' && r['Category'].length > 0
+            ? (r['Category'] as string)
+            : null;
+        const taxAccountRaw = r['TaxAccount'];
+        const taxAccount =
+          typeof taxAccountRaw === 'string' && taxAccountRaw.trim().length > 0
+            ? taxAccountRaw.trim()
+            : null;
+        return { code, name, rate, active, category, taxAccount, raw: r };
       })
       .filter((e) => e.code.length > 0);
   }

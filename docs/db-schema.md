@@ -171,8 +171,6 @@ erDiagram
 | -------------------------------- | ------------------------------------ | ------------------------------------------------------------- |
 | `AUTO_VALIDATION_THRESHOLD`      | `number` (0-100)                     | Score minimum pour passage auto en READY                      |
 | `TAX_RATE_MAPPING`               | `Record<string, string>`             | Map taux TVA % → code TVA SAP B1 (ex. `{"20": "S1"}`)         |
-| `AP_TAX_ACCOUNT_MAP`             | `Record<string, string>`             | Map code TVA B1 → compte TVA déductible                       |
-| `AP_ACCOUNT_CODE`                | `string`                             | Compte fournisseur par défaut (ex. `"40100000"`)              |
 | `SAP_POST_POLICY`                | `"real" \| "simulate" \| "disabled"` | Politique d'intégration SAP globale                           |
 | `SAP_ATTACHMENT_POLICY`          | `"strict" \| "skip" \| "warn"`       | Comportement si upload pièce jointe échoue                    |
 | `PA_STATUS_RETRY_DELAYS_MINUTES` | `number[]`                           | Délais de retry retour statut PA (défaut: `[1,5,30,120,720]`) |

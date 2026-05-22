@@ -33,6 +33,9 @@ export interface InvoiceSummaryDto {
   sapDocNum: number | null;
   sapAttachmentEntry: number | null;
   paStatusSentAt: string | null;
+  comment: string | null;
+  litigeMotif: string | null;
+  litigeDate: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +123,9 @@ function mapSummary(inv: {
   sapDocNum: number | null;
   sapAttachmentEntry: number | null;
   paStatusSentAt: Date | null;
+  comment: string | null;
+  litigeMotif: string | null;
+  litigeDate: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }): InvoiceSummaryDto {
@@ -149,6 +155,9 @@ function mapSummary(inv: {
     sapDocNum: inv.sapDocNum,
     sapAttachmentEntry: inv.sapAttachmentEntry,
     paStatusSentAt: inv.paStatusSentAt ? inv.paStatusSentAt.toISOString() : null,
+    comment: inv.comment,
+    litigeMotif: inv.litigeMotif,
+    litigeDate: inv.litigeDate ? inv.litigeDate.toISOString() : null,
     createdAt: inv.createdAt.toISOString(),
     updatedAt: inv.updatedAt.toISOString(),
   };

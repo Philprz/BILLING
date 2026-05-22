@@ -13,10 +13,12 @@
     "@pa-sap-bridge/database": "*",
     "dotenv": "^16.4.7",
     "fast-xml-parser": "^5.7.1",
+    "pdf-parse": "^1.1.1",
     "ssh2-sftp-client": "^12.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "@types/pdf-parse": "^1.1.4",
     "@types/ssh2-sftp-client": "^9.0.6",
     "tsx": "^4.19.4",
     "typescript": "*"

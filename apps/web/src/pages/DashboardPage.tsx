@@ -10,6 +10,7 @@ import {
   Radio,
   Clock,
   Activity,
+  Scale,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import {
@@ -33,6 +34,7 @@ interface Stats {
   ready: number;
   posted: number;
   error: number;
+  disputed: number;
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -47,6 +49,8 @@ const ACTION_LABELS: Record<string, string> = {
   SEND_STATUS_PA: 'Retour statut PA',
   SYSTEM_ERROR: 'Erreur système',
   CONFIG_CHANGE: 'Config.',
+  INVOICE_LITIGE: 'Mise en litige',
+  INVOICE_LITIGE_LEVE: 'Levée du litige',
 };
 
 function DailyBarChart({ days }: { days: DailyStatDay[] }) {
@@ -165,12 +169,13 @@ export default function DashboardPage() {
   const loadStats = useCallback(async () => {
     setLoadError(null);
     try {
-      const [all, toReview, ready, posted, error] = await Promise.all([
+      const [all, toReview, ready, posted, error, disputed] = await Promise.all([
         apiGetInvoices({ limit: 1 }),
         apiGetInvoices({ limit: 1, status: 'TO_REVIEW' }),
         apiGetInvoices({ limit: 1, status: 'READY' }),
         apiGetInvoices({ limit: 1, status: 'POSTED' }),
         apiGetInvoices({ limit: 1, status: 'ERROR' }),
+        apiGetInvoices({ limit: 1, status: 'DISPUTED' }),
       ]);
       setStats({
         total: all.total,
@@ -178,6 +183,7 @@ export default function DashboardPage() {
         ready: ready.total,
         posted: posted.total,
         error: error.total,
+        disputed: disputed.total,
       });
     } catch (err: unknown) {
       setLoadError(err instanceof Error ? err.message : 'Erreur de chargement');
@@ -261,6 +267,15 @@ export default function DashboardPage() {
       accentClassName: 'from-destructive/20 to-transparent',
       to: '/invoices?status=ERROR',
       ariaLabel: `En erreur — ${stats.error} facture${stats.error !== 1 ? 's' : ''}. Voir les factures en erreur.`,
+    },
+    {
+      label: 'En litige',
+      value: stats.disputed,
+      icon: Scale,
+      iconClassName: 'bg-[#E67E22]/10 text-[#E67E22] ring-1 ring-[#E67E22]/20',
+      accentClassName: 'from-[#E67E22]/20 to-transparent',
+      to: '/invoices?status=DISPUTED',
+      ariaLabel: `En litige — ${stats.disputed} facture${stats.disputed !== 1 ? 's' : ''}. Voir les factures en litige.`,
     },
   ];
 

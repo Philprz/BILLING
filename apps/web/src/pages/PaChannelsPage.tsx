@@ -205,10 +205,7 @@ export default function PaChannelsPage() {
       <section className="page-header">
         <div>
           <p className="page-eyebrow">Configuration</p>
-          <h2 className="page-title">Canaux PA</h2>
-          <p className="page-subtitle">
-            Points de collecte des factures fournisseurs (SFTP ou API).
-          </p>
+          <p className="page-subtitle">Points de collecte des factures fournisseurs (SFTP).</p>
         </div>
         <Button
           size="sm"

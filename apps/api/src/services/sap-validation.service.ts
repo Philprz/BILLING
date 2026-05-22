@@ -140,7 +140,7 @@ export async function validateInvoiceForSapPost(
           code: 'MISSING_TAX_CODE',
           field: 'taxCode',
           lineNo: line.lineNo,
-          message: `Code TVA SAP B1 manquant sur la ligne ${line.lineNo}.`,
+          message: `Code TVA B1 manquant sur la ligne ${line.lineNo} — vérifier la règle de mappage ou la fiche fournisseur SAP.`,
         }),
       );
     }

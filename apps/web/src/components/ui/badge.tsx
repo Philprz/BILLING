@@ -14,6 +14,12 @@ const STATUS_CONFIG: Record<InvoiceStatus, { label: string; className: string }>
     label: 'Rejetée',
     className: 'border-destructive/30 bg-destructive/10 text-destructive',
   },
+  // #E67E22 — orange distinct du rouge REJETÉ et du vert INTÉGRÉE
+  DISPUTED: {
+    label: 'Litige',
+    className:
+      'border-[#E67E22]/40 bg-[#E67E22]/10 text-[#E67E22] dark:text-[#F39C42] dark:border-[#F39C42]/40',
+  },
   ERROR: { label: 'Erreur', className: 'border-destructive/30 bg-destructive/10 text-destructive' },
 };
 

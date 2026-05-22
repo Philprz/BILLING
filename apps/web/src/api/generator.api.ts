@@ -5,6 +5,9 @@ export interface GenLine {
   quantity: number;
   unitPrice: number;
   taxRate: number;
+  taxCategoryCode?: 'S' | 'Z' | 'E' | 'AE' | 'K' | 'O';
+  taxExemptionReasonCode?: string;
+  taxExemptionReason?: string;
   accountingCode: string; // Compte de charge classe 6 (obligatoire, ex: 622600)
   accountingLabel?: string; // Libellé du compte (affiché dans le PDF)
 }
@@ -34,6 +37,16 @@ export interface InvoiceGenData {
   buyerName?: string;
   buyerSiret?: string;
   buyerVatNumber?: string;
+  buyerLegalForm?: string;
+  buyerAddress?: string;
+  buyerCity?: string;
+  buyerPostalCode?: string;
+  buyerCountry?: string;
+  buyerReference?: string;
+  orderReference?: string;
+  salesOrderId?: string;
+  typeTransaction?: '1' | '2' | '3';
+  optionTVA?: 'S' | 'E';
   lines: GenLine[];
   note?: string;
 }

@@ -10,7 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import SftpClient from 'ssh2-sftp-client';
-import { buildPaStatusPayload, prisma } from '@pa-sap-bridge/database';
+import { buildPaStatusPayload, prisma, type PaStatusOutcome } from '@pa-sap-bridge/database';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +31,7 @@ interface InvoiceInput {
   statusReason: string | null;
   sapDocEntry: number | null;
   sapDocNum: number | null;
+  litigeMotif?: string | null;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -138,8 +139,11 @@ function deliverFileStub(
 
 // ─── Point d'entrée principal ─────────────────────────────────────────────────
 
-export async function deliverPaStatus(invoice: InvoiceInput): Promise<DeliveryResult> {
-  const payload = buildPaStatusPayload(invoice);
+export async function deliverPaStatus(
+  invoice: InvoiceInput,
+  outcomeOverride?: PaStatusOutcome,
+): Promise<DeliveryResult> {
+  const payload = buildPaStatusPayload(invoice, outcomeOverride);
 
   // Cherche le canal PA correspondant à la source de la facture
   const channel = await prisma.paChannel.findFirst({

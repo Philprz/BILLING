@@ -34,11 +34,17 @@ import {
   Save,
   HelpCircle,
   Link2,
+  MessageSquare,
+  Lock,
+  Scale,
+  Undo2,
 } from 'lucide-react';
 import {
   apiGetInvoice,
   apiPostInvoice,
   apiRejectInvoice,
+  apiPutInDispute,
+  apiLiftDispute,
   apiSendStatus,
   apiUpdateSupplier,
   apiUpdateLine,
@@ -49,9 +55,10 @@ import {
   apiSaveDraft,
   apiLinkSap,
   apiPushSupplierFiscal,
+  apiUpdateComment,
 } from '../api/invoices.api';
 import { apiGetSuppliers, apiCreateSupplierInSap, type SupplierCache } from '../api/suppliers.api';
-import { apiSyncSapChartOfAccounts } from '../api/sap.api';
+import { apiSyncSapChartOfAccounts, apiGetSapVatCodes } from '../api/sap.api';
 import { apiCreateMappingRule } from '../api/mapping-rules.api';
 import { apiGetAudit } from '../api/audit.api';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -69,7 +76,8 @@ import type {
 } from '../api/types';
 
 type IntegrationMode = 'SERVICE_INVOICE' | 'JOURNAL_ENTRY';
-const TERMINAL_STATUSES_UI = new Set(['POSTED', 'LINKED', 'REJECTED']);
+// DISPUTED gèle aussi l'édition : on attend la levée du litige avant toute modification.
+const TERMINAL_STATUSES_UI = new Set(['POSTED', 'LINKED', 'REJECTED', 'DISPUTED']);
 
 const ACTION_LABELS: Record<AuditAction, string> = {
   LOGIN: 'Connexion',
@@ -86,7 +94,11 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   CONFIG_CHANGE: 'Config.',
   CREATE_SUPPLIER: 'Création fournisseur',
   SYNC_SUPPLIERS: 'Sync fournisseurs',
+  INVOICE_LITIGE: 'Mise en litige',
+  INVOICE_LITIGE_LEVE: 'Levée du litige',
 };
+
+const LITIGE_MIN_MOTIF_LENGTH = 10;
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -795,6 +807,124 @@ function TvaRecapCard({ lines, invoice }: { lines: InvoiceLine[]; invoice: Invoi
   );
 }
 
+const COMMENT_MAX_LENGTH = 254;
+
+function CommentsCard({
+  invoice,
+  editable,
+  onSaved,
+}: {
+  invoice: InvoiceDetail;
+  editable: boolean;
+  onSaved: (updated: InvoiceDetail) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const locked = !editable || invoice.sapDocEntry !== null;
+
+  function startEdit() {
+    setDraft(invoice.comment ?? '');
+    setError(null);
+    setEditing(true);
+  }
+
+  function cancel() {
+    setEditing(false);
+    setError(null);
+  }
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      const trimmed = draft.trim();
+      const updated = await apiUpdateComment(invoice.id, trimmed.length > 0 ? trimmed : null);
+      onSaved(updated);
+      setEditing(false);
+      toast.success('Commentaire enregistré');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erreur de sauvegarde';
+      setError(msg);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="font-display text-xl uppercase tracking-[0.08em] flex items-center gap-2">
+            <MessageSquare className="h-4 w-4 text-primary" />
+            Commentaires
+          </CardTitle>
+          {!editing && !locked && (
+            <button
+              onClick={startEdit}
+              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              title={invoice.comment ? 'Modifier le commentaire' : 'Ajouter un commentaire'}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {locked && (
+            <span
+              className="flex items-center gap-1 text-[10px] text-muted-foreground"
+              title="Verrouillé : facture intégrée dans SAP B1"
+            >
+              <Lock className="h-3 w-3" />
+              Verrouillé
+            </span>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {editing ? (
+          <div className="space-y-2">
+            <textarea
+              className="app-textarea resize-y text-sm"
+              rows={3}
+              maxLength={COMMENT_MAX_LENGTH}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              disabled={saving}
+              placeholder="Notes internes, précisions, contexte… (max 254 caractères)"
+              autoFocus
+            />
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-muted-foreground">
+                {draft.length} / {COMMENT_MAX_LENGTH} — remonté dans SAP B1 (Comments / Memo)
+              </span>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={save} disabled={saving}>
+                  <Save className="h-3.5 w-3.5 mr-1" />
+                  {saving ? 'Sauvegarde…' : 'Sauvegarder'}
+                </Button>
+                <Button size="sm" variant="outline" onClick={cancel} disabled={saving}>
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+            {error && (
+              <p className="flex items-center gap-1.5 text-xs text-destructive">
+                <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" /> {error}
+              </p>
+            )}
+          </div>
+        ) : invoice.comment ? (
+          <p className="whitespace-pre-wrap text-sm text-foreground">{invoice.comment}</p>
+        ) : (
+          <p className="text-sm italic text-muted-foreground">
+            Aucun commentaire. {!locked && 'Cliquez sur le crayon pour en ajouter un.'}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function LinesTab({
   lines,
   invoiceId,
@@ -820,6 +950,23 @@ function LinesTab({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [resolvingTax, setResolvingTax] = useState(false);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  const [vatCodes, setVatCodes] = useState<
+    { code: string; name: string; rate: number; active: boolean }[]
+  >([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiGetSapVatCodes()
+      .then((codes) => {
+        if (!cancelled) setVatCodes(codes);
+      })
+      .catch(() => {
+        // best-effort : si la synchro SAP n'est pas dispo, l'utilisateur garde la saisie libre
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function startEdit(l: InvoiceLine) {
     const accountInvalid =
@@ -1026,11 +1173,11 @@ function LinesTab({
                 </td>
 
                 {/* Code TVA B1 */}
-                <td className="px-3 py-2 min-w-[110px]">
+                <td className="px-3 py-2 min-w-[160px]">
                   {isEditing ? (
                     <div className="space-y-0.5">
                       <div className="relative">
-                        <input
+                        <select
                           className="app-input h-8 px-2 py-1 text-xs font-mono w-full"
                           value={draft.chosenTaxCodeB1}
                           onChange={(e) =>
@@ -1041,10 +1188,22 @@ function LinesTab({
                               taxCodeSource: 'manual',
                             }))
                           }
-                          placeholder={l.suggestedTaxCodeB1 ?? 'ex: S1'}
-                        />
+                        >
+                          <option value="">— (vide)</option>
+                          {draft.chosenTaxCodeB1 &&
+                            !vatCodes.some((v) => v.code === draft.chosenTaxCodeB1) && (
+                              <option value={draft.chosenTaxCodeB1}>
+                                {draft.chosenTaxCodeB1} (inconnu)
+                              </option>
+                            )}
+                          {vatCodes.map((v) => (
+                            <option key={v.code} value={v.code}>
+                              {v.code} — {v.rate}%{v.name ? ` · ${v.name}` : ''}
+                            </option>
+                          ))}
+                        </select>
                         {resolvingTax && (
-                          <span className="absolute right-1.5 top-1/2 -translate-y-1/2">
+                          <span className="absolute right-6 top-1/2 -translate-y-1/2">
                             <span className="h-2.5 w-2.5 animate-spin rounded-full border border-primary border-t-transparent inline-block" />
                           </span>
                         )}
@@ -1370,6 +1529,13 @@ export default function InvoiceDetailPage() {
   const [showReject, setShowReject] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
+  // Litige
+  const [showLitige, setShowLitige] = useState(false);
+  const [litigeMotif, setLitigeMotif] = useState('');
+  const [puttingInLitige, setPuttingInLitige] = useState(false);
+  const [showLiftLitige, setShowLiftLitige] = useState(false);
+  const [liftComment, setLiftComment] = useState('');
+  const [liftingLitige, setLiftingLitige] = useState(false);
   // Send status PA
   const [sendingStatus, setSendingStatus] = useState(false);
   // SAP integration preferences (brouillon)
@@ -1406,8 +1572,10 @@ export default function InvoiceDetailPage() {
     setInvoice(updatedInvoice);
   }, [id]);
 
-  // Garde-fou : un seul auto-enrich par montage, même si l'effet ré-évalue.
-  const autoEnrichDone = useRef<string | null>(null);
+  // Garde-fou : on ne refait pas un auto-enrich pour la même (facture, signature
+  // d'état). Une signature change si le statut ou la complétude des lignes
+  // change (ex. après un reset depuis ERROR), ce qui re-autorise un essai.
+  const autoEnrichSignature = useRef<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -1419,20 +1587,22 @@ export default function InvoiceDetailPage() {
         const fresh = await apiGetInvoice(id);
         if (cancelled) return;
 
-        // Auto re-enrichissement au chargement si la facture est en TO_REVIEW
-        // avec des lignes dépourvues de compte ou de code TVA. La logique côté
-        // serveur (enrichInvoiceById) respecte les verrous manuels — on peut
-        // donc déclencher sans risque d'écraser une édition utilisateur.
-        const needsAutoEnrich =
+        // Auto re-enrichissement si la facture est en TO_REVIEW avec des lignes
+        // dépourvues de compte ou de code TVA. La logique serveur (enrichInvoiceById)
+        // respecte les verrous manuels — pas de risque d'écraser une édition.
+        const incomplete =
           fresh.status === 'TO_REVIEW' &&
           fresh.lines.length > 0 &&
           fresh.lines.some(
             (l) => (!l.chosenAccountCode || !l.chosenTaxCodeB1) && !l.taxCodeLockedByUser,
-          ) &&
-          autoEnrichDone.current !== id;
+          );
+        const signature = `${id}:${fresh.status}:${fresh.lines
+          .map((l) => `${l.chosenAccountCode ?? ''}|${l.chosenTaxCodeB1 ?? ''}`)
+          .join(',')}`;
+        const alreadyTried = autoEnrichSignature.current === signature;
 
-        if (needsAutoEnrich) {
-          autoEnrichDone.current = id;
+        if (incomplete && !alreadyTried) {
+          autoEnrichSignature.current = signature;
           const enriched = await apiReEnrichInvoice(id).catch(() => null);
           if (cancelled) return;
           setInvoice(enriched ?? fresh);
@@ -1523,6 +1693,41 @@ export default function InvoiceDetailPage() {
       toast.error(err instanceof Error ? err.message : 'Erreur lors du rejet');
     } finally {
       setRejecting(false);
+    }
+  }
+
+  async function handlePutInLitige() {
+    if (!id) return;
+    const trimmed = litigeMotif.trim();
+    if (trimmed.length < LITIGE_MIN_MOTIF_LENGTH) return;
+    setPuttingInLitige(true);
+    try {
+      const updated = await apiPutInDispute(id, trimmed);
+      setShowLitige(false);
+      setLitigeMotif('');
+      toast.success('Facture mise en litige · statut IN_DISPUTE envoyé à la PA');
+      setInvoice(updated);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erreur lors de la mise en litige');
+    } finally {
+      setPuttingInLitige(false);
+    }
+  }
+
+  async function handleLiftLitige() {
+    if (!id) return;
+    setLiftingLitige(true);
+    try {
+      const trimmed = liftComment.trim();
+      const updated = await apiLiftDispute(id, trimmed.length > 0 ? trimmed : undefined);
+      setShowLiftLitige(false);
+      setLiftComment('');
+      toast.success('Litige levé · statut RECEIVED envoyé à la PA');
+      setInvoice(updated);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erreur lors de la levée du litige');
+    } finally {
+      setLiftingLitige(false);
     }
   }
 
@@ -1798,8 +2003,51 @@ export default function InvoiceDetailPage() {
               <Ban className="h-3.5 w-3.5 mr-1" /> Rejeter
             </Button>
           )}
+          {['NEW', 'TO_REVIEW', 'READY'].includes(invoice.status) && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowLitige(true)}
+              className="border-[#E67E22]/40 text-[#E67E22] hover:bg-[#E67E22]/10"
+            >
+              <Scale className="h-3.5 w-3.5 mr-1" /> Mettre en litige
+            </Button>
+          )}
+          {invoice.status === 'DISPUTED' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowLiftLitige(true)}
+              className="border-[#E67E22]/40 text-[#E67E22] hover:bg-[#E67E22]/10"
+            >
+              <Undo2 className="h-3.5 w-3.5 mr-1" /> Lever le litige
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Bandeau motif de litige */}
+      {invoice.status === 'DISPUTED' && invoice.litigeMotif && (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-lg border border-[#E67E22]/30 bg-[#E67E22]/10 px-4 py-3 text-sm"
+        >
+          <Scale className="mt-0.5 h-4 w-4 flex-shrink-0 text-[#E67E22]" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-[#E67E22]">
+              Facture en litige
+              {invoice.litigeDate && (
+                <span className="ml-2 font-normal text-muted-foreground">
+                  · depuis le {formatDate(invoice.litigeDate)}
+                </span>
+              )}
+            </p>
+            <p className="mt-1 whitespace-pre-wrap break-words text-foreground/90">
+              {invoice.litigeMotif}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Reject modal */}
       {showReject && (
@@ -1846,6 +2094,114 @@ export default function InvoiceDetailPage() {
                 disabled={rejecting || rejectReason.trim().length === 0}
               >
                 {rejecting ? 'Rejet en cours…' : 'Confirmer le rejet'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Litige modal — mise en litige */}
+      {showLitige && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dlg-litige-title"
+          >
+            <h2
+              id="dlg-litige-title"
+              className="flex items-center gap-2 font-display text-2xl uppercase tracking-[0.08em] text-foreground"
+            >
+              <Scale className="h-4 w-4 text-[#E67E22]" /> Mettre la facture en litige
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Le motif est obligatoire (min. {LITIGE_MIN_MOTIF_LENGTH} caractères). Il sera transmis
+              à la PA (statut IN_DISPUTE) et tracé dans l'audit. La facture pourra être ramenée à
+              "À&nbsp;réviser" plus tard via "Lever le litige".
+            </p>
+            <textarea
+              className="app-textarea resize-none"
+              rows={4}
+              placeholder={`Motif du litige (min. ${LITIGE_MIN_MOTIF_LENGTH} car.)…`}
+              value={litigeMotif}
+              onChange={(e) => setLitigeMotif(e.target.value)}
+              disabled={puttingInLitige}
+            />
+            <p className="text-xs text-muted-foreground">
+              {litigeMotif.trim().length} / min. {LITIGE_MIN_MOTIF_LENGTH}
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setShowLitige(false);
+                  setLitigeMotif('');
+                }}
+                disabled={puttingInLitige}
+              >
+                Annuler
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handlePutInLitige()}
+                disabled={puttingInLitige || litigeMotif.trim().length < LITIGE_MIN_MOTIF_LENGTH}
+                className="bg-[#E67E22] text-white hover:bg-[#D35400]"
+              >
+                {puttingInLitige ? 'Mise en litige…' : 'Confirmer la mise en litige'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Litige modal — levée du litige */}
+      {showLiftLitige && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dlg-lift-litige-title"
+          >
+            <h2
+              id="dlg-lift-litige-title"
+              className="flex items-center gap-2 font-display text-2xl uppercase tracking-[0.08em] text-foreground"
+            >
+              <Undo2 className="h-4 w-4 text-[#E67E22]" /> Lever le litige
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              La facture repassera en "À&nbsp;réviser" et un cycle de vie RECEIVED sera renvoyé à la
+              PA. Un commentaire de levée est optionnel.
+            </p>
+            <textarea
+              className="app-textarea resize-none"
+              rows={3}
+              placeholder="Commentaire (facultatif)…"
+              value={liftComment}
+              onChange={(e) => setLiftComment(e.target.value)}
+              disabled={liftingLitige}
+            />
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setShowLiftLitige(false);
+                  setLiftComment('');
+                }}
+                disabled={liftingLitige}
+              >
+                Annuler
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleLiftLitige()}
+                disabled={liftingLitige}
+                className="bg-[#E67E22] text-white hover:bg-[#D35400]"
+              >
+                {liftingLitige ? 'Levée en cours…' : 'Confirmer la levée'}
               </Button>
             </div>
           </div>
@@ -2209,6 +2565,9 @@ export default function InvoiceDetailPage() {
             />
           </CardContent>
         </Card>
+
+        {/* Commentaires libres (remontés dans SAP Comments / Memo) */}
+        <CommentsCard invoice={invoice} editable={isEditable} onSaved={setInvoice} />
 
         {/* Ligne : Montants + TVA (1/3) | Intégration SAP B1 (2/3) */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

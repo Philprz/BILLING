@@ -187,10 +187,16 @@ export async function enrichInvoice(invoiceId: string): Promise<void> {
   const terminal = new Set(['POSTED', 'REJECTED', 'ERROR']);
   if (!terminal.has(invoice.status)) {
     const refreshedLines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
-    const allChosen =
+    // Lignes utilisables = compte + code TVA présents (chosen ou suggested), aligné
+    // sur la résolution faite par le builder SAP.
+    const allLinesUsable =
       refreshedLines.length > 0 &&
-      refreshedLines.every((l) => !!l.chosenAccountCode && !!l.chosenTaxCodeB1);
-    const nextStatus = matchConf >= threshold && allChosen ? 'READY' : 'TO_REVIEW';
+      refreshedLines.every(
+        (l) =>
+          !!(l.chosenAccountCode ?? l.suggestedAccountCode) &&
+          !!(l.chosenTaxCodeB1 ?? l.suggestedTaxCodeB1),
+      );
+    const nextStatus = matchConf >= threshold && allLinesUsable ? 'READY' : 'TO_REVIEW';
     await prisma.invoice.update({
       where: { id: invoiceId },
       data: {

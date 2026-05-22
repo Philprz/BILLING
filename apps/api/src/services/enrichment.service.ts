@@ -593,7 +593,8 @@ async function loadActiveRules(): Promise<RuleInput[]> {
 // ─── Enrichissement d'une facture ─────────────────────────────────────────────
 
 const DEFAULT_AUTO_VALIDATION_THRESHOLD = 80;
-const TERMINAL = new Set(['POSTED', 'REJECTED']);
+// DISPUTED est "gelé" tant que le litige n'est pas levé : on ne ré-enrichit pas.
+const TERMINAL = new Set(['POSTED', 'REJECTED', 'DISPUTED']);
 
 async function getAutoValidationThreshold(): Promise<number> {
   const row = await prisma.setting.findUnique({ where: { key: 'AUTO_VALIDATION_THRESHOLD' } });
@@ -759,21 +760,25 @@ export async function enrichInvoiceById(invoiceId: string): Promise<void> {
   }
 
   // 3. Transition de statut
+  // Une ligne est utilisable dès qu'elle a un compte ET un code TVA — qu'ils
+  // viennent du choix utilisateur ou de la suggestion (le builder SAP fait
+  // chosen ?? suggested).
   const refreshedLines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
-  const allHaveChosenAccountAndTax =
+  const allLinesUsable =
     refreshedLines.length > 0 &&
-    refreshedLines.every((l) => !!l.chosenAccountCode && !!l.chosenTaxCodeB1);
+    refreshedLines.every(
+      (l) =>
+        !!(l.chosenAccountCode ?? l.suggestedAccountCode) &&
+        !!(l.chosenTaxCodeB1 ?? l.suggestedTaxCodeB1),
+    );
   const newStatus: 'READY' | 'TO_REVIEW' =
-    (matchConf ?? 0) >= autoValidationThreshold && allHaveChosenAccountAndTax
-      ? 'READY'
-      : 'TO_REVIEW';
+    (matchConf ?? 0) >= autoValidationThreshold && allLinesUsable ? 'READY' : 'TO_REVIEW';
 
   const parts: string[] = [];
   if ((matchConf ?? 0) < autoValidationThreshold)
     parts.push(`fournisseur non résolu (confiance ${matchConf ?? 0}%)`);
   if (!allHaveSuggestion) parts.push('compte non suggéré pour une ou plusieurs lignes');
-  if (!allHaveChosenAccountAndTax)
-    parts.push('compte choisi ou code TVA B1 manquant sur une ou plusieurs lignes');
+  if (!allLinesUsable) parts.push('compte ou code TVA B1 manquant sur une ou plusieurs lignes');
   if (invoice.lines.length === 0) parts.push('aucune ligne structurée');
 
   await prisma.invoice.update({

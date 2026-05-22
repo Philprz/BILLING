@@ -9,6 +9,7 @@ export type InvoiceStatus =
   | 'POSTED'
   | 'LINKED'
   | 'REJECTED'
+  | 'DISPUTED'
   | 'ERROR';
 export type InvoiceDirection = 'INVOICE' | 'CREDIT_NOTE';
 export type FileKind = 'PDF' | 'XML' | 'ATTACHMENT';
@@ -38,6 +39,9 @@ export interface InvoiceSummary {
   sapDocEntry: number | null;
   sapDocNum: number | null;
   sapAttachmentEntry: number | null;
+  comment: string | null;
+  litigeMotif: string | null;
+  litigeDate: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -112,7 +116,9 @@ export type AuditAction =
   | 'SYSTEM_ERROR'
   | 'CONFIG_CHANGE'
   | 'CREATE_SUPPLIER'
-  | 'SYNC_SUPPLIERS';
+  | 'SYNC_SUPPLIERS'
+  | 'INVOICE_LITIGE'
+  | 'INVOICE_LITIGE_LEVE';
 
 export type AuditOutcome = 'OK' | 'ERROR';
 

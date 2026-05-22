@@ -30,18 +30,6 @@ export const SETTING_META: Record<
     description: 'Objet JSON : clé = taux en % (ex. "20.00"), valeur = code TVA SAP B1 (ex. "D5").',
     type: 'json',
   },
-  AP_TAX_ACCOUNT_MAP: {
-    label: 'Comptes TVA récupérable par taux',
-    description:
-      "Pour chaque taux de TVA (20 %, 10 %…), indique le compte comptable SAP où enregistrer la TVA récupérable sur achats. Exemple : 20 % → compte 445660. Si ce paramètre n'est pas renseigné, la TVA ne sera pas ventilée sur un compte dédié.",
-    type: 'json',
-  },
-  AP_ACCOUNT_CODE: {
-    label: 'Compte de dettes fournisseurs',
-    description:
-      'Numéro de compte comptable où sont enregistrées les sommes dues aux fournisseurs (le "à payer"). Utilisé automatiquement lors de la création des écritures dans SAP quand aucun compte spécifique n\'est défini pour le fournisseur concerné.',
-    type: 'string',
-  },
   AMOUNT_GAP_ALERT_THRESHOLD: {
     label: "Seuil d'alerte écart montant",
     description: "Écart maximum (€) entre montant PA et SAP avant déclenchement d'une alerte.",

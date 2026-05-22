@@ -293,8 +293,6 @@ export default function SettingsPage() {
   const accountingRows = rows.filter((r) =>
     [
       'TAX_RATE_MAPPING',
-      'AP_TAX_ACCOUNT_MAP',
-      'AP_ACCOUNT_CODE',
       'DEFAULT_ENERGY_ACCOUNT_CODE',
       'DEFAULT_MAINTENANCE_ACCOUNT_CODE',
       'DEFAULT_HOSTING_ACCOUNT_CODE',
