@@ -60,6 +60,7 @@ export interface InvoiceLineDto {
   chosenCostCenter: string | null;
   chosenTaxCodeB1: string | null;
   taxCodeLockedByUser: boolean;
+  accountCodeLockedByUser: boolean;
 }
 
 export interface InvoiceFileDto {
@@ -183,6 +184,7 @@ function mapLine(l: {
   chosenCostCenter: string | null;
   chosenTaxCodeB1: string | null;
   taxCodeLockedByUser: boolean;
+  accountCodeLockedByUser: boolean;
 }): InvoiceLineDto {
   return {
     id: l.id,
@@ -204,6 +206,7 @@ function mapLine(l: {
     chosenCostCenter: l.chosenCostCenter,
     chosenTaxCodeB1: l.chosenTaxCodeB1,
     taxCodeLockedByUser: l.taxCodeLockedByUser,
+    accountCodeLockedByUser: l.accountCodeLockedByUser,
   };
 }
 

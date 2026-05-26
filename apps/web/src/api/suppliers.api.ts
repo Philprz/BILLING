@@ -63,7 +63,12 @@ export async function apiGetSuppliersSyncStatus(): Promise<SupplierSyncStatus> {
 export interface CreateSupplierPayload {
   cardCode: string;
   cardName: string;
+  /** N° TVA intracommunautaire (FR + 11 chiffres) → SAP FederalTaxID. */
   federalTaxId?: string;
+  /** SIRET 14 chiffres → SAP LicTradNum. */
+  licTradNum?: string;
+  /** Code de routage PA propre au fournisseur → UDF U_PA_RoutageCode. */
+  routageCode?: string;
   vatRegNum?: string;
   street?: string;
   street2?: string;

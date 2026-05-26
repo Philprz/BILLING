@@ -6,6 +6,7 @@ const PA_SOURCE_LABELS: Record<string, string> = {
   SEED_TEST: 'Seed-test',
 };
 const paSourceLabel = (source: string) => PA_SOURCE_LABELS[source] ?? source;
+import { filterVatCodesByRate } from '../lib/vat-code-filter';
 import { XmlViewer } from '../components/ui/XmlViewer';
 import { PdfViewer } from '../components/ui/PdfViewer';
 import { AccountSearch } from '../components/ui/AccountSearch';
@@ -45,6 +46,7 @@ import {
   apiRejectInvoice,
   apiPutInDispute,
   apiLiftDispute,
+  apiReturnToReview,
   apiSendStatus,
   apiUpdateSupplier,
   apiUpdateLine,
@@ -96,6 +98,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   SYNC_SUPPLIERS: 'Sync fournisseurs',
   INVOICE_LITIGE: 'Mise en litige',
   INVOICE_LITIGE_LEVE: 'Levée du litige',
+  INVOICE_RETOUR_A_REVISER: 'Retour en révision',
 };
 
 const LITIGE_MIN_MOTIF_LENGTH = 10;
@@ -1177,31 +1180,48 @@ function LinesTab({
                   {isEditing ? (
                     <div className="space-y-0.5">
                       <div className="relative">
-                        <select
-                          className="app-input h-8 px-2 py-1 text-xs font-mono w-full"
-                          value={draft.chosenTaxCodeB1}
-                          onChange={(e) =>
-                            setDraft((d) => ({
-                              ...d,
-                              chosenTaxCodeB1: e.target.value,
-                              taxCodeLockedByUser: true,
-                              taxCodeSource: 'manual',
-                            }))
-                          }
-                        >
-                          <option value="">— (vide)</option>
-                          {draft.chosenTaxCodeB1 &&
-                            !vatCodes.some((v) => v.code === draft.chosenTaxCodeB1) && (
-                              <option value={draft.chosenTaxCodeB1}>
-                                {draft.chosenTaxCodeB1} (inconnu)
-                              </option>
-                            )}
-                          {vatCodes.map((v) => (
-                            <option key={v.code} value={v.code}>
-                              {v.code} — {v.rate}%{v.name ? ` · ${v.name}` : ''}
-                            </option>
-                          ))}
-                        </select>
+                        {(() => {
+                          const filteredVatCodes = filterVatCodesByRate(vatCodes, l.taxRate);
+                          const chosen = draft.chosenTaxCodeB1;
+                          const chosenInFull = chosen
+                            ? vatCodes.find((v) => v.code === chosen)
+                            : undefined;
+                          const chosenInFiltered =
+                            !!chosen && filteredVatCodes.some((v) => v.code === chosen);
+                          const chosenIncompatible =
+                            !!chosen && !!chosenInFull && !chosenInFiltered;
+                          return (
+                            <select
+                              className="app-input h-8 px-2 py-1 text-xs font-mono w-full"
+                              value={chosen}
+                              onChange={(e) =>
+                                setDraft((d) => ({
+                                  ...d,
+                                  chosenTaxCodeB1: e.target.value,
+                                  taxCodeLockedByUser: true,
+                                  taxCodeSource: 'manual',
+                                }))
+                              }
+                            >
+                              <option value="">— (vide)</option>
+                              {chosen && !chosenInFull && (
+                                <option value={chosen}>{chosen} (inconnu)</option>
+                              )}
+                              {chosenIncompatible && chosenInFull && (
+                                <option value={chosen} style={{ color: '#dc2626' }}>
+                                  {chosen} — {chosenInFull.rate}%
+                                  {chosenInFull.name ? ` · ${chosenInFull.name}` : ''} ⚠ taux
+                                  incompatible
+                                </option>
+                              )}
+                              {filteredVatCodes.map((v) => (
+                                <option key={v.code} value={v.code}>
+                                  {v.code} — {v.rate}%{v.name ? ` · ${v.name}` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()}
                         {resolvingTax && (
                           <span className="absolute right-6 top-1/2 -translate-y-1/2">
                             <span className="h-2.5 w-2.5 animate-spin rounded-full border border-primary border-t-transparent inline-block" />
@@ -1510,6 +1530,12 @@ function AuditTab({ invoiceId }: { invoiceId: string }) {
   );
 }
 
+function isAnyLineManuallyModified(
+  lines: ReadonlyArray<{ taxCodeLockedByUser?: boolean; accountCodeLockedByUser?: boolean }>,
+): boolean {
+  return lines.some((l) => l.taxCodeLockedByUser === true || l.accountCodeLockedByUser === true);
+}
+
 export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null);
@@ -1536,10 +1562,13 @@ export default function InvoiceDetailPage() {
   const [showLiftLitige, setShowLiftLitige] = useState(false);
   const [liftComment, setLiftComment] = useState('');
   const [liftingLitige, setLiftingLitige] = useState(false);
+  // Retour à réviser (READY → TO_REVIEW)
+  const [showReturnToReview, setShowReturnToReview] = useState(false);
+  const [returnToReviewComment, setReturnToReviewComment] = useState('');
+  const [returningToReview, setReturningToReview] = useState(false);
   // Send status PA
   const [sendingStatus, setSendingStatus] = useState(false);
   // SAP integration preferences (brouillon)
-  const [sapSeries, setSapSeries] = useState('');
   const [savingDraft, setSavingDraft] = useState(false);
   // Audit drawer
   const [showAuditDrawer, setShowAuditDrawer] = useState(false);
@@ -1557,6 +1586,9 @@ export default function InvoiceDetailPage() {
   const [reEnriching, setReEnriching] = useState(false);
   // Re-parse lines
   const [reParsing, setReParsing] = useState(false);
+  // Confirmation avant ré-analyse XML quand des lignes ont été modifiées
+  // manuellement (verrou TVA ou compte). Le re-parse écraserait ces éditions.
+  const [showReParseConfirm, setShowReParseConfirm] = useState(false);
   // Supplier creation in SAP
   const [showCreateSupplier, setShowCreateSupplier] = useState(false);
   const [createSupplierInitial, setCreateSupplierInitial] = useState<Partial<SupplierForm>>({});
@@ -1565,6 +1597,9 @@ export default function InvoiceDetailPage() {
   // Voie B — rattachement SAP
   const [linking, setLinking] = useState(false);
   const [linkSapConflict, setLinkSapConflict] = useState<SapPurchaseInvoiceRef[] | null>(null);
+  const [showLinkSapModal, setShowLinkSapModal] = useState(false);
+  const [linkSapDocNum, setLinkSapDocNum] = useState('');
+  const [linkSapError, setLinkSapError] = useState<string | null>(null);
 
   const reloadInvoice = useCallback(async () => {
     if (!id) return;
@@ -1576,6 +1611,9 @@ export default function InvoiceDetailPage() {
   // d'état). Une signature change si le statut ou la complétude des lignes
   // change (ex. après un reset depuis ERROR), ce qui re-autorise un essai.
   const autoEnrichSignature = useRef<string | null>(null);
+  // Garde-fou re-parse XML automatique : une seule tentative par montage et par
+  // facture, même si l'effect re-run.
+  const autoReParseSignature = useRef<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -1584,8 +1622,26 @@ export default function InvoiceDetailPage() {
 
     (async () => {
       try {
-        const fresh = await apiGetInvoice(id);
+        let fresh = await apiGetInvoice(id);
         if (cancelled) return;
+
+        // Auto re-parse XML si les lignes ont été persistées sans données TVA
+        // source (ancien parser). Le serveur re-enrichit après le re-parse,
+        // donc on consomme directement son retour.
+        const isXmlFormat = fresh.format === 'UBL' || fresh.format === 'CII';
+        const isEditable = !['POSTED', 'REJECTED'].includes(fresh.status);
+        const needsReParse =
+          isXmlFormat &&
+          isEditable &&
+          fresh.lines.length > 0 &&
+          !isAnyLineManuallyModified(fresh.lines) &&
+          fresh.lines.some((l) => l.taxRate == null && l.taxCode == null);
+        if (needsReParse && autoReParseSignature.current !== id) {
+          autoReParseSignature.current = id;
+          const reparsed = await apiReParseLinesInvoice(id).catch(() => null);
+          if (cancelled) return;
+          if (reparsed) fresh = reparsed;
+        }
 
         // Auto re-enrichissement si la facture est en TO_REVIEW avec des lignes
         // dépourvues de compte ou de code TVA. La logique serveur (enrichInvoiceById)
@@ -1731,6 +1787,23 @@ export default function InvoiceDetailPage() {
     }
   }
 
+  async function handleReturnToReview() {
+    if (!id) return;
+    setReturningToReview(true);
+    try {
+      const trimmed = returnToReviewComment.trim();
+      const updated = await apiReturnToReview(id, trimmed.length > 0 ? trimmed : undefined);
+      setShowReturnToReview(false);
+      setReturnToReviewComment('');
+      toast.success('Facture repassée en révision');
+      setInvoice(updated);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erreur lors du retour en révision');
+    } finally {
+      setReturningToReview(false);
+    }
+  }
+
   async function handleReset() {
     if (!id) return;
     setResetting(true);
@@ -1760,11 +1833,20 @@ export default function InvoiceDetailPage() {
 
   async function handleCreateSupplier(data: SupplierForm) {
     if (!id) return;
-    const federalTaxId = data.siret?.trim() || data.siren?.trim() || undefined;
+    // SAP B1 :
+    //   - LicTradNum  ← SIRET 14 chiffres (identité légale)
+    //   - FederalTaxID ← TVA intracommunautaire (FR…)
+    // Le code de routage PA n'est pas saisi dans le form : il vient du parsing
+    // de la facture (EndpointID UBL côté supplier).
+    const licTradNum = data.siret?.trim() || undefined;
+    const federalTaxId = data.vatRegNum?.trim() || undefined;
+    const routageCode = invoice?.supplierExtracted?.endpointId?.trim() || undefined;
     const result = await apiCreateSupplierInSap({
       cardCode: data.cardCode.trim(),
       cardName: data.cardName.trim(),
       federalTaxId,
+      licTradNum,
+      routageCode,
       vatRegNum: data.vatRegNum?.trim() || undefined,
       street: data.street?.trim() || undefined,
       street2: data.street2?.trim() || undefined,
@@ -1838,7 +1920,6 @@ export default function InvoiceDetailPage() {
     try {
       const updated = await apiSaveDraft(id, {
         integrationMode,
-        sapSeries: sapSeries.trim() || undefined,
       });
       setInvoice(updated);
       toast.success('Préférences enregistrées');
@@ -1849,21 +1930,37 @@ export default function InvoiceDetailPage() {
     }
   }
 
+  function openLinkSapModal() {
+    setLinkSapDocNum('');
+    setLinkSapError(null);
+    setLinkSapConflict(null);
+    setShowLinkSapModal(true);
+  }
+
   async function handleLinkSap() {
     if (!id) return;
+    const trimmed = linkSapDocNum.trim();
+    const parsed = Number(trimmed);
+    if (!trimmed || !Number.isInteger(parsed) || parsed <= 0) {
+      setLinkSapError('DocNum manquant ou invalide');
+      return;
+    }
     setLinking(true);
+    setLinkSapError(null);
     setLinkSapConflict(null);
     try {
-      const result = await apiLinkSap(id);
+      const result = await apiLinkSap(id, { docNum: parsed });
       if ('conflict' in result) {
+        // En mode manuel (DocNum), le 409 ne devrait pas survenir, mais on gère par sécurité.
         setLinkSapConflict(result.candidates);
-        toast.error(result.message);
+        setShowLinkSapModal(false);
       } else {
         toast.success(`Facture rattachée à SAP — DocNum ${result.sapDocNum}`);
+        setShowLinkSapModal(false);
         await reloadInvoice();
       }
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Erreur lors du rattachement SAP');
+      setLinkSapError(err instanceof Error ? err.message : 'Erreur lors du rattachement SAP');
     } finally {
       setLinking(false);
     }
@@ -1881,7 +1978,17 @@ export default function InvoiceDetailPage() {
   }
 
   async function handleReParseLines() {
+    if (!id || !invoice) return;
+    if (isAnyLineManuallyModified(invoice.lines)) {
+      setShowReParseConfirm(true);
+      return;
+    }
+    await doReParseLines();
+  }
+
+  async function doReParseLines() {
     if (!id) return;
+    setShowReParseConfirm(false);
     setReParsing(true);
     try {
       const updated = await apiReParseLinesInvoice(id);
@@ -1964,7 +2071,11 @@ export default function InvoiceDetailPage() {
           <p className="page-subtitle">{invoice.docNumberPa}</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <StatusBadge status={invoice.status} />
+          <StatusBadge
+            status={invoice.status}
+            onClick={invoice.status === 'READY' ? () => setShowReturnToReview(true) : undefined}
+            title={invoice.status === 'READY' ? 'Repasser la facture en révision' : undefined}
+          />
           <Button
             variant="ghost"
             size="sm"
@@ -1985,12 +2096,12 @@ export default function InvoiceDetailPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => void handleLinkSap()}
+              onClick={openLinkSapModal}
               disabled={linking}
               title="Rattacher à une facture SAP créée manuellement (Voie B)"
             >
               <Link2 className="h-3.5 w-3.5 mr-1" />
-              {linking ? 'Recherche…' : 'Rattacher SAP'}
+              Rattacher SAP
             </Button>
           )}
           {['NEW', 'TO_REVIEW', 'READY'].includes(invoice.status) && (
@@ -2202,6 +2313,184 @@ export default function InvoiceDetailPage() {
                 className="bg-[#E67E22] text-white hover:bg-[#D35400]"
               >
                 {liftingLitige ? 'Levée en cours…' : 'Confirmer la levée'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Retour à réviser — modale de confirmation depuis le badge PRÊTE */}
+      {showReturnToReview && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dlg-retour-reviser-title"
+          >
+            <h2
+              id="dlg-retour-reviser-title"
+              className="flex items-center gap-2 font-display text-2xl uppercase tracking-[0.08em] text-foreground"
+            >
+              <Undo2 className="h-4 w-4 text-warning" /> Repasser en révision&nbsp;?
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Cette facture sera retirée de la bannette "Prêtes" et repassée en révision. Cette
+              action est réversible.
+            </p>
+            <textarea
+              className="app-textarea resize-none"
+              rows={3}
+              maxLength={500}
+              placeholder="Ex : montant à vérifier, ligne manquante…"
+              value={returnToReviewComment}
+              onChange={(e) => setReturnToReviewComment(e.target.value)}
+              disabled={returningToReview}
+              aria-label="Commentaire (facultatif)"
+            />
+            <p className="text-xs text-muted-foreground">Commentaire (facultatif)</p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setShowReturnToReview(false);
+                  setReturnToReviewComment('');
+                }}
+                disabled={returningToReview}
+              >
+                Annuler
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleReturnToReview()}
+                disabled={returningToReview}
+              >
+                {returningToReview ? 'Retour en cours…' : 'Confirmer'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Voie B — modale de saisie du DocNum SAP */}
+      {showLinkSapModal && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-panel max-w-md"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dlg-link-sap-title"
+          >
+            <h2
+              id="dlg-link-sap-title"
+              className="flex items-center gap-2 font-display text-2xl uppercase tracking-[0.08em] text-foreground"
+            >
+              <Link2 className="h-4 w-4" /> Rattacher à une facture SAP
+            </h2>
+            <div className="mt-2 space-y-1 text-sm text-muted-foreground">
+              <div>
+                Fournisseur SAP :{' '}
+                <span className="font-mono text-foreground">
+                  {invoice.supplierB1Cardcode ?? '—'}
+                </span>
+              </div>
+              <div>
+                N° document PA :{' '}
+                <span className="font-mono text-foreground">{invoice.docNumberPa}</span>
+              </div>
+            </div>
+            <div className="mt-4 space-y-2">
+              <label
+                htmlFor="link-sap-docnum"
+                className="block text-sm font-medium text-foreground"
+              >
+                DocNum SAP <span className="text-destructive">*</span>
+              </label>
+              <input
+                id="link-sap-docnum"
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                autoFocus
+                placeholder="Ex: 42"
+                value={linkSapDocNum}
+                onChange={(e) => {
+                  setLinkSapDocNum(e.target.value);
+                  if (linkSapError) setLinkSapError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !linking) {
+                    e.preventDefault();
+                    void handleLinkSap();
+                  }
+                }}
+                disabled={linking}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              {linkSapError && (
+                <div className="alert-error text-sm">
+                  <AlertCircle className="h-4 w-4" />
+                  {linkSapError}
+                </div>
+              )}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowLinkSapModal(false)}
+                disabled={linking}
+              >
+                Annuler
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleLinkSap()}
+                disabled={
+                  linking ||
+                  !linkSapDocNum.trim() ||
+                  !Number.isInteger(Number(linkSapDocNum)) ||
+                  Number(linkSapDocNum) <= 0
+                }
+              >
+                {linking ? 'Rattachement…' : 'Rattacher'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showReParseConfirm && (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-panel max-w-md"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dlg-reparse-confirm-title"
+          >
+            <h2
+              id="dlg-reparse-confirm-title"
+              className="flex items-center gap-2 font-display text-2xl uppercase tracking-[0.08em] text-foreground"
+            >
+              <AlertCircle className="h-4 w-4 text-warning" /> Ré-analyser le XML ?
+            </h2>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Des lignes ont été modifiées manuellement. Ré-analyser le XML effacera ces
+              modifications. Continuer ?
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowReParseConfirm(false)}
+                disabled={reParsing}
+              >
+                Annuler
+              </Button>
+              <Button size="sm" onClick={() => void doReParseLines()} disabled={reParsing}>
+                Ré-analyser quand même
               </Button>
             </div>
           </div>
@@ -2737,21 +3026,9 @@ export default function InvoiceDetailPage() {
                   </Button>
                 )}
 
-                {/* Série + brouillon */}
+                {/* Brouillon */}
                 {isEditable && (
                   <div className="space-y-2 border-t border-border/70 pt-2">
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                        Série SAP
-                      </label>
-                      <input
-                        className="app-input h-9 text-xs font-mono"
-                        value={sapSeries}
-                        onChange={(e) => setSapSeries(e.target.value)}
-                        placeholder="ex: S1"
-                        disabled={savingDraft}
-                      />
-                    </div>
                     <Button
                       variant="outline"
                       size="sm"

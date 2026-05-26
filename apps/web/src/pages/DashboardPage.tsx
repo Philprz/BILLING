@@ -51,6 +51,7 @@ const ACTION_LABELS: Record<string, string> = {
   CONFIG_CHANGE: 'Config.',
   INVOICE_LITIGE: 'Mise en litige',
   INVOICE_LITIGE_LEVE: 'Levée du litige',
+  INVOICE_RETOUR_A_REVISER: 'Retour en révision',
 };
 
 function DailyBarChart({ days }: { days: DailyStatDay[] }) {

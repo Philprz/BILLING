@@ -173,6 +173,10 @@ export function buildAuditSummary(input: AuditSummaryInput): string {
       const commentaire = readString(payloadAfter, 'commentaire');
       return commentaire ? `Levée du litige: ${commentaire}` : 'Levée du litige';
     }
+    case 'INVOICE_RETOUR_A_REVISER': {
+      const commentaire = readString(payloadAfter, 'commentaire');
+      return commentaire ? `Retour en révision: ${commentaire}` : 'Retour en révision';
+    }
     case 'LINK_SAP': {
       const sapDocNum = readNumber(payloadAfter, 'sapDocNum');
       const numAtCard = readString(payloadAfter, 'numAtCard');

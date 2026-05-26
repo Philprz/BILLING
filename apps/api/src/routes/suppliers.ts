@@ -11,7 +11,12 @@ import {
 interface CreateSupplierBody {
   cardCode: string;
   cardName: string;
+  /** N° TVA intracommunautaire (FR + 11 chiffres). */
   federalTaxId?: string;
+  /** SIRET 14 chiffres. */
+  licTradNum?: string;
+  /** Code de routage PA (Piste d'Audit Fiable) propre au fournisseur. */
+  routageCode?: string;
   vatRegNum?: string;
   street?: string;
   street2?: string;
@@ -22,6 +27,9 @@ interface CreateSupplierBody {
   phone?: string;
   invoiceId?: string;
 }
+
+const SIRET_RE = /^\d{14}$/;
+const FR_VAT_RE = /^FR[0-9A-Z]{2}\d{9}$/;
 
 function getRequestMeta(request: { ip: string; headers: Record<string, unknown> }) {
   return {
@@ -134,6 +142,8 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
             cardCode: { type: 'string', minLength: 1, maxLength: 15 },
             cardName: { type: 'string', minLength: 1, maxLength: 100 },
             federalTaxId: { type: 'string', maxLength: 32 },
+            licTradNum: { type: 'string', maxLength: 32 },
+            routageCode: { type: 'string', maxLength: 50 },
             vatRegNum: { type: 'string', maxLength: 32 },
             street: { type: 'string', maxLength: 200 },
             street2: { type: 'string', maxLength: 200 },
@@ -152,6 +162,8 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
         cardCode,
         cardName,
         federalTaxId,
+        licTradNum,
+        routageCode,
         vatRegNum,
         street,
         street2,
@@ -164,11 +176,54 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
       } = request.body;
       const { sapCookieHeader, sapUser } = request.sapSession!;
 
+      // Validation et warnings sur les 3 champs clés. Aucune valeur n'est inventée :
+      // si le format est invalide, on n'envoie pas le champ à SAP plutôt que de
+      // polluer la fiche fournisseur avec une valeur erronée.
+      const cleanLicTradNum = licTradNum?.trim() || undefined;
+      const cleanFederalTaxId = federalTaxId?.trim() || undefined;
+      const cleanRoutageCode = routageCode?.trim() || undefined;
+
+      let sapLicTradNum: string | undefined;
+      if (cleanLicTradNum) {
+        if (SIRET_RE.test(cleanLicTradNum)) {
+          sapLicTradNum = cleanLicTradNum;
+        } else {
+          request.log.warn(
+            `[BP-CREATE] LicTradNum ignoré pour CardCode ${cardCode} — format SIRET invalide (attendu 14 chiffres) : "${cleanLicTradNum}"`,
+          );
+        }
+      } else {
+        request.log.warn(
+          `[BP-CREATE] LicTradNum absent pour CardCode ${cardCode} — SIRET non extrait`,
+        );
+      }
+
+      let sapFederalTaxId: string | undefined;
+      if (cleanFederalTaxId) {
+        if (FR_VAT_RE.test(cleanFederalTaxId.toUpperCase())) {
+          sapFederalTaxId = cleanFederalTaxId.toUpperCase();
+        } else {
+          request.log.warn(
+            `[BP-CREATE] FederalTaxID ignoré pour CardCode ${cardCode} — format TVA intracom invalide (attendu FRxx + 9 chiffres) : "${cleanFederalTaxId}"`,
+          );
+        }
+      } else {
+        request.log.warn(
+          `[BP-CREATE] FederalTaxID absent pour CardCode ${cardCode} — TVA non extraite`,
+        );
+      }
+
+      if (!cleanRoutageCode) {
+        request.log.warn(`[BP-CREATE] Code de routage PA absent pour CardCode ${cardCode}`);
+      }
+
       try {
         const result = await createBusinessPartner(sapCookieHeader, {
           cardCode,
           cardName,
-          federalTaxId,
+          federalTaxId: sapFederalTaxId,
+          licTradNum: sapLicTradNum,
+          routageCode: cleanRoutageCode,
           vatRegNum,
           street,
           street2,
@@ -184,23 +239,29 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
           create: {
             cardcode: result.cardCode,
             cardname: cardName,
-            federaltaxid: federalTaxId ?? null,
+            federaltaxid: sapFederalTaxId ?? null,
             vatregnum: vatRegNum ?? null,
+            taxId0: sapLicTradNum ?? null,
+            pa_identifier: cleanRoutageCode ?? null,
             cardtype: 'cSupplier',
             validFor: true,
             rawPayload: {
               source: 'create-in-sap',
               cardCode: result.cardCode,
               cardName,
-              federalTaxId: federalTaxId ?? null,
+              federalTaxId: sapFederalTaxId ?? null,
+              licTradNum: sapLicTradNum ?? null,
+              routageCode: cleanRoutageCode ?? null,
               vatRegNum: vatRegNum ?? null,
             },
             lastSyncAt: new Date(),
           },
           update: {
             cardname: cardName,
-            federaltaxid: federalTaxId ?? null,
+            federaltaxid: sapFederalTaxId ?? null,
             vatregnum: vatRegNum ?? null,
+            taxId0: sapLicTradNum ?? null,
+            pa_identifier: cleanRoutageCode ?? null,
             cardtype: 'cSupplier',
             validFor: true,
             syncAt: new Date(),
@@ -217,7 +278,9 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
           payloadAfter: {
             cardCode: result.cardCode,
             cardName,
-            federalTaxId: federalTaxId ?? null,
+            federalTaxId: sapFederalTaxId ?? null,
+            licTradNum: sapLicTradNum ?? null,
+            routageCode: cleanRoutageCode ?? null,
             vatRegNum: vatRegNum ?? null,
             street: street ?? null,
             street2: street2 ?? null,
@@ -252,7 +315,9 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
           payloadAfter: {
             cardCode,
             cardName,
-            federalTaxId: federalTaxId ?? null,
+            federalTaxId: sapFederalTaxId ?? null,
+            licTradNum: sapLicTradNum ?? null,
+            routageCode: cleanRoutageCode ?? null,
             vatRegNum: vatRegNum ?? null,
           },
           ...getRequestMeta(request),

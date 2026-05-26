@@ -104,7 +104,9 @@ describe('supplier creation prefill data', () => {
       buildBusinessPartnerPayload({
         cardCode: 'F00042',
         cardName: 'ACME SERVICES',
-        federalTaxId: '12345678900012',
+        federalTaxId: 'FR12123456789',
+        licTradNum: '12345678900012',
+        routageCode: '12345678900012',
         street: '10 rue de la Paix',
         street2: 'Bâtiment A',
         postalCode: '75002',
@@ -117,7 +119,9 @@ describe('supplier creation prefill data', () => {
       CardCode: 'F00042',
       CardName: 'ACME SERVICES',
       CardType: 'cSupplier',
-      FederalTaxID: '12345678900012',
+      FederalTaxID: 'FR12123456789',
+      LicTradNum: '12345678900012',
+      U_PA_RoutageCode: '12345678900012',
       EmailAddress: 'contact@acme.test',
       Phone1: '+33123456789',
       BPAddresses: [
@@ -132,6 +136,17 @@ describe('supplier creation prefill data', () => {
         },
       ],
     });
+  });
+
+  it('omits LicTradNum and U_PA_RoutageCode when not provided', () => {
+    const payload = buildBusinessPartnerPayload({
+      cardCode: 'F00042',
+      cardName: 'ACME SERVICES',
+      federalTaxId: 'FR12123456789',
+    });
+    expect(payload).not.toHaveProperty('LicTradNum');
+    expect(payload).not.toHaveProperty('U_PA_RoutageCode');
+    expect(payload).toMatchObject({ FederalTaxID: 'FR12123456789' });
   });
 
   it('does not send an EU VAT number to SAP VATRegistrationNumber when SAP expects local format', () => {

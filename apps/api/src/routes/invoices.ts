@@ -14,6 +14,7 @@ import {
   createPurchaseDoc,
   createJournalEntry,
   findPurchaseInvoiceByNumAtCard,
+  findPurchaseInvoiceByDocNum,
   attachFileToExistingPurchaseInvoice,
   patchBusinessPartnerFiscal,
   SapSlError,
@@ -98,6 +99,10 @@ interface LitigeInvoiceBody {
 }
 
 interface LeverLitigeInvoiceBody {
+  commentaire?: string;
+}
+
+interface RetourAReviserInvoiceBody {
   commentaire?: string;
 }
 
@@ -739,14 +744,23 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       // la fiche BP automatiquement puis on rejoue la validation.
       const missingVatIssue = hardErrors.find((i) => i.code === 'MISSING_VAT_IDENTIFIER');
       const supplierExtracted = invoice.supplierExtracted as {
+        siret?: string | null;
         vatNumber?: string | null;
+        endpointId?: string | null;
       } | null;
       const autoVatNumber = supplierExtracted?.vatNumber?.trim() || null;
+      const autoSiret = supplierExtracted?.siret?.trim() || null;
+      const autoRoutageCode = supplierExtracted?.endpointId?.trim() || null;
 
       if (missingVatIssue && autoVatNumber && invoice.supplierB1Cardcode) {
         try {
+          // Puisqu'on patche déjà la fiche BP pour résoudre la TVA, on pousse
+          // dans la même opération SIRET (LicTradNum) et code de routage PA
+          // s'ils sont disponibles — évite un aller-retour supplémentaire.
           await patchBusinessPartnerFiscal(sapCookieHeader, invoice.supplierB1Cardcode, {
             federalTaxId: autoVatNumber,
+            ...(autoSiret ? { licTradNum: autoSiret } : {}),
+            ...(autoRoutageCode ? { routageCode: autoRoutageCode } : {}),
           });
 
           // Synchroniser le cache local pour que le matching fournisseur futur
@@ -755,7 +769,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           await prisma.supplierCache
             .update({
               where: { cardcode: invoice.supplierB1Cardcode },
-              data: { federaltaxid: autoVatNumber, syncAt: new Date() },
+              data: {
+                federaltaxid: autoVatNumber,
+                ...(autoSiret ? { taxId0: autoSiret } : {}),
+                ...(autoRoutageCode ? { pa_identifier: autoRoutageCode } : {}),
+                syncAt: new Date(),
+              },
             })
             .catch(() => {});
 
@@ -769,6 +788,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
               stage: 'AUTO_PUSH_SUPPLIER_FISCAL_OK',
               cardCode: invoice.supplierB1Cardcode,
               federalTaxId: autoVatNumber,
+              licTradNum: autoSiret,
+              routageCode: autoRoutageCode,
             },
             ...requestMeta,
           });
@@ -1232,12 +1253,15 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
   // Rattache une facture PA à une facture SAP B1 créée manuellement.
   //
   // Comportement :
-  //   1. Recherche la facture SAP via NumAtCard = docNumberPa
-  //   2. Si 0 candidat  → 404 avec message français
-  //   3. Si N candidats → 409 avec liste des candidats (pas de choix automatique)
-  //   4. Si 1 candidat  → upload PJ + PATCH + statut LINKED + audit LINK_SAP
+  //   - Si body.docNum est fourni → recherche directe par DocNum
+  //     (valide ensuite que le CardCode correspond au fournisseur attendu)
+  //   - Sinon → recherche via NumAtCard = docNumberPa
+  //     • 0 candidat  → 404
+  //     • N candidats → 409 avec liste des candidats
+  //     • 1 candidat  → rattachement
+  //   Dans les deux cas : upload PJ + PATCH + statut LINKED + audit LINK_SAP
   // ────────────────────────────────────────────────────────────────────────────
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string }; Body: { docNum?: number } }>(
     '/api/invoices/:id/link-sap',
     {
       preHandler: requireSession,
@@ -1247,10 +1271,18 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           required: ['id'],
           properties: { id: { type: 'string', format: 'uuid' } },
         },
+        body: {
+          type: 'object',
+          properties: {
+            docNum: { type: 'integer', minimum: 1 },
+          },
+          additionalProperties: false,
+        },
       },
     },
     async (request, reply) => {
       const { id } = request.params;
+      const manualDocNum = request.body?.docNum;
       const { sapCookieHeader, sapUser } = request.sapSession!;
       const requestMeta = getRequestMeta(request);
 
@@ -1273,51 +1305,95 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // ── 3. Recherche SAP par NumAtCard ────────────────────────────────────
-      let searchResult: Awaited<ReturnType<typeof findPurchaseInvoiceByNumAtCard>>;
-      try {
-        searchResult = await findPurchaseInvoiceByNumAtCard(
-          sapCookieHeader,
-          invoice.docNumberPa,
-          invoice.supplierB1Cardcode ?? undefined,
-        );
-      } catch (err) {
-        const message =
-          err instanceof SapSlError
-            ? err.sapDetail
-            : err instanceof Error
-              ? err.message
-              : String(err);
-        await createAuditLogBestEffort({
-          action: 'LINK_SAP',
-          entityType: 'INVOICE',
-          entityId: id,
-          sapUser,
-          outcome: 'ERROR',
-          errorMessage: message,
-          payloadBefore: { status: invoice.status },
-          payloadAfter: { stage: 'SAP_SEARCH_ERROR', numAtCard: invoice.docNumberPa },
-          ...requestMeta,
-        });
-        return reply.code(502).send({ success: false, error: message });
-      }
+      // ── 3. Recherche SAP — par DocNum (manuel) ou par NumAtCard (auto) ────
+      let sapInvoice: SapPurchaseInvoiceRef;
 
-      if (searchResult.found === 'none') {
-        return reply.code(404).send({
-          success: false,
-          error: `Aucune facture SAP trouvée avec le numéro de référence "${invoice.docNumberPa}". Vérifiez que la facture a bien été saisie dans SAP B1 avec ce numéro dans le champ Vendor Ref / NumAtCard.`,
-        });
-      }
+      if (manualDocNum !== undefined) {
+        let found: SapPurchaseInvoiceRef | null;
+        try {
+          found = await findPurchaseInvoiceByDocNum(sapCookieHeader, manualDocNum);
+        } catch (err) {
+          const message =
+            err instanceof SapSlError
+              ? err.sapDetail
+              : err instanceof Error
+                ? err.message
+                : String(err);
+          await createAuditLogBestEffort({
+            action: 'LINK_SAP',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: message,
+            payloadBefore: { status: invoice.status },
+            payloadAfter: { stage: 'SAP_SEARCH_ERROR', docNum: manualDocNum },
+            ...requestMeta,
+          });
+          return reply.code(502).send({ success: false, error: message });
+        }
 
-      if (searchResult.found === 'many') {
-        return reply.code(409).send({
-          success: false,
-          error: `${searchResult.invoices.length} factures SAP correspondent au numéro "${invoice.docNumberPa}". Rattachement automatique impossible — sélection manuelle requise.`,
-          data: { candidates: searchResult.invoices satisfies SapPurchaseInvoiceRef[] },
-        });
-      }
+        if (!found) {
+          return reply.code(404).send({
+            success: false,
+            error: `Aucune facture SAP trouvée avec le DocNum ${manualDocNum}.`,
+          });
+        }
 
-      const sapInvoice = searchResult.invoice;
+        if (invoice.supplierB1Cardcode && found.cardCode !== invoice.supplierB1Cardcode) {
+          return reply.code(422).send({
+            success: false,
+            error: `La facture SAP DocNum ${manualDocNum} appartient au fournisseur ${found.cardCode} (attendu : ${invoice.supplierB1Cardcode}).`,
+          });
+        }
+
+        sapInvoice = found;
+      } else {
+        let searchResult: Awaited<ReturnType<typeof findPurchaseInvoiceByNumAtCard>>;
+        try {
+          searchResult = await findPurchaseInvoiceByNumAtCard(
+            sapCookieHeader,
+            invoice.docNumberPa,
+            invoice.supplierB1Cardcode ?? undefined,
+          );
+        } catch (err) {
+          const message =
+            err instanceof SapSlError
+              ? err.sapDetail
+              : err instanceof Error
+                ? err.message
+                : String(err);
+          await createAuditLogBestEffort({
+            action: 'LINK_SAP',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: message,
+            payloadBefore: { status: invoice.status },
+            payloadAfter: { stage: 'SAP_SEARCH_ERROR', numAtCard: invoice.docNumberPa },
+            ...requestMeta,
+          });
+          return reply.code(502).send({ success: false, error: message });
+        }
+
+        if (searchResult.found === 'none') {
+          return reply.code(404).send({
+            success: false,
+            error: `Aucune facture SAP trouvée avec le numéro de référence "${invoice.docNumberPa}". Vérifiez que la facture a bien été saisie dans SAP B1 avec ce numéro dans le champ Vendor Ref / NumAtCard.`,
+          });
+        }
+
+        if (searchResult.found === 'many') {
+          return reply.code(409).send({
+            success: false,
+            error: `${searchResult.invoices.length} factures SAP correspondent au numéro "${invoice.docNumberPa}". Rattachement automatique impossible — sélection manuelle requise.`,
+            data: { candidates: searchResult.invoices satisfies SapPurchaseInvoiceRef[] },
+          });
+        }
+
+        sapInvoice = searchResult.invoice;
+      }
 
       // ── 4. Upload pièce jointe sur la facture SAP existante ───────────────
       // Priorité : XML > PDF > premier fichier disponible
@@ -1373,7 +1449,10 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           sapDocNum: sapInvoice.docNum,
           sapAttachmentEntry,
           sapAttachmentUploadedAt: sapAttachmentEntry !== null ? now : null,
-          statusReason: 'Facture SAP existante rattachée via NumAtCard',
+          statusReason:
+            manualDocNum !== undefined
+              ? `Facture SAP existante rattachée manuellement (DocNum ${sapInvoice.docNum})`
+              : 'Facture SAP existante rattachée via NumAtCard',
         },
       });
 
@@ -1387,6 +1466,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         payloadBefore: { status: invoice.status },
         payloadAfter: {
           status: 'LINKED',
+          mode: manualDocNum !== undefined ? 'MANUAL_DOCNUM' : 'AUTO_NUMATCARD',
           numAtCard: invoice.docNumberPa,
           sapDocEntry: sapInvoice.docEntry,
           sapDocNum: sapInvoice.docNum,
@@ -1722,7 +1802,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
   // PATCH /api/invoices/:id/draft
   // Sauvegarde les préférences d'intégration sans changer le statut (brouillon).
   // ────────────────────────────────────────────────────────────────────────────
-  app.patch<{ Params: { id: string }; Body: { integrationMode?: string; sapSeries?: string } }>(
+  app.patch<{ Params: { id: string }; Body: { integrationMode?: string } }>(
     '/api/invoices/:id/draft',
     {
       preHandler: requireSession,
@@ -1736,7 +1816,6 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           type: 'object',
           properties: {
             integrationMode: { type: 'string', enum: ['SERVICE_INVOICE', 'JOURNAL_ENTRY'] },
-            sapSeries: { type: ['string', 'null'], maxLength: 20 },
           },
         },
       },
@@ -2135,6 +2214,68 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/:id/retour-a-reviser
+  // Rétrograde une facture READY vers TO_REVIEW (commentaire facultatif).
+  // Action métier purement applicative — pas d'écriture SAP, pas de notif PA.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Params: { id: string }; Body: RetourAReviserInvoiceBody }>(
+    '/api/invoices/:id/retour-a-reviser',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            commentaire: { type: 'string', maxLength: 500 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const commentaire = (request.body?.commentaire ?? '').trim();
+      const { sapUser } = request.sapSession!;
+      const requestMeta = getRequestMeta(request);
+
+      const invoice = await prisma.invoice.findUnique({ where: { id } });
+      if (!invoice) {
+        return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      }
+
+      if (invoice.status !== 'READY') {
+        return reply.code(409).send({
+          success: false,
+          error: "La facture n'est pas en statut prete",
+        });
+      }
+
+      await prisma.invoice.update({
+        where: { id },
+        data: { status: 'TO_REVIEW' },
+      });
+
+      await createAuditLog({
+        action: 'INVOICE_RETOUR_A_REVISER',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadBefore: { status: 'READY' },
+        payloadAfter: { status: 'TO_REVIEW', commentaire: commentaire || null },
+        ...requestMeta,
+      });
+
+      const refreshed = await findInvoiceById(id);
+      return reply.send({ success: true, data: refreshed });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
   // POST /api/invoices/:id/send-status
   // Envoie le statut de la facture vers la PA.
   // Statuts valides : POSTED (→ VALIDATED) ou REJECTED (→ REJECTED)
@@ -2438,21 +2579,26 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         siret?: string | null;
         siren?: string | null;
         vatNumber?: string | null;
+        endpointId?: string | null;
       } | null;
 
       const federalTaxId = extracted?.vatNumber?.trim() || null;
+      const licTradNum = extracted?.siret?.trim() || null;
+      const routageCode = extracted?.endpointId?.trim() || null;
 
-      if (!federalTaxId) {
+      if (!federalTaxId && !licTradNum && !routageCode) {
         return reply.code(422).send({
           success: false,
           error:
-            'La facture ne contient pas de numéro de TVA intracommunautaire à pousser vers SAP B1. Le SIRET/SIREN doit être saisi manuellement dans la fiche fournisseur SAP B1.',
+            'La facture ne contient ni TVA intracommunautaire, ni SIRET, ni code de routage PA à pousser vers SAP B1.',
         });
       }
 
       try {
         await patchBusinessPartnerFiscal(sapCookieHeader, invoice.supplierB1Cardcode, {
-          federalTaxId,
+          ...(federalTaxId ? { federalTaxId } : {}),
+          ...(licTradNum ? { licTradNum } : {}),
+          ...(routageCode ? { routageCode } : {}),
         });
       } catch (err) {
         const message =
@@ -2484,7 +2630,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       await prisma.supplierCache
         .update({
           where: { cardcode: invoice.supplierB1Cardcode },
-          data: { syncAt: new Date() },
+          data: {
+            ...(federalTaxId ? { federaltaxid: federalTaxId } : {}),
+            ...(licTradNum ? { taxId0: licTradNum } : {}),
+            ...(routageCode ? { pa_identifier: routageCode } : {}),
+            syncAt: new Date(),
+          },
         })
         .catch(() => {}); // cache best-effort
 
@@ -2498,6 +2649,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           stage: 'PUSH_SUPPLIER_FISCAL_OK',
           cardCode: invoice.supplierB1Cardcode,
           federalTaxId,
+          licTradNum,
+          routageCode,
         },
         ...getRequestMeta(request),
       });
@@ -2506,8 +2659,9 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         success: true,
         data: {
           cardCode: invoice.supplierB1Cardcode,
-          taxId0: null,
+          taxId0: licTradNum,
           federalTaxId,
+          routageCode,
         },
       });
     },

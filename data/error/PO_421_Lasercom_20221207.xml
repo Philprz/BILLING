@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Commande SAP B1 DocNum 421 — générée pour démonstration NOVA PA (rattachement facture) -->
+<Order xmlns="urn:oasis:names:specification:ubl:schema:xsd:Order-2"
+       xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+
+  <cbc:CustomizationID>urn:fdc:peppol.eu:poacc:trns:order:3</cbc:CustomizationID>
+  <cbc:ProfileID>urn:fdc:peppol.eu:poacc:bis:ordering:3</cbc:ProfileID>
+  <cbc:ID>421</cbc:ID>
+  <cbc:IssueDate>2022-12-07</cbc:IssueDate>
+  <cbc:OrderTypeCode>220</cbc:OrderTypeCode>
+  <cbc:Note>Statut: Open (En attente). Acheteur: Pierre BOUL. Gestionnaire: DUCHAUSOIS, André.</cbc:Note>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cbc:AccountingCostCode>SAP-B1-421</cbc:AccountingCostCode>
+
+  <cac:BuyerCustomerParty>
+    <cac:Party>
+      <cac:PartyName>
+        <cbc:Name>Pierre BOUL</cbc:Name>
+      </cac:PartyName>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>Pierre BOUL</cbc:RegistrationName>
+      </cac:PartyLegalEntity>
+      <cac:Contact>
+        <cbc:Name>DUCHAUSOIS, André</cbc:Name>
+      </cac:Contact>
+    </cac:Party>
+  </cac:BuyerCustomerParty>
+
+  <cac:SellerSupplierParty>
+    <cac:Party>
+      <cac:PartyIdentification>
+        <cbc:ID>V20000</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyName>
+        <cbc:Name>Lasercom</cbc:Name>
+      </cac:PartyName>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>Lasercom</cbc:RegistrationName>
+      </cac:PartyLegalEntity>
+      <cac:Contact>
+        <cbc:Name>Julien SAUVEUR</cbc:Name>
+      </cac:Contact>
+    </cac:Party>
+  </cac:SellerSupplierParty>
+
+  <cac:Delivery>
+    <cac:RequestedDeliveryPeriod>
+      <cbc:StartDate>2022-12-07</cbc:StartDate>
+      <cbc:EndDate>2022-12-07</cbc:EndDate>
+    </cac:RequestedDeliveryPeriod>
+    <cbc:DeliveryDate>2022-12-07</cbc:DeliveryDate>
+  </cac:Delivery>
+
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">294.00</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">1500.00</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">294.00</cbc:TaxAmount>
+      <cbc:Percent>19.60</cbc:Percent>
+      <cac:TaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>19.60</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>D4</cbc:ID>
+          <cbc:Name>VAT</cbc:Name>
+        </cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+
+  <cac:AnticipatedMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="EUR">1500.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">1500.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">1794.00</cbc:TaxInclusiveAmount>
+    <cbc:AllowanceTotalAmount currencyID="EUR">0.00</cbc:AllowanceTotalAmount>
+    <cbc:ChargeTotalAmount currencyID="EUR">0.00</cbc:ChargeTotalAmount>
+    <cbc:PayableAmount currencyID="EUR">1794.00</cbc:PayableAmount>
+  </cac:AnticipatedMonetaryTotal>
+
+  <cac:OrderLine>
+    <cac:LineItem>
+      <cbc:ID>1</cbc:ID>
+      <cbc:Quantity unitCode="C62">10</cbc:Quantity>
+      <cbc:LineExtensionAmount currencyID="EUR">1500.00</cbc:LineExtensionAmount>
+      <cbc:TotalTaxAmount currencyID="EUR">294.00</cbc:TotalTaxAmount>
+      <cac:Price>
+        <cbc:PriceAmount currencyID="EUR">150.00</cbc:PriceAmount>
+        <cbc:BaseQuantity unitCode="C62">1</cbc:BaseQuantity>
+      </cac:Price>
+      <cac:Item>
+        <cbc:Description>Carte mère P4 Turbo</cbc:Description>
+        <cbc:Name>Carte mère P4 Turbo</cbc:Name>
+        <cac:SellersItemIdentification>
+          <cbc:ID>C00002</cbc:ID>
+        </cac:SellersItemIdentification>
+        <cac:ClassifiedTaxCategory>
+          <cbc:ID>S</cbc:ID>
+          <cbc:Percent>19.60</cbc:Percent>
+          <cac:TaxScheme>
+            <cbc:ID>D4</cbc:ID>
+            <cbc:Name>VAT</cbc:Name>
+          </cac:TaxScheme>
+        </cac:ClassifiedTaxCategory>
+      </cac:Item>
+    </cac:LineItem>
+  </cac:OrderLine>
+
+</Order>

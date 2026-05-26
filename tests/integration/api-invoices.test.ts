@@ -114,6 +114,86 @@ describe.sequential('API invoice integration', () => {
     expect(audit?.outcome).toBe('OK');
   });
 
+  it('refuses retour-a-reviser when the invoice is not in READY status', async () => {
+    const invoiceId = await createTestInvoice({ status: 'TO_REVIEW', paSource: 'TEST_INT' });
+    createdIds.push(invoiceId);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/invoices/${invoiceId}/retour-a-reviser`,
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toBe("La facture n'est pas en statut prete");
+
+    const invoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+    expect(invoice.status).toBe('TO_REVIEW');
+  });
+
+  it('returns a READY invoice to TO_REVIEW without comment', async () => {
+    const invoiceId = await createTestInvoice({ status: 'READY', paSource: 'TEST_INT' });
+    createdIds.push(invoiceId);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/invoices/${invoiceId}/retour-a-reviser`,
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const invoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+    expect(invoice.status).toBe('TO_REVIEW');
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entityId: invoiceId, action: 'INVOICE_RETOUR_A_REVISER' },
+      orderBy: { occurredAt: 'desc' },
+    });
+    expect(audit?.outcome).toBe('OK');
+    expect((audit?.payloadAfter as { commentaire: string | null } | null)?.commentaire).toBeNull();
+  });
+
+  it('returns a READY invoice to TO_REVIEW and stores the comment in the audit log', async () => {
+    const invoiceId = await createTestInvoice({ status: 'READY', paSource: 'TEST_INT' });
+    createdIds.push(invoiceId);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/invoices/${invoiceId}/retour-a-reviser`,
+      headers: {
+        cookie: cookieHeader,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+      },
+      payload: { commentaire: 'Montant à vérifier sur la ligne 2' },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    const invoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+    expect(invoice.status).toBe('TO_REVIEW');
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { entityId: invoiceId, action: 'INVOICE_RETOUR_A_REVISER' },
+      orderBy: { occurredAt: 'desc' },
+    });
+    expect(audit?.outcome).toBe('OK');
+    expect((audit?.payloadAfter as { commentaire: string | null } | null)?.commentaire).toBe(
+      'Montant à vérifier sur la ligne 2',
+    );
+  });
+
   it('posts a READY invoice in simulate mode and then sends PA status manually', async () => {
     const invoiceId = await createTestInvoice({ status: 'READY', paSource: 'TEST_INT' });
     createdIds.push(invoiceId);

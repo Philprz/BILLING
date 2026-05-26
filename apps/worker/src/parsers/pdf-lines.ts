@@ -116,7 +116,8 @@ function tryParseRawLine(raw: string): RawLine | null {
   const rateMatch = beforePct.match(/((?:[1-9]\d?|0)(?:[.,]\d)?)$/);
   if (!rateMatch) return null;
   const taxRate = parseDecimal(rateMatch[1]);
-  if (taxRate <= 0 || taxRate > 30) return null;
+  // 0 % accepté : lignes exonérées (banque, formation, export…) sont fréquentes.
+  if (taxRate < 0 || taxRate > 30) return null;
 
   const beforeRate = beforePct.slice(0, -rateMatch[1].length);
 

@@ -55,6 +55,44 @@ describe('matchSupplier', () => {
     expect(result!.matchMethod).toContain('SIRET/SIREN');
   });
 
+  // ── Matching partiel par SIREN dérivé (confidence 92) ────────────────────
+
+  it('derives SIREN from FR VAT to match candidate stored with SIRET (confidence 92)', () => {
+    // Cas réel : fournisseur connu côté SAP par son SIRET, mais le PDF n'expose
+    // que le n° TVA FR90130004955 (FR + 2 clés + SIREN 130004955).
+    const local = [
+      candidate({
+        cardcode: 'FXX',
+        cardname: 'TRESORERIE DES IMPOTS',
+        taxId0: '13000495500015',
+      }),
+    ];
+    const result = matchSupplier('FR90130004955', 'TRESORERIE', local);
+    expect(result?.cardcode).toBe('FXX');
+    expect(result?.confidence).toBe(92);
+    expect(result!.matchMethod).toContain('SIREN dérivé du n° TVA');
+  });
+
+  it('derives SIREN from candidate SIRET to match PA SIREN-only', () => {
+    const local = [candidate({ cardcode: 'FYY', cardname: 'Acme', taxId0: '13000495500015' })];
+    const result = matchSupplier('130004955', 'Acme', local);
+    expect(result?.cardcode).toBe('FYY');
+    expect(result?.confidence).toBe(92);
+  });
+
+  it('SIRET 14 exact still wins (100) over SIREN partial', () => {
+    const local = [candidate({ cardcode: 'FZZ', cardname: 'Acme', taxId0: '13000495500015' })];
+    const result = matchSupplier('13000495500015', 'Acme', local);
+    expect(result?.confidence).toBe(100);
+  });
+
+  it('PA identifier in VAT format with no matching SIREN does NOT match wrong supplier', () => {
+    const local = [
+      candidate({ cardcode: 'FAA', cardname: 'Autre Société', taxId0: '99999999900012' }),
+    ];
+    expect(matchSupplier('FR90130004955', 'Trésorerie', local)).toBeNull();
+  });
+
   // ── Priority 3 — nom exact normalisé (confidence 85) ─────────────────────
 
   it('matches by exact normalized name with confidence 85', () => {

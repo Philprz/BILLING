@@ -279,13 +279,18 @@ export async function createPurchaseDoc(
 
 export interface SapBpFiscalPatch {
   federalTaxId?: string | null;
+  licTradNum?: string | null;
+  routageCode?: string | null;
 }
 
 /**
- * PATCH un fournisseur SAP B1 pour mettre à jour le numéro de TVA intracommunautaire.
- * FederalTaxID = TVA intracommunautaire (FR...)
- * Note: TaxId0 ("N° identification entreprise" / SIRET) n'est pas exposé en écriture
- * dans cette instance SAP B1 — à saisir manuellement dans la fiche fournisseur.
+ * PATCH un fournisseur SAP B1 pour mettre à jour les identifiants fiscaux et
+ * de routage PA :
+ *   - FederalTaxID         = TVA intracommunautaire (FR...)
+ *   - LicTradNum           = SIRET (14 chiffres)
+ *   - U_PA_RoutageCode     = code de routage Piste d'Audit Fiable (UDF OCRD)
+ *
+ * Les champs absents de `fields` ne sont pas écrasés.
  */
 export async function patchBusinessPartnerFiscal(
   sapSessionCookie: string,
@@ -294,6 +299,8 @@ export async function patchBusinessPartnerFiscal(
 ): Promise<void> {
   const body: Record<string, unknown> = {};
   if (fields.federalTaxId !== undefined) body.FederalTaxID = fields.federalTaxId ?? '';
+  if (fields.licTradNum !== undefined) body.LicTradNum = fields.licTradNum ?? '';
+  if (fields.routageCode !== undefined) body.U_PA_RoutageCode = fields.routageCode ?? '';
 
   if (Object.keys(body).length === 0) return;
 
@@ -332,7 +339,12 @@ export async function patchBusinessPartnerFiscal(
 export interface SapBpCreatePayload {
   cardCode: string;
   cardName: string;
+  /** N° TVA intracommunautaire (FR + 11 chiffres) → SAP `FederalTaxID`. */
   federalTaxId?: string;
+  /** SIRET 14 chiffres → SAP `LicTradNum`. */
+  licTradNum?: string;
+  /** Code de routage PA (Piste d'Audit Fiable) → UDF `U_PA_RoutageCode` (OCRD). */
+  routageCode?: string;
   vatRegNum?: string;
   street?: string;
   street2?: string;
@@ -357,6 +369,8 @@ export function buildBusinessPartnerPayload(bp: SapBpCreatePayload): Record<stri
     CardName: bp.cardName,
     CardType: 'cSupplier',
     ...(bp.federalTaxId ? { FederalTaxID: bp.federalTaxId } : {}),
+    ...(bp.licTradNum ? { LicTradNum: bp.licTradNum } : {}),
+    ...(bp.routageCode ? { U_PA_RoutageCode: bp.routageCode } : {}),
     ...(vatRegistrationNumber ? { VATRegistrationNumber: vatRegistrationNumber } : {}),
     ...(bp.email ? { EmailAddress: bp.email } : {}),
     ...(bp.phone ? { Phone1: bp.phone } : {}),
@@ -542,6 +556,59 @@ export async function findPurchaseInvoiceByNumAtCard(
   if (mapped.length === 0) return { found: 'none' };
   if (mapped.length === 1) return { found: 'one', invoice: mapped[0] };
   return { found: 'many', invoices: mapped };
+}
+
+/**
+ * Recherche une PurchaseInvoice SAP B1 par DocNum (numéro visible dans l'UI SAP).
+ * DocNum n'est pas la clé primaire du document (DocEntry l'est), donc on passe
+ * par $filter pour la recherche.
+ *
+ * Retourne la facture trouvée ou null si aucune correspondance.
+ */
+export async function findPurchaseInvoiceByDocNum(
+  sapSessionCookie: string,
+  docNum: number,
+): Promise<SapPurchaseInvoiceRef | null> {
+  const filter = `DocNum eq ${docNum}`;
+  const select = 'DocEntry,DocNum,CardCode,CardName,NumAtCard,DocDate,DocTotal,AttachmentEntry';
+  const url = `${SAP_BASE_URL}/PurchaseInvoices?$select=${select}&$filter=${encodeURIComponent(filter)}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Cookie: normalizeSapCookieHeader(sapSessionCookie) },
+    });
+  } catch (err) {
+    throw new SapSlError(`SAP injoignable lors de la recherche DocNum : ${String(err)}`, 0, 502);
+  }
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError('recherche DocNum');
+    const { code, message } = parseSapError(body);
+    throw new SapSlError(
+      `Erreur SAP recherche DocNum : ${message}`,
+      code,
+      response.status >= 400 ? 422 : 502,
+    );
+  }
+
+  const items = ((body as Record<string, unknown>).value ?? []) as Record<string, unknown>[];
+  if (items.length === 0) return null;
+  const item = items[0];
+  return {
+    docEntry: item.DocEntry as number,
+    docNum: item.DocNum as number,
+    cardCode: item.CardCode as string,
+    cardName: item.CardName as string,
+    numAtCard: (item.NumAtCard as string) ?? '',
+    docDate: item.DocDate as string,
+    docTotal: item.DocTotal as number,
+    attachmentEntry:
+      typeof item.AttachmentEntry === 'number' && item.AttachmentEntry > 0
+        ? (item.AttachmentEntry as number)
+        : null,
+  };
 }
 
 // ─── Voie B : pièce jointe sur facture SAP existante ─────────────────────────

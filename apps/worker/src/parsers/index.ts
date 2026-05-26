@@ -88,6 +88,27 @@ async function parsePdf(absolutePath: string): Promise<ParsedInvoice> {
   const fields = extractInvoiceFields(extraction.rawText);
   const linesResult = extractInvoiceLines(extraction.rawText);
 
+  // Validation forme identifiant fournisseur : SIRET 14 chiffres, SIREN 9
+  // chiffres, ou n° TVA FR (FR + 11 chiffres). Hors de ces formats, le
+  // matching côté SAP B1 sera dégradé — on le signale plutôt que de laisser
+  // l'opérateur deviner pourquoi le score plafonne à 85 %.
+  if (fields.supplierPaIdentifier) {
+    const id = fields.supplierPaIdentifier;
+    const validShape =
+      /^\d{14}$/.test(id) || /^\d{9}$/.test(id) || /^FR\d{11}$/i.test(id.replace(/\s/g, ''));
+    if (!validShape) {
+      log(
+        'WARN',
+        `[${filename}] pdf.supplier.idFormat invalide "${id}" — ni SIRET 14, ni SIREN 9, ni TVA FR+11 ; matching SAP dégradé`,
+      );
+    }
+  } else {
+    log(
+      'WARN',
+      `[${filename}] pdf.supplier.idAbsent — aucun identifiant fiscal extrait du bloc FOURNISSEUR (matching par nom uniquement)`,
+    );
+  }
+
   // Validation croisée : si la somme des HT s'écarte du total déclaré de plus
   // de 1 % (et au moins 0.05 €), on rejette les lignes — préférable à des
   // lignes incohérentes qui empêcheraient l'auto-post SAP.

@@ -1,4 +1,4 @@
-import { apiFetch } from './client';
+import { apiFetch, getCsrfToken } from './client';
 import type {
   InvoiceSummary,
   InvoiceDetail,
@@ -111,6 +111,17 @@ export async function apiLiftDispute(
   });
 }
 
+export async function apiReturnToReview(
+  id: string,
+  commentaire?: string,
+): Promise<import('./types').InvoiceDetail> {
+  return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/retour-a-reviser`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(commentaire ? { commentaire } : {}),
+  });
+}
+
 export interface SendStatusResult {
   paStatusSentAt: string;
   outcome: 'VALIDATED' | 'REJECTED';
@@ -196,7 +207,7 @@ export async function apiResolveTaxCode(
 
 export async function apiSaveDraft(
   id: string,
-  data: { integrationMode?: string; sapSeries?: string },
+  data: { integrationMode?: string },
 ): Promise<import('./types').InvoiceDetail> {
   return apiFetch<import('./types').InvoiceDetail>(`/api/invoices/${id}/draft`, {
     method: 'PATCH',
@@ -221,6 +232,7 @@ export interface PushSupplierFiscalResult {
   cardCode: string;
   taxId0: string | null;
   federalTaxId: string | null;
+  routageCode?: string | null;
 }
 
 export async function apiPushSupplierFiscal(id: string): Promise<PushSupplierFiscalResult> {
@@ -287,9 +299,20 @@ export type LinkSapConflictResult = {
   message: string;
 };
 
-export async function apiLinkSap(id: string): Promise<LinkSapOkResult | LinkSapConflictResult> {
+export async function apiLinkSap(
+  id: string,
+  options?: { docNum?: number },
+): Promise<LinkSapOkResult | LinkSapConflictResult> {
   // Gestion manuelle des codes HTTP 404 / 409 pour exposer les candidats
-  const res = await fetch(`/api/invoices/${id}/link-sap`, { method: 'POST' });
+  const res = await fetch(`/api/invoices/${id}/link-sap`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'X-CSRF-Token': getCsrfToken(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(options?.docNum !== undefined ? { docNum: options.docNum } : {}),
+  });
 
   if (res.status === 409) {
     const body = (await res.json()) as {

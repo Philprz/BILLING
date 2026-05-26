@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Facture fournisseur — référence commande SAP B1 DocNum 421
+  Fournisseur : Lasercom (V20000)
+  Générée pour démonstration NOVA PA (rattachement facture ↔ commande/réception)
+  Format : UBL 2.1 / EN16931 / Peppol BIS Billing 3.0 / CIUS-FR
+-->
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+ 
+  <!-- ══════════════════════════════════════════════
+       EN-TÊTE
+  ══════════════════════════════════════════════ -->
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0</cbc:CustomizationID>
+  <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
+ 
+  <!-- Numéro de facture fournisseur (ici calé sur le DocNum SAP pour la démo) -->
+  <cbc:ID>FINV-421-V2</cbc:ID>
+  <cbc:IssueDate>2022-12-07</cbc:IssueDate>
+  <cbc:DueDate>2022-12-07</cbc:DueDate>
+ 
+  <!-- 380 = Facture commerciale (code UN/EDIFACT) -->
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+ 
+  <cbc:Note>Facture relative à la commande SAP B1 n°421. Contact acheteur : Pierre BOUL. Gestionnaire : DUCHAUSOIS, André.</cbc:Note>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cbc:BuyerReference>PO-421</cbc:BuyerReference>
+ 
+  <!-- ══════════════════════════════════════════════
+       RÉFÉRENCE À LA COMMANDE D'ACHAT (PO 421)
+       C'est cet élément qui permet le rattachement
+  ══════════════════════════════════════════════ -->
+  <cac:OrderReference>
+    <cbc:ID>421</cbc:ID>
+  </cac:OrderReference>
+ 
+  <!-- ══════════════════════════════════════════════
+       FOURNISSEUR (AccountingSupplierParty)
+  ══════════════════════════════════════════════ -->
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cac:PartyIdentification>
+        <!-- CardCode SAP -->
+        <cbc:ID schemeID="SAP-CardCode">V20000</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyName>
+        <cbc:Name>Lasercom</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:CountrySubentity>FR</cbc:CountrySubentity>
+        <cac:Country>
+          <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>FR00000000000</cbc:CompanyID>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>Lasercom</cbc:RegistrationName>
+      </cac:PartyLegalEntity>
+      <cac:Contact>
+        <cbc:Name>Julien SAUVEUR</cbc:Name>
+      </cac:Contact>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+ 
+  <!-- ══════════════════════════════════════════════
+       CLIENT / ACHETEUR (AccountingCustomerParty)
+  ══════════════════════════════════════════════ -->
+  <cac:AccountingCustomerParty>
+    <cac:Party>
+      <cac:PartyName>
+        <cbc:Name>SBODemoFR</cbc:Name>
+      </cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:CountrySubentity>FR</cbc:CountrySubentity>
+        <cac:Country>
+          <cbc:IdentificationCode>FR</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>FR00000000001</cbc:CompanyID>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>SBODemoFR</cbc:RegistrationName>
+      </cac:PartyLegalEntity>
+      <cac:Contact>
+        <cbc:Name>Pierre BOUL</cbc:Name>
+      </cac:Contact>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+ 
+  <!-- ══════════════════════════════════════════════
+       LIVRAISON
+  ══════════════════════════════════════════════ -->
+  <cac:Delivery>
+    <cbc:ActualDeliveryDate>2022-12-07</cbc:ActualDeliveryDate>
+  </cac:Delivery>
+ 
+  <!-- ══════════════════════════════════════════════
+       CONDITIONS DE PAIEMENT
+  ══════════════════════════════════════════════ -->
+  <cac:PaymentTerms>
+    <cbc:Note>Paiement à réception</cbc:Note>
+  </cac:PaymentTerms>
+ 
+  <!-- ══════════════════════════════════════════════
+       TOTAL TVA
+       Code SAP D4 → catégorie UBL "S" (Standard rate)
+       Taux : 20.00 % (TVA FR taux normal)
+  ══════════════════════════════════════════════ -->
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">300.00</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">1500.00</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">300.00</cbc:TaxAmount>
+      <cac:TaxCategory>
+        <!-- S = Standard rate (EN16931) -->
+        <cbc:ID>S</cbc:ID>
+        <!-- Note : D4 est le code interne SAP B1 correspondant à ce taux -->
+        <cbc:Percent>20.00</cbc:Percent>
+        <cac:TaxScheme>
+          <!-- Valeur fixe obligatoire EN16931 -->
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+ 
+  <!-- ══════════════════════════════════════════════
+       TOTAUX MONÉTAIRES
+  ══════════════════════════════════════════════ -->
+  <cac:LegalMonetaryTotal>
+    <!-- Somme des montants HT des lignes -->
+    <cbc:LineExtensionAmount currencyID="EUR">1500.00</cbc:LineExtensionAmount>
+    <!-- Base taxable (HT après remises/frais) -->
+    <cbc:TaxExclusiveAmount currencyID="EUR">1500.00</cbc:TaxExclusiveAmount>
+    <!-- Montant TTC -->
+    <cbc:TaxInclusiveAmount currencyID="EUR">1800.00</cbc:TaxInclusiveAmount>
+    <!-- Remise globale : aucune -->
+    <cbc:AllowanceTotalAmount currencyID="EUR">0.00</cbc:AllowanceTotalAmount>
+    <!-- Frais globaux : aucun -->
+    <cbc:ChargeTotalAmount currencyID="EUR">0.00</cbc:ChargeTotalAmount>
+    <!-- Montant à payer -->
+    <cbc:PayableAmount currencyID="EUR">1800.00</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+ 
+  <!-- ══════════════════════════════════════════════
+       LIGNE DE FACTURE
+  ══════════════════════════════════════════════ -->
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">10</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">1500.00</cbc:LineExtensionAmount>
+ 
+    <!-- Référence à la ligne de commande SAP (OrderLineReference) -->
+    <cac:OrderLineReference>
+      <cbc:LineID>1</cbc:LineID>
+    </cac:OrderLineReference>
+ 
+    <!-- TVA de la ligne -->
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="EUR">300.00</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="EUR">1500.00</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="EUR">300.00</cbc:TaxAmount>
+        <cac:TaxCategory>
+          <cbc:ID>S</cbc:ID>
+          <cbc:Percent>20.00</cbc:Percent>
+          <cac:TaxScheme>
+            <cbc:ID>VAT</cbc:ID>
+          </cac:TaxScheme>
+        </cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+ 
+    <!-- Article -->
+    <cac:Item>
+      <cbc:Description>Carte mère P4 Turbo</cbc:Description>
+      <cbc:Name>Carte mère P4 Turbo</cbc:Name>
+      <cac:SellersItemIdentification>
+        <!-- Code article SAP -->
+        <cbc:ID>C00002</cbc:ID>
+      </cac:SellersItemIdentification>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>S</cbc:ID>
+        <cbc:Percent>20.00</cbc:Percent>
+        <cac:TaxScheme>
+          <cbc:ID>VAT</cbc:ID>
+        </cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+ 
+    <!-- Prix unitaire HT -->
+    <cac:Price>
+      <cbc:PriceAmount currencyID="EUR">150.00</cbc:PriceAmount>
+      <cbc:BaseQuantity unitCode="C62">1</cbc:BaseQuantity>
+    </cac:Price>
+ 
+  </cac:InvoiceLine>
+ 
+</Invoice>

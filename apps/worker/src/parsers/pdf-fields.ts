@@ -51,6 +51,20 @@ function toIsoDate(raw: string): string | null {
   return null;
 }
 
+/**
+ * Délimite le bloc FOURNISSEUR pour scoper les recherches d'identifiants
+ * fiscaux. Commence à la ligne "FOURNISSEUR" (seule, pas le titre "FACTURE
+ * FOURNISSEUR") et se termine au prochain en-tête de section : ACHETEUR,
+ * FACTURE seul, ou en-tête du tableau ("Description"). On NE s'arrête PAS
+ * sur SIRET/TVA — ce sont précisément les lignes qu'on cherche à capturer.
+ */
+function extractSupplierBlock(text: string): string {
+  const m = text.match(
+    /(?:^|\n)FOURNISSEUR\s*\n([\s\S]*?)(?=\n\s*(?:ACHETEUR\b|FACTURE\s*\n|Description\b)|$)/i,
+  );
+  return m?.[1] ?? '';
+}
+
 function findFirstMatch(text: string, patterns: RegExp[]): RegExpMatchArray | null {
   for (const p of patterns) {
     const m = text.match(p);
@@ -62,20 +76,20 @@ function findFirstMatch(text: string, patterns: RegExp[]): RegExpMatchArray | nu
 export function extractInvoiceFields(rawText: string): PdfExtractedFields {
   const text = rawText.replace(/\u00A0/g, ' '); // NBSP → espace normal
 
-  // ── Identifiants fiscaux ───────────────────────────────────────────────
-  const siret = text.match(/\bSIRET\s*[:\s]\s*(\d{3}\s?\d{3}\s?\d{3}\s?\d{5})\b/i)?.[1];
-  const siretClean = siret?.replace(/\s/g, '');
-  const tva = text.match(/\b(FR\s?\d{2}\s?\d{9})\b/i)?.[1]?.replace(/\s/g, '');
+  // ── Bloc FOURNISSEUR (scope des identifiants fiscaux et du nom) ────────
+  // Sans ce scope, le SIRET de l'ACHETEUR — souvent présent dans la même
+  // page — remonterait dès que le fournisseur n'a qu'un n° TVA.
+  const supplierBlock = extractSupplierBlock(text);
 
-  // ── Nom fournisseur ────────────────────────────────────────────────────
-  // Le mot "FOURNISSEUR" apparaît aussi dans le titre "FACTURE FOURNISSEUR" ;
-  // on ne veut que la SECTION (ligne contenant uniquement "FOURNISSEUR").
+  // ── Identifiants fiscaux (cherchés UNIQUEMENT dans le bloc fournisseur) ─
+  const siret = supplierBlock.match(/\bSIRET\s*[:\s]\s*(\d{3}\s?\d{3}\s?\d{3}\s?\d{5})\b/i)?.[1];
+  const siretClean = siret?.replace(/\s/g, '');
+  const tva = supplierBlock.match(/\b(FR\s?\d{2}\s?\d{9})\b/i)?.[1]?.replace(/\s/g, '');
+
+  // ── Nom fournisseur (1re ligne non vide du bloc) ───────────────────────
   let supplierName = '';
-  const sectionMatch = text.match(
-    /(?:^|\n)FOURNISSEUR\s*\n([\s\S]{0,400}?)(?:\nSIRET|\nTVA\s|\nACHETEUR|\nFACTURE\b)/i,
-  );
-  if (sectionMatch) {
-    const lines = sectionMatch[1]
+  if (supplierBlock) {
+    const lines = supplierBlock
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean);

@@ -93,6 +93,8 @@ enum AuditAction {
   INVOICE_LITIGE
   /// Levée d'un litige sur une facture (commentaire facultatif)
   INVOICE_LITIGE_LEVE
+  /// Rétrogradation d'une facture de READY vers TO_REVIEW (commentaire facultatif)
+  INVOICE_RETOUR_A_REVISER
 }
 
 /// Type d'entité référencée dans l'audit

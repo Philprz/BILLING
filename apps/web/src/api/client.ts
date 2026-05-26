@@ -12,7 +12,7 @@ export class ApiError extends Error {
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const AUTH_EXPIRED_EVENT = 'nova-pa:auth-expired';
 
-function getCsrfToken(): string {
+export function getCsrfToken(): string {
   return (
     document.cookie
       .split('; ')

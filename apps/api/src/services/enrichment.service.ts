@@ -89,9 +89,19 @@ function digits(s: string): string {
   return s.replace(/\D/g, '');
 }
 
-function reliableLegalIds(value: string): string[] {
+/**
+ * Décompose un identifiant fiscal en ses formes exploitables pour le matching.
+ * Aligné sur apps/worker/src/matching/supplier-matcher.ts — permet un matching
+ * partiel par SIREN quand l'ID extrait est au format TVA (FR + 11) alors que
+ * SAP ne stocke que le SIRET du fournisseur (ou l'inverse).
+ */
+function decomposeLegalId(value: string): { siret: string | null; siren: string | null } {
   const d = digits(value);
-  return d.length === 9 || d.length === 14 ? [d] : [];
+  if (d.length === 14) return { siret: d, siren: d.slice(0, 9) };
+  if (d.length === 9) return { siret: null, siren: d };
+  const vat = normalizeId(value).match(/^FR(\d{2})(\d{9})$/);
+  if (vat) return { siret: null, siren: vat[2] };
+  return { siret: null, siren: null };
 }
 
 function isVat(value: string): boolean {
@@ -105,18 +115,21 @@ function matchSupplier(
 ): SupplierMatchResult | null {
   const idNorm = normalizeId(supplierPaIdentifier);
   const nameNorm = normalize(supplierNameRaw);
-  const legalIds = reliableLegalIds(supplierPaIdentifier);
+  const input = decomposeLegalId(supplierPaIdentifier);
   const vatId = isVat(supplierPaIdentifier) ? idNorm : null;
+  const hasReliableInputId = !!input.siret || !!input.siren || !!vatId;
   const scored: SupplierMatchResult[] = [];
 
   for (const c of candidates) {
     let confidence = 0;
     let reason = '';
-    const candidateLegalIds = [c.taxId0, c.taxId1, c.taxId2, c.federaltaxid].flatMap((v) =>
-      v ? reliableLegalIds(v) : [],
-    );
+    const candDecomposed = [c.taxId0, c.taxId1, c.taxId2, c.federaltaxid]
+      .filter((v): v is string => !!v)
+      .map(decomposeLegalId);
+    const candSirets = candDecomposed.map((x) => x.siret).filter((x): x is string => !!x);
+    const candSirens = candDecomposed.map((x) => x.siren).filter((x): x is string => !!x);
 
-    if (legalIds.length > 0 && candidateLegalIds.some((id) => legalIds.includes(id))) {
+    if (input.siret && candSirets.includes(input.siret)) {
       confidence = 100;
       reason = 'SIRET/SIREN exact';
     } else if (vatId && [c.vatregnum, c.federaltaxid].some((v) => v && normalizeId(v) === vatId)) {
@@ -125,17 +138,25 @@ function matchSupplier(
     } else if (idNorm && normalizeId(c.cardcode) === idNorm) {
       confidence = 95;
       reason = 'CardCode exact';
+    } else if (input.siren && candSirens.includes(input.siren)) {
+      // SIREN partiel : même entité légale, établissement potentiellement
+      // différent — ou ID PA au format TVA sans SIRET côté SAP.
+      confidence = 92;
+      reason = vatId
+        ? 'SIREN dérivé du n° TVA'
+        : input.siret
+          ? 'SIREN exact (établissement potentiellement différent)'
+          : 'SIREN exact';
     } else if (normalize(c.cardname) === nameNorm) {
       confidence = 85;
       reason = 'Nom exact';
     } else if (
-      !vatId &&
-      legalIds.length === 0 &&
+      !hasReliableInputId &&
       (normalize(c.cardname).includes(nameNorm) || nameNorm.includes(normalize(c.cardname)))
     ) {
       confidence = 70;
       reason = "Nom inclus dans l'autre";
-    } else if (!vatId && legalIds.length === 0) {
+    } else if (!hasReliableInputId) {
       const ov = tokenOverlap(c.cardname, supplierNameRaw);
       if (ov >= 0.8) {
         confidence = 60;

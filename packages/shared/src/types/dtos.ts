@@ -66,6 +66,7 @@ export interface InvoiceLine {
   chosenCostCenter: string | null;
   chosenTaxCodeB1: string | null;
   taxCodeLockedByUser: boolean;
+  accountCodeLockedByUser: boolean;
 }
 
 export interface InvoiceFile {
@@ -118,7 +119,8 @@ export type AuditAction =
   | 'CREATE_SUPPLIER'
   | 'SYNC_SUPPLIERS'
   | 'INVOICE_LITIGE'
-  | 'INVOICE_LITIGE_LEVE';
+  | 'INVOICE_LITIGE_LEVE'
+  | 'INVOICE_RETOUR_A_REVISER';
 
 export type AuditOutcome = 'OK' | 'ERROR';
 

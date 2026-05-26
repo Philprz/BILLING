@@ -23,16 +23,42 @@ const STATUS_CONFIG: Record<InvoiceStatus, { label: string; className: string }>
   ERROR: { label: 'Erreur', className: 'border-destructive/30 bg-destructive/10 text-destructive' },
 };
 
-export function StatusBadge({ status }: { status: InvoiceStatus }) {
+export function StatusBadge({
+  status,
+  onClick,
+  title,
+}: {
+  status: InvoiceStatus;
+  onClick?: () => void;
+  title?: string;
+}) {
   const cfg = STATUS_CONFIG[status];
+  const baseClassName =
+    'inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-[0.12em] uppercase';
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        aria-label={`Statut : ${cfg.label} — cliquer pour modifier`}
+        className={cn(
+          baseClassName,
+          cfg.className,
+          'cursor-pointer transition-colors hover:brightness-110 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-ring',
+        )}
+      >
+        {cfg.label}
+      </button>
+    );
+  }
+
   return (
     <span
       role="status"
       aria-label={`Statut : ${cfg.label}`}
-      className={cn(
-        'inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-[0.12em] uppercase',
-        cfg.className,
-      )}
+      className={cn(baseClassName, cfg.className)}
     >
       {cfg.label}
     </span>

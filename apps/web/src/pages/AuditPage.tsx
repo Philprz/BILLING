@@ -27,6 +27,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   LINK_SAP: 'Rattachement SAP',
   INVOICE_LITIGE: 'Mise en litige',
   INVOICE_LITIGE_LEVE: 'Levée du litige',
+  INVOICE_RETOUR_A_REVISER: 'Retour en révision',
 };
 
 const ACTION_COLOR: Record<AuditAction, string> = {
@@ -46,6 +47,7 @@ const ACTION_COLOR: Record<AuditAction, string> = {
   LINK_SAP: 'border-info/25 bg-info/10 text-info',
   INVOICE_LITIGE: 'border-[#E67E22]/30 bg-[#E67E22]/10 text-[#E67E22]',
   INVOICE_LITIGE_LEVE: 'border-[#E67E22]/30 bg-[#E67E22]/10 text-[#E67E22]',
+  INVOICE_RETOUR_A_REVISER: 'border-warning/25 bg-warning/10 text-warning',
 };
 
 const AUDIT_ACTIONS: AuditAction[] = [
@@ -65,6 +67,7 @@ const AUDIT_ACTIONS: AuditAction[] = [
   'LINK_SAP',
   'INVOICE_LITIGE',
   'INVOICE_LITIGE_LEVE',
+  'INVOICE_RETOUR_A_REVISER',
 ];
 
 function ActionBadge({ action }: { action: AuditAction }) {
