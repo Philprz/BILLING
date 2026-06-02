@@ -11,7 +11,7 @@ export type InvoiceStatus =
   | 'REJECTED'
   | 'DISPUTED'
   | 'ERROR';
-export type InvoiceDirection = 'INVOICE' | 'CREDIT_NOTE';
+export type InvoiceDirection = 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
 export type FileKind = 'PDF' | 'XML' | 'ATTACHMENT';
 
 export interface InvoiceSummary {
@@ -42,6 +42,7 @@ export interface InvoiceSummary {
   comment: string | null;
   litigeMotif: string | null;
   litigeDate: string | null;
+  typeTransaction: string | null;
   createdAt: string;
   updatedAt: string;
 }

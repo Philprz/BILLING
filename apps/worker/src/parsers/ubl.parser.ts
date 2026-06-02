@@ -74,7 +74,13 @@ const xmlParser = new XMLParser({
   trimValues: true,
   isArray: (tagName) => {
     const local = tagName.includes(':') ? tagName.split(':')[1] : tagName;
-    return ['InvoiceLine', 'CreditNoteLine', 'TaxSubtotal', 'AllowanceCharge'].includes(local);
+    return [
+      'InvoiceLine',
+      'CreditNoteLine',
+      'TaxSubtotal',
+      'AllowanceCharge',
+      'AdditionalDocumentReference',
+    ].includes(local);
   },
 });
 
@@ -182,6 +188,17 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
     ? (billingRef['cac:InvoiceDocumentReference'] as Record<string, unknown> | undefined)
     : undefined;
   const correctedInvoiceRef = textOf(invoiceDocRef?.['cbc:ID']) || null;
+
+  // CIUS-FR : TypeTransaction (1=Biens, 2=Services, 3=Mixte)
+  const additionalDocRefs = asArray(
+    root['cac:AdditionalDocumentReference'] as Record<string, unknown>[] | undefined,
+  );
+  const typeTransactionRef = additionalDocRefs.find(
+    (ref) => textOf((ref as Record<string, unknown>)['cbc:ID']) === 'TypeTransaction',
+  );
+  const typeTransaction = typeTransactionRef
+    ? textOf((typeTransactionRef as Record<string, unknown>)['cbc:DocumentDescription']) || null
+    : null;
 
   // Identifiants
   const docNumberPa = requireText(root['cbc:ID'], 'cbc:ID');
@@ -299,6 +316,7 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
     allowanceTotal,
     chargeTotal,
     correctedInvoiceRef,
+    typeTransaction,
     lines,
     supplierExtracted: extractSupplier(supplierParty, supplierPaIdentifier),
   };

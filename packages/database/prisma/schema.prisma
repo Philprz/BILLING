@@ -170,6 +170,8 @@ model Invoice {
   chargeTotal             Decimal?         @db.Decimal(19, 4) @map("charge_total")
   /// Référence à la facture originale corrigée (BT-3 BillingReference) — TypeCode 384 uniquement
   correctedInvoiceRef     String?          @map("corrected_invoice_ref")
+  /// Nature commerciale CIUS-FR : 1=Biens, 2=Services, 3=Mixte (AdditionalDocumentReference TypeTransaction). Null si absent.
+  typeTransaction         String?          @map("type_transaction")
   status                  InvoiceStatus    @default(NEW)
   statusReason            String?          @map("status_reason")
   integrationMode         IntegrationMode? @map("integration_mode")

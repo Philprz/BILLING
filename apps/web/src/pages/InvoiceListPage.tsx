@@ -47,7 +47,27 @@ const DIRECTION_OPTIONS = [
   { value: '', label: 'Tous types' },
   { value: 'INVOICE', label: 'Factures' },
   { value: 'CREDIT_NOTE', label: 'Avoirs' },
+  { value: 'ADVANCE_INVOICE', label: 'Acomptes' },
+  { value: 'CORRECTIVE_INVOICE', label: 'Rectificatives' },
 ];
+
+function directionBadge(direction: string): { label: string; className: string } {
+  switch (direction) {
+    case 'CREDIT_NOTE':
+      return { label: 'Avoir', className: 'bg-amber-100 text-amber-800' };
+    case 'ADVANCE_INVOICE':
+      return { label: 'Acompte', className: 'bg-emerald-100 text-emerald-800' };
+    case 'CORRECTIVE_INVOICE':
+      return { label: 'Rectificative', className: 'bg-violet-100 text-violet-800' };
+    default:
+      return { label: 'Facture', className: 'bg-muted text-muted-foreground' };
+  }
+}
+
+function typeTransactionLabel(tt: string | null): string | null {
+  if (!tt) return null;
+  return tt === '1' ? 'Biens' : tt === '2' ? 'Services' : tt === '3' ? 'Mixte' : null;
+}
 
 export default function InvoiceListPage() {
   const navigate = useNavigate();
@@ -73,7 +93,12 @@ export default function InvoiceListPage() {
   const page = Number(searchParams.get('page') ?? 1);
   const status = (searchParams.get('status') ?? 'ACTIVE') as InvoiceStatus | 'ACTIVE' | 'ALL';
   const search = searchParams.get('search') ?? '';
-  const direction = (searchParams.get('direction') ?? '') as 'INVOICE' | 'CREDIT_NOTE' | '';
+  const direction = (searchParams.get('direction') ?? '') as
+    | 'INVOICE'
+    | 'CREDIT_NOTE'
+    | 'ADVANCE_INVOICE'
+    | 'CORRECTIVE_INVOICE'
+    | '';
   const paSource = searchParams.get('paSource') ?? '';
   const dateFrom = searchParams.get('dateFrom') ?? '';
   const dateTo = searchParams.get('dateTo') ?? '';
@@ -463,6 +488,11 @@ export default function InvoiceListPage() {
               <th>Fournisseur</th>
               <th>N° document</th>
               <th>Source</th>
+              <th className="py-1.5 px-2 font-normal text-center">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Type
+                </span>
+              </th>
               <th className="text-right">Montant TTC</th>
               <th className="text-center">Statut</th>
             </tr>
@@ -532,6 +562,9 @@ export default function InvoiceListPage() {
                 </div>
               </th>
 
+              {/* TYPE : pas de filtre dédié (couvert par le filtre Source) */}
+              <th className="py-1.5 px-2 font-normal" />
+
               {/* MONTANT TTC : min / max */}
               <th className="py-1.5 px-2 font-normal text-right">
                 <div className="flex flex-col gap-1 items-end">
@@ -576,13 +609,13 @@ export default function InvoiceListPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="p-0">
+                <td colSpan={8} className="p-0">
                   <InvoiceListSkeleton />
                 </td>
               </tr>
             ) : invoices.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={8} className="py-16 text-center text-sm text-muted-foreground">
                   Aucune facture trouvee.
                 </td>
               </tr>
@@ -625,6 +658,25 @@ export default function InvoiceListPage() {
                   </td>
                   <td className="font-mono text-xs text-muted-foreground">{invoice.docNumberPa}</td>
                   <td className="text-muted-foreground">{paSourceLabel(invoice.paSource)}</td>
+                  <td className="text-center">
+                    <div className="flex flex-col items-center gap-1">
+                      {(() => {
+                        const { label, className } = directionBadge(invoice.direction);
+                        return (
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${className}`}
+                          >
+                            {label}
+                          </span>
+                        );
+                      })()}
+                      {typeTransactionLabel(invoice.typeTransaction) && (
+                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                          {typeTransactionLabel(invoice.typeTransaction)}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="whitespace-nowrap text-right font-semibold text-foreground">
                     {formatAmount(invoice.totalInclTax, invoice.currency)}
                   </td>

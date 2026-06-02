@@ -93,6 +93,7 @@ export async function writeInvoice(
       allowanceTotal: parsed.allowanceTotal ?? null,
       chargeTotal: parsed.chargeTotal ?? null,
       correctedInvoiceRef: parsed.correctedInvoiceRef ?? null,
+      typeTransaction: parsed.typeTransaction ?? null,
       status: 'NEW',
       lines: {
         create: parsed.lines.map((l) => ({

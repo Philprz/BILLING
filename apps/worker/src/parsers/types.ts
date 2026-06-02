@@ -45,6 +45,7 @@ export interface ParsedInvoice {
   allowanceTotal: string | null; // BT-107 — total remises document (null si absent ou 0)
   chargeTotal: string | null; // BT-108 — total majorations document (null si absent ou 0)
   correctedInvoiceRef: string | null; // BT-3 — ID de la facture originale corrigée (null si absent)
+  typeTransaction: string | null; // CIUS-FR : '1'=Biens, '2'=Services, '3'=Mixte (null si absent)
   lines: ParsedLine[];
   supplierExtracted: SupplierExtracted | null;
 }

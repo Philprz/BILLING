@@ -36,6 +36,7 @@ export interface InvoiceSummaryDto {
   comment: string | null;
   litigeMotif: string | null;
   litigeDate: string | null;
+  typeTransaction: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -127,6 +128,7 @@ function mapSummary(inv: {
   comment: string | null;
   litigeMotif: string | null;
   litigeDate: Date | null;
+  typeTransaction: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): InvoiceSummaryDto {
@@ -159,6 +161,7 @@ function mapSummary(inv: {
     comment: inv.comment,
     litigeMotif: inv.litigeMotif,
     litigeDate: inv.litigeDate ? inv.litigeDate.toISOString() : null,
+    typeTransaction: inv.typeTransaction,
     createdAt: inv.createdAt.toISOString(),
     updatedAt: inv.updatedAt.toISOString(),
   };

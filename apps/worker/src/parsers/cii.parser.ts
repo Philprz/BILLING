@@ -145,6 +145,19 @@ export function parseCii(xmlContent: string): ParsedInvoice {
       ) || null
     : null;
 
+  // CIUS-FR : TypeTransaction (CII — ram:AdditionalReferencedDocument)
+  const additionalRefDocs = arr(
+    agreement['ram:AdditionalReferencedDocument'] ?? agreement['AdditionalReferencedDocument'],
+  );
+  const typeTransactionDoc = additionalRefDocs.find(
+    (doc) =>
+      textOf(obj(doc)['ram:IssuerAssignedID'] ?? obj(doc)['IssuerAssignedID']) ===
+      'TypeTransaction',
+  );
+  const typeTransaction = typeTransactionDoc
+    ? textOf(obj(typeTransactionDoc)['ram:Name'] ?? obj(typeTransactionDoc)['Name']) || null
+    : null;
+
   // ── Règlement (settlement) ────────────────────────────────────────────────
   const settlement = obj(
     trx['ram:ApplicableHeaderTradeSettlement'] ?? trx['ApplicableHeaderTradeSettlement'],
@@ -290,6 +303,7 @@ export function parseCii(xmlContent: string): ParsedInvoice {
     allowanceTotal,
     chargeTotal,
     correctedInvoiceRef,
+    typeTransaction,
     lines,
     supplierExtracted: null,
   };
