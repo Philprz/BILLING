@@ -423,6 +423,137 @@ const PRESETS: Preset[] = [
   },
 ];
 
+// ─── Scénarios prédéfinis — avoirs (TypeCode 381) ────────────────────────────
+
+const AVOIR_PRESETS: Preset[] = [
+  // A60 — Retour fournitures
+  {
+    label: 'A60 — Retour fournitures',
+    category: 'Avoir — Achats / fournitures',
+    description: 'Avoir pour retour de fournitures administratives (606400)',
+    data: {
+      dueDate: undefined,
+      currency: 'EUR',
+      direction: 'CREDIT_NOTE',
+      supplier: {
+        name: S.fournitures[0].name,
+        legalForm: S.fournitures[0].legalForm,
+        address: S.fournitures[0].address,
+        city: S.fournitures[0].city,
+        postalCode: S.fournitures[0].postalCode,
+        country: 'FR',
+        taxId: S.fournitures[0].vatNumber,
+        siret: S.fournitures[0].siret,
+        iban: S.fournitures[0].iban,
+        bic: S.fournitures[0].bic,
+        phone: S.fournitures[0].phone,
+        email: S.fournitures[0].email,
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '1',
+      note: 'Avoir pour retour marchandise — bon de retour n° BR-2026-042',
+      lines: [
+        {
+          description: 'Retour rames de papier A4 — 5 cartons non conformes',
+          quantity: 5,
+          unitPrice: 42.0,
+          taxRate: 20,
+          accountingCode: '606400',
+          accountingLabel: 'Fournitures administratives',
+        },
+        {
+          description: 'Retour cartouches imprimante — lot défectueux',
+          quantity: 2,
+          unitPrice: 89.5,
+          taxRate: 20,
+          accountingCode: '606500',
+          accountingLabel: 'Fournitures de bureau',
+        },
+      ],
+    },
+  },
+
+  // A62 — Annulation prestation
+  {
+    label: 'A62 — Annulation prestation',
+    category: 'Avoir — Autres services extérieurs',
+    description: 'Avoir pour annulation de prestation de services (622600)',
+    data: {
+      currency: 'EUR',
+      direction: 'CREDIT_NOTE',
+      supplier: {
+        name: S.informatique[0].name,
+        legalForm: S.informatique[0].legalForm,
+        address: S.informatique[0].address,
+        city: S.informatique[0].city,
+        postalCode: S.informatique[0].postalCode,
+        country: 'FR',
+        taxId: S.informatique[0].vatNumber,
+        siret: S.informatique[0].siret,
+        iban: S.informatique[0].iban,
+        bic: S.informatique[0].bic,
+        phone: S.informatique[0].phone,
+        email: S.informatique[0].email,
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      note: 'Avoir pour annulation partielle — prestation non réalisée',
+      lines: [
+        {
+          description: 'Annulation prestation infogérance — avril 2026 (non réalisée)',
+          quantity: 1,
+          unitPrice: 1800.0,
+          taxRate: 20,
+          accountingCode: '622600',
+          accountingLabel: 'Honoraires',
+        },
+      ],
+    },
+  },
+
+  // A66 — Avoir financier (exonéré TVA)
+  {
+    label: 'A66 — Avoir financier',
+    category: 'Avoir — Charges financières',
+    description: 'Avoir sur frais bancaires exonérés de TVA (627000)',
+    data: {
+      currency: 'EUR',
+      direction: 'CREDIT_NOTE',
+      supplier: {
+        name: S.assuranceBanque[2].name,
+        legalForm: S.assuranceBanque[2].legalForm,
+        address: S.assuranceBanque[2].address,
+        city: S.assuranceBanque[2].city,
+        postalCode: S.assuranceBanque[2].postalCode,
+        country: 'FR',
+        taxId: S.assuranceBanque[2].vatNumber,
+        siret: S.assuranceBanque[2].siret,
+        iban: S.assuranceBanque[2].iban,
+        bic: S.assuranceBanque[2].bic,
+        phone: S.assuranceBanque[2].phone,
+        email: S.assuranceBanque[2].email,
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      note: 'Avoir pour correction frais bancaires facturés en double',
+      lines: [
+        {
+          description: 'Avoir frais de tenue de compte — erreur de facturation T1 2026',
+          quantity: 1,
+          unitPrice: 180.0,
+          taxRate: 0,
+          taxCategoryCode: 'E',
+          taxExemptionReasonCode: 'VATEX-EU-135',
+          taxExemptionReason:
+            'Opérations bancaires et financières exonérées — art. 261 C CGI / art. 135 Directive 2006/112/CE',
+          accountingCode: '627000',
+          accountingLabel: 'Services bancaires',
+        },
+      ],
+    },
+  },
+];
+
 // ─── Valeurs initiales ────────────────────────────────────────────────────────
 
 function todayStr() {
@@ -518,8 +649,8 @@ export default function InvoiceGeneratorPage() {
   const totals = computeTotals(form.lines);
 
   // ── Preset ────────────────────────────────────────────────────────────────
-  const applyPreset = (idx: number) => {
-    const p = PRESETS[idx];
+  const applyPreset = (preset: Preset) => {
+    const p = preset;
     setResult(null);
     setError(null);
     setValidationError(null);
@@ -716,24 +847,46 @@ export default function InvoiceGeneratorPage() {
       <Card className="panel-surface-muted">
         <CardHeader>
           <CardTitle className="font-display text-2xl uppercase tracking-[0.08em]">
-            Scénarios — charges classe 6
+            Scénarios prédéfinis
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            Huit catégories de charges, sociétés fictives crédibles, comptes PCG pré-renseignés.
+            Factures et avoirs — sociétés fictives crédibles, comptes PCG pré-renseignés.
           </p>
         </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-2">
-            {PRESETS.map((p, i) => (
-              <button
-                key={i}
-                onClick={() => applyPreset(i)}
-                title={p.description}
-                className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-primary/35 hover:bg-primary/10 hover:text-primary"
-              >
-                {p.label}
-              </button>
-            ))}
+        <CardContent className="space-y-4">
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
+              Factures (380)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {PRESETS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => applyPreset(p)}
+                  title={p.description}
+                  className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-primary/35 hover:bg-primary/10 hover:text-primary"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
+              Avoirs (381)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {AVOIR_PRESETS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => applyPreset(p)}
+                  title={p.description}
+                  className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-amber-500/35 hover:bg-amber-500/10 hover:text-amber-600"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
         </CardContent>
       </Card>
