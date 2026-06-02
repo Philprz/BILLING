@@ -89,7 +89,7 @@ export interface FindInvoicesParams {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
-  direction?: 'INVOICE' | 'CREDIT_NOTE';
+  direction?: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
   amountMin?: number;
   amountMax?: number;
   sortBy?: 'receivedAt' | 'docDate' | 'totalInclTax' | 'status' | 'supplierNameRaw';

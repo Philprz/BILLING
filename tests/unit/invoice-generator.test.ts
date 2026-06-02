@@ -571,7 +571,7 @@ describe('generateUblXml — compatibilité avec ubl.parser', () => {
     expect(parsed.dueDate).toBe('2026-05-22');
     expect(parsed.currency).toBe('EUR');
     expect(parsed.supplierNameRaw).toBe('Acme Fournitures SAS');
-    expect(parsed.supplierPaIdentifier).toBe('FR12345678901');
+    expect(parsed.supplierPaIdentifier).toBe('12345678901234');
     expect(parsed.direction).toBe('INVOICE');
     expect(parsed.totalExclTax).toBe('250.00');
     expect(parsed.totalInclTax).toBe('300.00');

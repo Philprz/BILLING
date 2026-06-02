@@ -32,7 +32,9 @@ export interface InvoiceGenData {
   invoiceDate: string;
   dueDate?: string;
   currency: string;
-  direction: 'INVOICE' | 'CREDIT_NOTE';
+  direction: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
+  prepaidAmount?: number; // BT-113 — montant acompte déjà versé
+  correctedInvoiceRef?: string; // BT-3 — ID de la facture originale corrigée (TypeCode 384)
   supplier: GenSupplier;
   buyerName?: string;
   buyerSiret?: string;
@@ -75,6 +77,8 @@ export interface GeneratedInvoice {
     totalExclTax: number;
     totalTax: number;
     totalInclTax: number;
+    prepaidAmount: number;
+    payableAmount: number;
     currency: string;
     lineCount: number;
   };

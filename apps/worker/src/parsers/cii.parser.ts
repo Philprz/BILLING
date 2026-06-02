@@ -94,7 +94,13 @@ export function parseCii(xmlContent: string): ParsedInvoice {
   const docNumberPa = requireText(header['ram:ID'] ?? header['ID'], 'ram:ID');
   const typeCode = textOf(header['ram:TypeCode'] ?? header['TypeCode']);
   const direction: ParsedInvoice['direction'] =
-    typeCode === '381' || typeCode === '389' ? 'CREDIT_NOTE' : 'INVOICE';
+    typeCode === '381' || typeCode === '389'
+      ? 'CREDIT_NOTE'
+      : typeCode === '386'
+        ? 'ADVANCE_INVOICE'
+        : typeCode === '384'
+          ? 'CORRECTIVE_INVOICE'
+          : 'INVOICE';
 
   const issueDateTimeNode = header['ram:IssueDateTime'] ?? header['IssueDateTime'];
   const rawDate = textOf(
@@ -130,6 +136,15 @@ export function parseCii(xmlContent: string): ParsedInvoice {
     ) ||
     'UNKNOWN';
 
+  // BT-3 — référence à la facture corrigée (CII : ram:InvoiceReferencedDocument)
+  const invoiceRefDoc =
+    agreement['ram:InvoiceReferencedDocument'] ?? agreement['InvoiceReferencedDocument'];
+  const correctedInvoiceRef = invoiceRefDoc
+    ? textOf(
+        obj(invoiceRefDoc)['ram:IssuerAssignedID'] ?? obj(invoiceRefDoc)['IssuerAssignedID'],
+      ) || null
+    : null;
+
   // ── Règlement (settlement) ────────────────────────────────────────────────
   const settlement = obj(
     trx['ram:ApplicableHeaderTradeSettlement'] ?? trx['ApplicableHeaderTradeSettlement'],
@@ -161,6 +176,23 @@ export function parseCii(xmlContent: string): ParsedInvoice {
   const totalInclTax = numStr(
     monetarySums['ram:GrandTotalAmount'] ?? monetarySums['GrandTotalAmount'],
   );
+
+  // BT-113 — null si absent ou montant nul (comparaison numérique : couvre 0, 0.00, 0.0000…)
+  const prepaidAmountRaw = numStr(
+    monetarySums['ram:TotalPrepaidAmount'] ?? monetarySums['TotalPrepaidAmount'],
+  );
+  const prepaidAmount = parseFloat(prepaidAmountRaw) !== 0 ? prepaidAmountRaw : null;
+
+  // BT-107 / BT-108 — remises et majorations globales (null si absent ou montant nul)
+  const allowanceTotalRaw = numStr(
+    monetarySums['ram:AllowanceTotalAmount'] ?? monetarySums['AllowanceTotalAmount'],
+  );
+  const allowanceTotal = parseFloat(allowanceTotalRaw) !== 0 ? allowanceTotalRaw : null;
+
+  const chargeTotalRaw = numStr(
+    monetarySums['ram:ChargeTotalAmount'] ?? monetarySums['ChargeTotalAmount'],
+  );
+  const chargeTotal = parseFloat(chargeTotalRaw) !== 0 ? chargeTotalRaw : null;
 
   const taxTotalAmountNode = monetarySums['ram:TaxTotalAmount'] ?? monetarySums['TaxTotalAmount'];
   const allTaxes = arr(settlement['ram:ApplicableTradeTax'] ?? settlement['ApplicableTradeTax']);
@@ -254,6 +286,10 @@ export function parseCii(xmlContent: string): ParsedInvoice {
     totalExclTax,
     totalTax,
     totalInclTax,
+    prepaidAmount,
+    allowanceTotal,
+    chargeTotal,
+    correctedInvoiceRef,
     lines,
     supplierExtracted: null,
   };

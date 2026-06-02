@@ -87,7 +87,7 @@ export function mapSapSupplierForCache(
     cardtype: textField(row, ['CardType']),
     federaltaxid: textField(row, ['FederalTaxID']), // TVA intracommunautaire
     vatregnum: textField(row, ['VATRegistrationNumber', 'VatRegistrationNumber', 'VatRegNum']),
-    taxId0: textField(row, ['AdditionalID']), // SIREN
+    taxId0: textField(row, ['TaxId0', 'AdditionalID']), // SIREN — TaxId0 (champ SAP B1 direct) ou AdditionalID (alias selon version)
     taxId1: textField(row, ['UnifiedFederalTaxID']), // SIRET
     taxId2: textField(row, ['TaxId2']),
     phone1: textField(row, ['Phone1']),

@@ -89,6 +89,10 @@ export async function writeInvoice(
       totalExclTax: parsed.totalExclTax,
       totalTax: parsed.totalTax,
       totalInclTax: parsed.totalInclTax,
+      prepaidAmount: parsed.prepaidAmount ?? null,
+      allowanceTotal: parsed.allowanceTotal ?? null,
+      chargeTotal: parsed.chargeTotal ?? null,
+      correctedInvoiceRef: parsed.correctedInvoiceRef ?? null,
       status: 'NEW',
       lines: {
         create: parsed.lines.map((l) => ({

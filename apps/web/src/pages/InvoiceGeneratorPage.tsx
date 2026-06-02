@@ -554,6 +554,130 @@ const AVOIR_PRESETS: Preset[] = [
   },
 ];
 
+// ─── Scénarios prédéfinis — acomptes ─────────────────────────────────────────
+
+const ACOMPTE_PRESETS: Preset[] = [
+  // A386 — Facture d'acompte (TypeCode 386)
+  {
+    label: "A386 — Demande d'acompte",
+    category: 'Acompte — Demande de paiement anticipé',
+    description: "Facture d'acompte fournisseur TypeCode 386 (APDownPayment SAP)",
+    data: {
+      currency: 'EUR',
+      direction: 'ADVANCE_INVOICE',
+      supplier: {
+        name: S.informatique[0].name,
+        legalForm: S.informatique[0].legalForm,
+        address: S.informatique[0].address,
+        city: S.informatique[0].city,
+        postalCode: S.informatique[0].postalCode,
+        country: 'FR',
+        taxId: S.informatique[0].vatNumber,
+        siret: S.informatique[0].siret,
+        iban: S.informatique[0].iban,
+        bic: S.informatique[0].bic,
+        phone: S.informatique[0].phone,
+        email: S.informatique[0].email,
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      note: 'Acompte 30% sur commande de prestation — à régler avant démarrage',
+      lines: [
+        {
+          description: 'Acompte 30% — Projet infogérance 2026 (paiement anticipé)',
+          quantity: 1,
+          unitPrice: 5400.0,
+          taxRate: 20,
+          accountingCode: '622600',
+          accountingLabel: 'Honoraires',
+        },
+      ],
+    },
+  },
+
+  // A380-PA — Facture finale avec acompte déduit (BT-113 PrepaidAmount)
+  {
+    label: 'A380 — Solde avec acompte',
+    category: 'Acompte — Facture finale avec déduction',
+    description: 'Facture finale (380) déduisant un acompte de 5 400 € déjà versé (BT-113)',
+    data: {
+      currency: 'EUR',
+      direction: 'INVOICE',
+      prepaidAmount: 5400.0,
+      supplier: {
+        name: S.informatique[0].name,
+        legalForm: S.informatique[0].legalForm,
+        address: S.informatique[0].address,
+        city: S.informatique[0].city,
+        postalCode: S.informatique[0].postalCode,
+        country: 'FR',
+        taxId: S.informatique[0].vatNumber,
+        siret: S.informatique[0].siret,
+        iban: S.informatique[0].iban,
+        bic: S.informatique[0].bic,
+        phone: S.informatique[0].phone,
+        email: S.informatique[0].email,
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      note: 'Solde facture projet infogérance 2026 — acompte 30% déduit',
+      lines: [
+        {
+          description: 'Projet infogérance serveurs 2026 — solde 70%',
+          quantity: 1,
+          unitPrice: 18000.0,
+          taxRate: 20,
+          accountingCode: '622600',
+          accountingLabel: 'Honoraires',
+        },
+      ],
+    },
+  },
+];
+
+// ─── Scénarios prédéfinis — factures rectificatives (TypeCode 384) ────────────
+
+const RECTIFICATIVE_PRESETS: Preset[] = [
+  {
+    label: 'A384 — Facture rectificative',
+    category: 'Rectificative — Correction facture précédente',
+    description:
+      "Correction d'une facture de prestation (384) avec référence à la facture originale",
+    data: {
+      currency: 'EUR',
+      direction: 'CORRECTIVE_INVOICE',
+      correctedInvoiceRef: 'FACT-2026-0042',
+      supplier: {
+        name: S.informatique[0].name,
+        legalForm: S.informatique[0].legalForm,
+        address: S.informatique[0].address,
+        city: S.informatique[0].city,
+        postalCode: S.informatique[0].postalCode,
+        country: 'FR',
+        taxId: S.informatique[0].vatNumber,
+        siret: S.informatique[0].siret,
+        iban: S.informatique[0].iban,
+        bic: S.informatique[0].bic,
+        phone: S.informatique[0].phone,
+        email: S.informatique[0].email,
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      note: 'Correction erreur de montant — remplace la facture FACT-2026-0042',
+      lines: [
+        {
+          description: 'Prestation infogérance avril 2026 — montant corrigé',
+          quantity: 1,
+          unitPrice: 1950.0,
+          taxRate: 20,
+          accountingCode: '622600',
+          accountingLabel: 'Honoraires',
+        },
+      ],
+    },
+  },
+];
+
 // ─── Valeurs initiales ────────────────────────────────────────────────────────
 
 function todayStr() {
@@ -582,6 +706,8 @@ function defaultForm(): InvoiceGenData {
     dueDate: dueDateStr(),
     currency: 'EUR',
     direction: 'INVOICE',
+    prepaidAmount: 0,
+    correctedInvoiceRef: undefined,
     supplier: {
       name: '',
       legalForm: '',
@@ -888,6 +1014,40 @@ export default function InvoiceGeneratorPage() {
               ))}
             </div>
           </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
+              Acomptes (386 / 380+PA)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {ACOMPTE_PRESETS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => applyPreset(p)}
+                  title={p.description}
+                  className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-emerald-500/35 hover:bg-emerald-500/10 hover:text-emerald-600"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
+              Rectificatives (384)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {RECTIFICATIVE_PRESETS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => applyPreset(p)}
+                  title={p.description}
+                  className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-violet-500/35 hover:bg-violet-500/10 hover:text-violet-600"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -945,6 +1105,33 @@ export default function InvoiceGeneratorPage() {
                 onChange={(e) => setForm((p) => ({ ...p, dueDate: e.target.value || undefined }))}
               />
             </Field>
+            {form.direction === 'INVOICE' && (
+              <Field label="Acompte versé (BT-113)">
+                <input
+                  type="number"
+                  className={inputCls}
+                  min={0}
+                  step={0.01}
+                  value={form.prepaidAmount ?? 0}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, prepaidAmount: parseFloat(e.target.value) || 0 }))
+                  }
+                  placeholder="0.00"
+                />
+              </Field>
+            )}
+            {form.direction === 'CORRECTIVE_INVOICE' && (
+              <Field label="Facture corrigée (BT-3)">
+                <input
+                  className={inputCls}
+                  value={form.correctedInvoiceRef ?? ''}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, correctedInvoiceRef: e.target.value || undefined }))
+                  }
+                  placeholder="Ex : FACT-2026-0042"
+                />
+              </Field>
+            )}
           </div>
           <div className="mt-4">
             <Field label="Note (optionnel)">

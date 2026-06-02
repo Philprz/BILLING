@@ -91,7 +91,12 @@ export async function invoiceGeneratorRoutes(app: FastifyInstance): Promise<void
             invoiceDate: { type: 'string', format: 'date' },
             dueDate: { type: 'string', format: 'date' },
             currency: { type: 'string', minLength: 3, maxLength: 3 },
-            direction: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE'] },
+            direction: {
+              type: 'string',
+              enum: ['INVOICE', 'CREDIT_NOTE', 'ADVANCE_INVOICE', 'CORRECTIVE_INVOICE'],
+            },
+            prepaidAmount: { type: 'number', minimum: 0 },
+            correctedInvoiceRef: { type: 'string', maxLength: 100 },
             buyerName: { type: 'string', maxLength: 200 },
             buyerSiret: { type: 'string', maxLength: 14 },
             buyerVatNumber: { type: 'string', maxLength: 20 },

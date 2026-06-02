@@ -54,6 +54,10 @@ async function parsePdf(absolutePath: string): Promise<ParsedInvoice> {
       totalExclTax: '0',
       totalTax: '0',
       totalInclTax: '0',
+      prepaidAmount: null,
+      allowanceTotal: null,
+      chargeTotal: null,
+      correctedInvoiceRef: null,
       lines: [],
       supplierExtracted: null,
     };
@@ -80,6 +84,10 @@ async function parsePdf(absolutePath: string): Promise<ParsedInvoice> {
       totalExclTax: '0',
       totalTax: '0',
       totalInclTax: '0',
+      prepaidAmount: null,
+      allowanceTotal: null,
+      chargeTotal: null,
+      correctedInvoiceRef: null,
       lines: [],
       supplierExtracted: null,
     };
@@ -150,6 +158,10 @@ async function parsePdf(absolutePath: string): Promise<ParsedInvoice> {
     totalExclTax: fields.totalExclTax,
     totalTax: fields.totalTax,
     totalInclTax: fields.totalInclTax,
+    prepaidAmount: null,
+    allowanceTotal: null,
+    chargeTotal: null,
+    correctedInvoiceRef: null,
     lines,
     supplierExtracted: null,
   };

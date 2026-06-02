@@ -22,6 +22,8 @@ datasource db {
 enum InvoiceDirection {
   INVOICE
   CREDIT_NOTE
+  ADVANCE_INVOICE
+  CORRECTIVE_INVOICE
 }
 
 /// Format du document source reçu de la PA
@@ -161,6 +163,13 @@ model Invoice {
   totalExclTax            Decimal          @db.Decimal(19, 4) @map("total_excl_tax")
   totalTax                Decimal          @db.Decimal(19, 4) @map("total_tax")
   totalInclTax            Decimal          @db.Decimal(19, 4) @map("total_incl_tax")
+  prepaidAmount           Decimal?         @db.Decimal(19, 4) @map("prepaid_amount")
+  /// Montant total des remises accordées au niveau document (BT-107 AllowanceTotalAmount). Null si absent ou 0.
+  allowanceTotal          Decimal?         @db.Decimal(19, 4) @map("allowance_total")
+  /// Montant total des majorations au niveau document (BT-108 ChargeTotalAmount). Null si absent ou 0.
+  chargeTotal             Decimal?         @db.Decimal(19, 4) @map("charge_total")
+  /// Référence à la facture originale corrigée (BT-3 BillingReference) — TypeCode 384 uniquement
+  correctedInvoiceRef     String?          @map("corrected_invoice_ref")
   status                  InvoiceStatus    @default(NEW)
   statusReason            String?          @map("status_reason")
   integrationMode         IntegrationMode? @map("integration_mode")

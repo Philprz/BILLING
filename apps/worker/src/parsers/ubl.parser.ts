@@ -168,7 +168,20 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
   // Direction
   const typeCode = textOf(root['cbc:InvoiceTypeCode'] ?? root['cbc:CreditNoteTypeCode']);
   const direction: ParsedInvoice['direction'] =
-    isCreditNote || typeCode === '381' || typeCode === '389' ? 'CREDIT_NOTE' : 'INVOICE';
+    isCreditNote || typeCode === '381' || typeCode === '389'
+      ? 'CREDIT_NOTE'
+      : typeCode === '386'
+        ? 'ADVANCE_INVOICE'
+        : typeCode === '384'
+          ? 'CORRECTIVE_INVOICE'
+          : 'INVOICE';
+
+  // BT-3 — référence à la facture corrigée (TypeCode 384)
+  const billingRef = root['cac:BillingReference'] as Record<string, unknown> | undefined;
+  const invoiceDocRef = billingRef
+    ? (billingRef['cac:InvoiceDocumentReference'] as Record<string, unknown> | undefined)
+    : undefined;
+  const correctedInvoiceRef = textOf(invoiceDocRef?.['cbc:ID']) || null;
 
   // Identifiants
   const docNumberPa = requireText(root['cbc:ID'], 'cbc:ID');
@@ -204,6 +217,17 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
 
   const totalExclTax = numStr(monetary['cbc:TaxExclusiveAmount']);
   const totalInclTax = numStr(monetary['cbc:TaxInclusiveAmount'] ?? monetary['cbc:PayableAmount']);
+
+  // BT-113 — null si absent ou montant nul (comparaison numérique : couvre 0, 0.00, 0.0000…)
+  const prepaidAmountRaw = numStr(monetary['cbc:PrepaidAmount']);
+  const prepaidAmount = parseFloat(prepaidAmountRaw) !== 0 ? prepaidAmountRaw : null;
+
+  // BT-107 / BT-108 — remises et majorations globales (null si absent ou montant nul)
+  const allowanceTotalRaw = numStr(monetary['cbc:AllowanceTotalAmount']);
+  const allowanceTotal = parseFloat(allowanceTotalRaw) !== 0 ? allowanceTotalRaw : null;
+
+  const chargeTotalRaw = numStr(monetary['cbc:ChargeTotalAmount']);
+  const chargeTotal = parseFloat(chargeTotalRaw) !== 0 ? chargeTotalRaw : null;
 
   // TVA totale
   const taxTotalNode = root['cac:TaxTotal'] as Record<string, unknown> | undefined;
@@ -271,6 +295,10 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
     totalExclTax,
     totalTax,
     totalInclTax,
+    prepaidAmount,
+    allowanceTotal,
+    chargeTotal,
+    correctedInvoiceRef,
     lines,
     supplierExtracted: extractSupplier(supplierParty, supplierPaIdentifier),
   };

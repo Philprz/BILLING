@@ -236,12 +236,13 @@ export interface SapDocResult {
 }
 
 /**
- * Crée une Purchase Invoice ou Purchase Credit Note dans SAP B1.
- * docType : 'PurchaseInvoices' | 'PurchaseCreditNotes'
+ * Crée une Purchase Invoice, Purchase Credit Note ou A/P Down Payment dans SAP B1.
+ * docType : 'PurchaseInvoices' | 'PurchaseCreditNotes' | 'APDownPayments'
+ * APDownPayments partage la même structure de payload que PurchaseInvoices.
  */
 export async function createPurchaseDoc(
   sapSessionCookie: string,
-  docType: 'PurchaseInvoices' | 'PurchaseCreditNotes',
+  docType: 'PurchaseInvoices' | 'PurchaseCreditNotes' | 'APDownPayments',
   payload: unknown,
 ): Promise<SapDocResult> {
   let response: Response;

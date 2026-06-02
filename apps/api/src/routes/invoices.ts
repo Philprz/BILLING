@@ -182,7 +182,10 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             dateFrom: { type: 'string', format: 'date' },
             dateTo: { type: 'string', format: 'date' },
             search: { type: 'string', maxLength: 100 },
-            direction: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE'] },
+            direction: {
+              type: 'string',
+              enum: ['INVOICE', 'CREDIT_NOTE', 'ADVANCE_INVOICE', 'CORRECTIVE_INVOICE'],
+            },
             amountMin: { type: 'number', minimum: 0 },
             amountMax: { type: 'number', minimum: 0 },
             sortBy: { type: 'string', enum: [...SORT_FIELDS] },
@@ -371,7 +374,11 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             sapDocNum = sapDocEntry;
           } else {
             const docType =
-              invoice.direction === 'CREDIT_NOTE' ? 'PurchaseCreditNotes' : 'PurchaseInvoices';
+              invoice.direction === 'CREDIT_NOTE'
+                ? 'PurchaseCreditNotes'
+                : invoice.direction === 'ADVANCE_INVOICE'
+                  ? 'APDownPayments'
+                  : 'PurchaseInvoices';
             const { payload, skippedLines } = buildPurchaseDocPayload(
               {
                 docNumberPa: invoice.docNumberPa,
@@ -1042,7 +1049,11 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
 
           if (integrationMode === 'SERVICE_INVOICE') {
             const docType =
-              invoice.direction === 'CREDIT_NOTE' ? 'PurchaseCreditNotes' : 'PurchaseInvoices';
+              invoice.direction === 'CREDIT_NOTE'
+                ? 'PurchaseCreditNotes'
+                : invoice.direction === 'ADVANCE_INVOICE'
+                  ? 'APDownPayments'
+                  : 'PurchaseInvoices';
 
             const { payload, skippedLines } = buildPurchaseDocPayload(
               invoiceData,

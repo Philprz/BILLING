@@ -31,7 +31,7 @@ export interface SupplierExtracted {
 export interface ParsedInvoice {
   /** Format réellement détecté (pour alimenter invoice.format) */
   format: 'UBL' | 'CII' | 'FACTUR_X' | 'PDF_ONLY';
-  direction: 'INVOICE' | 'CREDIT_NOTE';
+  direction: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
   docNumberPa: string;
   docDate: string; // YYYY-MM-DD
   dueDate: string | null;
@@ -41,6 +41,10 @@ export interface ParsedInvoice {
   totalExclTax: string;
   totalTax: string;
   totalInclTax: string;
+  prepaidAmount: string | null; // BT-113 (null si absent ou 0)
+  allowanceTotal: string | null; // BT-107 — total remises document (null si absent ou 0)
+  chargeTotal: string | null; // BT-108 — total majorations document (null si absent ou 0)
+  correctedInvoiceRef: string | null; // BT-3 — ID de la facture originale corrigée (null si absent)
   lines: ParsedLine[];
   supplierExtracted: SupplierExtracted | null;
 }

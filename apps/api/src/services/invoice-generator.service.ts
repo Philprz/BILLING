@@ -51,7 +51,9 @@ export interface InvoiceGenData {
   invoiceDate: string; // YYYY-MM-DD
   dueDate?: string;
   currency: string; // ISO 4217, ex : EUR
-  direction: 'INVOICE' | 'CREDIT_NOTE';
+  direction: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
+  prepaidAmount?: number; // BT-113 — montant acompte déjà versé (0 ou absent = aucun)
+  correctedInvoiceRef?: string; // BT-3 — ID de la facture originale (TypeCode 384)
   supplier: InvoiceGenSupplier;
   buyerName?: string;
   buyerSiret?: string;
@@ -102,6 +104,8 @@ export interface GeneratedInvoice {
     totalExclTax: number;
     totalTax: number;
     totalInclTax: number;
+    prepaidAmount: number;
+    payableAmount: number;
     currency: string;
     lineCount: number;
   };
@@ -200,7 +204,13 @@ export function generateUblXml(data: InvoiceGenData): string {
   const lineTag = isCreditNote ? 'CreditNoteLine' : 'InvoiceLine';
   const qtyTag = isCreditNote ? 'cbc:CreditedQuantity' : 'cbc:InvoicedQuantity';
   const typeCodeTag = isCreditNote ? 'cbc:CreditNoteTypeCode' : 'cbc:InvoiceTypeCode';
-  const typeCode = isCreditNote ? '381' : '380';
+  const typeCode = isCreditNote
+    ? '381'
+    : data.direction === 'ADVANCE_INVOICE'
+      ? '386'
+      : data.direction === 'CORRECTIVE_INVOICE'
+        ? '384'
+        : '380';
   const xmlns = isCreditNote
     ? 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2'
     : 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2';
@@ -470,6 +480,16 @@ export function generateUblXml(data: InvoiceGenData): string {
   </cac:OrderReference>`
       : '';
 
+  // BT-3 — référence à la facture corrigée (TypeCode 384)
+  const billingReferenceBlock = data.correctedInvoiceRef
+    ? `
+  <cac:BillingReference>
+    <cac:InvoiceDocumentReference>
+      <cbc:ID>${escapeXml(data.correctedInvoiceRef)}</cbc:ID>
+    </cac:InvoiceDocumentReference>
+  </cac:BillingReference>`
+    : '';
+
   // CIUS-FR : TypeTransaction + OptionTVA
   const cisuFrBlocks =
     data.typeTransaction || data.optionTVA
@@ -517,7 +537,7 @@ export function generateUblXml(data: InvoiceGenData): string {
       ? `
   <cbc:Note>${escapeXml(data.note)}</cbc:Note>`
       : ''
-  }${orderReferenceBlock}${cisuFrBlocks}
+  }${orderReferenceBlock}${billingReferenceBlock}${cisuFrBlocks}
 
   <cac:AccountingSupplierParty>
     <cac:Party>${supplierEndpoint}
@@ -551,8 +571,8 @@ ${paymentMeans}
     <cbc:LineExtensionAmount currencyID="${data.currency}">${fmt(totalExclTax)}</cbc:LineExtensionAmount>
     <cbc:TaxExclusiveAmount currencyID="${data.currency}">${fmt(totalExclTax)}</cbc:TaxExclusiveAmount>
     <cbc:TaxInclusiveAmount currencyID="${data.currency}">${fmt(totalInclTax)}</cbc:TaxInclusiveAmount>
-    <cbc:PrepaidAmount currencyID="${data.currency}">0.00</cbc:PrepaidAmount>
-    <cbc:PayableAmount currencyID="${data.currency}">${fmt(totalInclTax)}</cbc:PayableAmount>
+    <cbc:PrepaidAmount currencyID="${data.currency}">${fmt(data.prepaidAmount ?? 0)}</cbc:PrepaidAmount>
+    <cbc:PayableAmount currencyID="${data.currency}">${fmt(Math.max(0, totalInclTax - (data.prepaidAmount ?? 0)))}</cbc:PayableAmount>
   </cac:LegalMonetaryTotal>
 ${invoiceLines}
 </${rootTag}>`;
@@ -652,11 +672,31 @@ function writePdf(
       ["Date d'émission", data.invoiceDate],
       ["Date d'échéance", data.dueDate ?? '—'],
       ['Devise', data.currency],
-      ['Type', data.direction === 'CREDIT_NOTE' ? 'Avoir (381)' : 'Facture (380)'],
+      [
+        'Type',
+        data.direction === 'CREDIT_NOTE'
+          ? 'Avoir (381)'
+          : data.direction === 'ADVANCE_INVOICE'
+            ? "Facture d'acompte (386)"
+            : data.direction === 'CORRECTIVE_INVOICE'
+              ? 'Facture rectificative (384)'
+              : 'Facture (380)',
+      ],
     ];
     for (const [label, value] of infoRows) {
       doc.font('Helvetica-Bold').text(`${label} :`, COL_R, yRr, { width: 90, continued: false });
       doc.font('Helvetica').text(value, COL_R + 92, yRr, { width: PAGE_W / 2 - 95 });
+      yRr = doc.y;
+    }
+
+    // BT-3 — référence à la facture corrigée (TypeCode 384)
+    if (data.correctedInvoiceRef) {
+      doc
+        .font('Helvetica-Bold')
+        .text('Corrige la facture :', COL_R, yRr, { width: 90, continued: false });
+      doc
+        .font('Helvetica')
+        .text(data.correctedInvoiceRef, COL_R + 92, yRr, { width: PAGE_W / 2 - 95 });
       yRr = doc.y;
     }
 
@@ -896,6 +936,29 @@ function writePdf(
     });
     doc.fillColor('#000000');
 
+    // ── Acompte versé déduit (BT-113) ─────────────────────────────────────────
+    if ((data.prepaidAmount ?? 0) > 0) {
+      const payable = Math.max(0, computed.totalInclTax - (data.prepaidAmount ?? 0));
+      const acompteY = doc.y + 4;
+      doc
+        .fontSize(8)
+        .font('Helvetica')
+        .text('Acompte versé :', TOT_L, acompteY, { width: TOT_W - 70 })
+        .text(`-${fmt(data.prepaidAmount!)} ${data.currency}`, TOT_L + TOT_W - 70, acompteY, {
+          width: 70,
+          align: 'right',
+        });
+      const payableY = doc.y + 2;
+      doc
+        .fontSize(9)
+        .font('Helvetica-Bold')
+        .text('Net à payer :', TOT_L, payableY, { width: TOT_W - 75 })
+        .text(`${fmt(payable)} ${data.currency}`, TOT_L + TOT_W - 75, payableY, {
+          width: 75,
+          align: 'right',
+        });
+    }
+
     // ── Paiement ──────────────────────────────────────────────────────────────
     const payY = Math.max(tableY + 55, totalY + 60);
     doc
@@ -1087,6 +1150,8 @@ export async function generateAndSave(data: InvoiceGenData): Promise<GeneratedIn
       totalExclTax: computed.totalExclTax,
       totalTax: computed.totalTax,
       totalInclTax: computed.totalInclTax,
+      prepaidAmount: round2(data.prepaidAmount ?? 0),
+      payableAmount: round2(Math.max(0, computed.totalInclTax - (data.prepaidAmount ?? 0))),
       currency: data.currency,
       lineCount: data.lines.length,
     },
