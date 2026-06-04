@@ -18,6 +18,22 @@ interface EnrichBody {
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
+// Schéma JSON d'une remise/charge (AllowanceCharge) — ligne (BG-27/28) ou document (BG-20/21).
+// vatCategory/vatRate sont ignorés au niveau ligne (hérités) et obligatoires au niveau document
+// (validation métier dans le service : validateAllowanceCharges).
+const allowanceChargeSchema = {
+  type: 'object',
+  required: ['isCharge', 'amount'],
+  properties: {
+    isCharge: { type: 'boolean' },
+    amount: { type: 'number', exclusiveMinimum: 0 },
+    reason: { type: 'string', maxLength: 300 },
+    reasonCode: { type: 'string', maxLength: 20 },
+    vatCategory: { type: 'string', enum: ['S', 'Z', 'E', 'AE', 'K', 'O', 'G'] },
+    vatRate: { type: 'number', minimum: 0, maximum: 100 },
+  },
+} as const;
+
 export async function invoiceGeneratorRoutes(app: FastifyInstance): Promise<void> {
   // ────────────────────────────────────────────────────────────────────────────
   // GET /api/invoice-generator/suppliers
@@ -105,11 +121,15 @@ export async function invoiceGeneratorRoutes(app: FastifyInstance): Promise<void
                 'ADVANCE_INVOICE',
                 'CORRECTIVE_INVOICE',
                 'ADVANCE_CREDIT_NOTE',
+                'SELF_BILLED', // 389 — autofacturation
+                'FACTORING', // 393 — affacturage
               ],
             },
             prepaidAmount: { type: 'number', minimum: 0 },
             // Statut de paiement à l'émission — pilote le chiffre 1/2 du cadre BT-23
             paymentStatus: { type: 'string', enum: ['unpaid', 'paid'] },
+            // BT-9 — date de paiement (cadre chiffre 2 / BR-FR-CO-09). Non persistée.
+            paymentDate: { type: 'string', format: 'date' },
             correctedInvoiceRef: { type: 'string', maxLength: 100 },
             buyerName: { type: 'string', maxLength: 200 },
             buyerSiret: { type: 'string', maxLength: 14 },
@@ -119,11 +139,44 @@ export async function invoiceGeneratorRoutes(app: FastifyInstance): Promise<void
             buyerCity: { type: 'string', maxLength: 100 },
             buyerPostalCode: { type: 'string', maxLength: 10 },
             buyerCountry: { type: 'string', maxLength: 2 },
+            // Code de routage CTC (EAS 0225) acheteur — identifiants TVA OSS/étrangers sans EAS national
+            buyerRoutingCode: { type: 'string', maxLength: 100 },
             buyerReference: { type: 'string', maxLength: 100 },
             orderReference: { type: 'string', maxLength: 100 },
             salesOrderId: { type: 'string', maxLength: 100 },
             typeTransaction: { type: 'string', enum: ['1', '2', '3'] },
             optionTVA: { type: 'string', enum: ['S', 'E'] },
+            // BG-20/21 — remises/charges au niveau document (catégorie TVA obligatoire)
+            documentAllowanceCharges: {
+              type: 'array',
+              maxItems: 20,
+              items: allowanceChargeSchema,
+            },
+            // BG-10 / BT-59-61 — partie bénéficiaire (factor). Obligatoire si direction=FACTORING
+            // (validation métier dans le service : validatePayee).
+            payee: {
+              type: 'object',
+              required: ['name'],
+              properties: {
+                name: { type: 'string', minLength: 1, maxLength: 200 },
+                identifier: { type: 'string', maxLength: 100 },
+                legalId: { type: 'string', maxLength: 50 },
+              },
+            },
+            // BG-1 / BT-21-22 — mentions structurées (tableau de notes). Remplace `note` (déprécié).
+            notes: {
+              type: 'array',
+              maxItems: 20,
+              items: {
+                type: 'object',
+                required: ['text'],
+                properties: {
+                  subjectCode: { type: 'string', maxLength: 10 },
+                  text: { type: 'string', minLength: 1, maxLength: 1000 },
+                },
+              },
+            },
+            // Déprécié : note libre unique (conservée pour compatibilité ascendante).
             note: { type: 'string', maxLength: 500 },
             supplier: {
               type: 'object',
@@ -137,6 +190,8 @@ export async function invoiceGeneratorRoutes(app: FastifyInstance): Promise<void
                 country: { type: 'string', maxLength: 2 },
                 taxId: { type: 'string', maxLength: 50 },
                 siret: { type: 'string', maxLength: 14 },
+                // Code de routage CTC (EAS 0225) — vendeur étranger/OSS sans EAS de TVA national
+                routingCode: { type: 'string', maxLength: 100 },
                 iban: { type: 'string', maxLength: 40 },
                 bic: { type: 'string', maxLength: 12 },
                 phone: { type: 'string', maxLength: 30 },
@@ -161,6 +216,12 @@ export async function invoiceGeneratorRoutes(app: FastifyInstance): Promise<void
                   // Compte de charge classe 6 — pattern ^6 validé aussi dans le service
                   accountingCode: { type: 'string', minLength: 1, maxLength: 10, pattern: '^6' },
                   accountingLabel: { type: 'string', maxLength: 200 },
+                  // BG-27/28 — remises/charges de ligne (héritent de la catégorie TVA de la ligne)
+                  allowanceCharges: {
+                    type: 'array',
+                    maxItems: 20,
+                    items: allowanceChargeSchema,
+                  },
                 },
               },
             },

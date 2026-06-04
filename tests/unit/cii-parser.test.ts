@@ -141,6 +141,32 @@ describe('parseCii', () => {
     expect(result.direction).toBe('CREDIT_NOTE');
   });
 
+  it('maps TypeCode 389 → SELF_BILLED (and not CREDIT_NOTE)', () => {
+    const xml = CII_INVOICE.replace(
+      '<ram:TypeCode>380</ram:TypeCode>',
+      '<ram:TypeCode>389</ram:TypeCode>',
+    );
+    const result = parseCii(xml);
+    expect(result.direction).toBe('SELF_BILLED');
+    expect(result.direction).not.toBe('CREDIT_NOTE');
+  });
+
+  it('maps TypeCode 393 → FACTORING', () => {
+    const xml = CII_INVOICE.replace(
+      '<ram:TypeCode>380</ram:TypeCode>',
+      '<ram:TypeCode>393</ram:TypeCode>',
+    );
+    expect(parseCii(xml).direction).toBe('FACTORING');
+  });
+
+  it('maps TypeCode 503 → ADVANCE_CREDIT_NOTE', () => {
+    const xml = CII_INVOICE.replace(
+      '<ram:TypeCode>380</ram:TypeCode>',
+      '<ram:TypeCode>503</ram:TypeCode>',
+    );
+    expect(parseCii(xml).direction).toBe('ADVANCE_CREDIT_NOTE');
+  });
+
   it('throws when seller name is missing', () => {
     expect(() => parseCii(CII_MISSING_SELLER)).toThrow('ram:SellerTradeParty/ram:Name');
   });

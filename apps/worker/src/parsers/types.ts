@@ -31,7 +31,14 @@ export interface SupplierExtracted {
 export interface ParsedInvoice {
   /** Format réellement détecté (pour alimenter invoice.format) */
   format: 'UBL' | 'CII' | 'FACTUR_X' | 'PDF_ONLY';
-  direction: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
+  direction:
+    | 'INVOICE'
+    | 'CREDIT_NOTE'
+    | 'ADVANCE_INVOICE'
+    | 'CORRECTIVE_INVOICE'
+    | 'SELF_BILLED'
+    | 'FACTORING'
+    | 'ADVANCE_CREDIT_NOTE';
   docNumberPa: string;
   docDate: string; // YYYY-MM-DD
   dueDate: string | null;

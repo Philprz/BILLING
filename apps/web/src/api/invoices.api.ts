@@ -17,7 +17,14 @@ export interface GetInvoicesParams {
   status?: InvoiceStatus | 'ACTIVE' | 'ALL';
   paSource?: string;
   search?: string;
-  direction?: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
+  direction?:
+    | 'INVOICE'
+    | 'CREDIT_NOTE'
+    | 'ADVANCE_INVOICE'
+    | 'CORRECTIVE_INVOICE'
+    | 'SELF_BILLED'
+    | 'FACTORING'
+    | 'ADVANCE_CREDIT_NOTE';
   amountMin?: number;
   amountMax?: number;
   sortBy?: string;

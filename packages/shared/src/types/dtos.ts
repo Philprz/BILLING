@@ -11,7 +11,14 @@ export type InvoiceStatus =
   | 'REJECTED'
   | 'DISPUTED'
   | 'ERROR';
-export type InvoiceDirection = 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
+export type InvoiceDirection =
+  | 'INVOICE'
+  | 'CREDIT_NOTE'
+  | 'ADVANCE_INVOICE'
+  | 'CORRECTIVE_INVOICE'
+  | 'SELF_BILLED'
+  | 'FACTORING'
+  | 'ADVANCE_CREDIT_NOTE';
 export type FileKind = 'PDF' | 'XML' | 'ATTACHMENT';
 
 export interface InvoiceSummary {

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, Fragment } from 'react';
 import {
   Plus,
   Trash2,
@@ -18,6 +18,8 @@ import {
   type InvoiceGenData,
   type GenLine,
   type GenSupplier,
+  type AllowanceChargeInput,
+  type InvoiceNote,
   type GeneratedInvoice,
   type SapSupplier,
 } from '../api/generator.api';
@@ -760,6 +762,87 @@ const REVERSE_CHARGE_PRESETS: Preset[] = [
   },
 ];
 
+// ─── Presets autofacturation (389) & affacturage (393) ───────────────────────
+const MENTIONS_TYPES_PRESETS: Preset[] = [
+  {
+    label: '389 — Autofacturation',
+    category: 'Autofacturation (mandat d’autofacturation)',
+    description:
+      'Facture émise par le client au nom et pour le compte du fournisseur (type 389). Mention « Autofacturation » auto-ajoutée.',
+    data: {
+      currency: 'EUR',
+      direction: 'SELF_BILLED',
+      supplier: {
+        name: 'Studio Créa SARL',
+        legalForm: 'SARL au capital de 10 000 EUR',
+        address: '8 rue des Arts',
+        city: 'Lyon',
+        postalCode: '69002',
+        country: 'FR',
+        taxId: 'FR40123456824',
+        siret: '12345682400017',
+        iban: 'FR7630006000011234567890189',
+        bic: 'AGRIFRPP',
+        email: 'contact@studiocrea.example',
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      notes: [{ subjectCode: 'REG', text: 'Mandat d’autofacturation signé le 02/01/2026.' }],
+      lines: [
+        {
+          description: 'Prestation de design graphique — campagne mai 2026',
+          quantity: 1,
+          unitPrice: 2400.0,
+          taxRate: 20,
+          accountingCode: '623000',
+          accountingLabel: 'Publicité, publications, relations publiques',
+        },
+      ],
+    },
+  },
+  {
+    label: '393 — Affacturage',
+    category: 'Affacturage (cession au factor)',
+    description:
+      'Facture cédée à un factor (type 393) — bénéficiaire/factor (PayeeParty) + mention de subrogation auto-ajoutée. IBAN du factor dans le bloc fournisseur.',
+    data: {
+      currency: 'EUR',
+      direction: 'FACTORING',
+      supplier: {
+        name: 'Transport Express SAS',
+        legalForm: 'SAS au capital de 80 000 EUR',
+        address: '14 avenue de la Logistique',
+        city: 'Marseille',
+        postalCode: '13008',
+        country: 'FR',
+        taxId: 'FR55984763110',
+        siret: '98476311000025',
+        // IBAN du factor (le règlement est adressé au cessionnaire)
+        iban: 'FR7610011000201234567890154',
+        bic: 'PSSTFRPP',
+        email: 'facturation@transportexpress.example',
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      payee: {
+        name: 'CréditFactor SA',
+        identifier: 'CESSION-2026-04417',
+        legalId: '38291746500031',
+      },
+      lines: [
+        {
+          description: 'Transport routier de marchandises — tournée avril 2026',
+          quantity: 1,
+          unitPrice: 1850.0,
+          taxRate: 20,
+          accountingCode: '624100',
+          accountingLabel: 'Transports sur achats',
+        },
+      ],
+    },
+  },
+];
+
 // ─── Valeurs initiales ────────────────────────────────────────────────────────
 
 function todayStr() {
@@ -827,15 +910,72 @@ function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
-function computeTotals(lines: GenLine[]) {
-  let ht = 0,
-    tva = 0;
-  for (const l of lines) {
-    const lineHt = round2(l.quantity * l.unitPrice);
-    ht += lineHt;
-    tva += round2((lineHt * l.taxRate) / 100);
+// Codes motifs UNTDID (sous-ensemble courant) — 5189 pour les remises, 7161 pour les charges.
+// Listes officielles ; le motif texte (reason) reste libre en complément.
+const ALLOWANCE_REASON_CODES: { code: string; label: string }[] = [
+  { code: '95', label: '95 — Remise (Discount)' },
+  { code: '100', label: '100 — Rabais spécial' },
+  { code: '104', label: '104 — Remise standard' },
+  { code: '64', label: '64 — Accord particulier' },
+];
+const CHARGE_REASON_CODES: { code: string; label: string }[] = [
+  { code: 'FC', label: 'FC — Frais de transport' },
+  { code: 'PC', label: 'PC — Emballage' },
+  { code: 'SH', label: 'SH — Manutention / expédition' },
+  { code: 'ABK', label: 'ABK — Divers' },
+  { code: 'TX', label: 'TX — Taxe' },
+];
+
+// Miroir client du calcul serveur (EN16931) — base TVA par catégorie, BT-106→112.
+// La valeur émise dans le XML reste celle du serveur ; ceci sert à l'affichage temps réel.
+function computeTotals(form: InvoiceGenData) {
+  const lineCat = (l: GenLine) => l.taxCategoryCode ?? (l.taxRate === 0 ? 'Z' : 'S');
+  // BT-131 — montant net de chaque ligne (remises/charges de ligne incluses).
+  const lineNets = form.lines.map((l) => {
+    const gross = round2(l.quantity * l.unitPrice);
+    let allow = 0,
+      charge = 0;
+    for (const ac of l.allowanceCharges ?? []) {
+      if (ac.isCharge) charge = round2(charge + ac.amount);
+      else allow = round2(allow + ac.amount);
+    }
+    return { net: round2(gross - allow + charge), cat: lineCat(l), rate: l.taxRate };
+  });
+  const lineExtension = round2(lineNets.reduce((s, l) => round2(s + l.net), 0)); // BT-106
+  let allowanceTotal = 0,
+    chargeTotal = 0;
+  for (const ac of form.documentAllowanceCharges ?? []) {
+    if (ac.isCharge) chargeTotal = round2(chargeTotal + ac.amount);
+    else allowanceTotal = round2(allowanceTotal + ac.amount);
   }
-  return { ht: round2(ht), tva: round2(tva), ttc: round2(ht + tva) };
+  const ht = round2(lineExtension - allowanceTotal + chargeTotal); // BT-109
+  // Ventilation TVA par catégorie + taux (BT-116/117), remises/charges document incluses.
+  const cats = new Map<string, { rate: number; taxable: number }>();
+  const key = (c: string, r: number) => `${c}|${r}`;
+  for (const l of lineNets) {
+    const k = key(l.cat, l.rate);
+    const g = cats.get(k) ?? { rate: l.rate, taxable: 0 };
+    g.taxable = round2(g.taxable + l.net);
+    cats.set(k, g);
+  }
+  for (const ac of form.documentAllowanceCharges ?? []) {
+    const cat = ac.vatCategory ?? (ac.vatRate ? 'S' : 'Z');
+    const rate = ac.vatRate ?? 0;
+    const k = key(cat, rate);
+    const g = cats.get(k) ?? { rate, taxable: 0 };
+    g.taxable = round2(g.taxable + (ac.isCharge ? ac.amount : -ac.amount));
+    cats.set(k, g);
+  }
+  const tva = round2(
+    Array.from(cats.values()).reduce((s, g) => round2(s + round2((g.taxable * g.rate) / 100)), 0),
+  ); // BT-110
+  const ttc = round2(ht + tva); // BT-112
+  // BT-113/BT-115 — acompte émis + net à payer. BR-FR-CO-09 : cadre chiffre 2 (déjà payée) →
+  // PrepaidAmount = TTC, net à payer = 0 (le chiffre du cadre fait foi, indépendant de l'acompte).
+  const cadre = computeCadre(form);
+  const prepaid = cadre.digit === '2' ? ttc : round2(form.prepaidAmount ?? 0);
+  const payable = round2(Math.max(0, ttc - prepaid)); // BT-115
+  return { lineExtension, allowanceTotal, chargeTotal, ht, tva, ttc, prepaid, payable };
 }
 
 function getAccountLabel(code: string): string {
@@ -869,10 +1009,47 @@ function docTypeCode(direction: InvoiceGenData['direction']): string {
       return '386';
     case 'CORRECTIVE_INVOICE':
       return '384';
+    case 'SELF_BILLED':
+      return '389';
+    case 'FACTORING':
+      return '393';
     default:
       return '380';
   }
 }
+
+// Libellé du type de document (miroir de directionLabel côté service).
+function directionLabel(direction: InvoiceGenData['direction']): string {
+  switch (direction) {
+    case 'CREDIT_NOTE':
+      return 'Avoir (381)';
+    case 'ADVANCE_CREDIT_NOTE':
+      return "Avoir d'acompte (503)";
+    case 'ADVANCE_INVOICE':
+      return "Facture d'acompte (386)";
+    case 'CORRECTIVE_INVOICE':
+      return 'Facture rectificative (384)';
+    case 'SELF_BILLED':
+      return 'Autofacturation (389)';
+    case 'FACTORING':
+      return 'Affacturage (393)';
+    default:
+      return 'Facture (380)';
+  }
+}
+
+// Codes sujet BT-21 (UNTDID 4451) proposés dans l'UI. Les codes confirmés valides pour le
+// profil sont émis dans le XML (préfixe « CODE# ») ; les autres (BLU, INV) sont émis texte seul.
+const NOTE_SUBJECT_CODES: { code: string; label: string }[] = [
+  { code: '', label: '— Aucun code —' },
+  { code: 'REG', label: 'REG — Informations réglementaires / régime particulier' },
+  { code: 'AAB', label: 'AAB — Conditions de paiement / escompte' },
+  { code: 'ABL', label: 'ABL — Informations légales (subrogation…)' },
+  { code: 'AAI', label: 'AAI — Informations générales' },
+  { code: 'SUR', label: 'SUR — Remarques du vendeur' },
+  { code: 'TXD', label: 'TXD — Déclaration fiscale' },
+  { code: 'BLU', label: 'BLU — Éco-participation (texte seul, hors 4451)' },
+];
 
 function inferCadreLetter(lines: GenLine[]): CadreLetter {
   let hasBien = false;
@@ -910,7 +1087,9 @@ function computeCadre(form: InvoiceGenData): CadrePreview {
   const divergence = txLetter !== null && txLetter !== inferred;
   const prepaid = form.prepaidAmount ?? 0;
   const paid = form.paymentStatus === 'paid';
-  const digit: CadreDigit = typeCode === '380' && prepaid > 0 ? '4' : paid ? '2' : '1';
+  // 389 (autofacturation) et 393 (affacturage) suivent la même logique que le 380.
+  const isCommercial = typeCode === '380' || typeCode === '389' || typeCode === '393';
+  const digit: CadreDigit = isCommercial && prepaid > 0 ? '4' : paid ? '2' : '1';
   const letter = inferred;
   const code = `${letter}${digit}`;
   return {
@@ -940,7 +1119,7 @@ export default function InvoiceGeneratorPage() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [xmlOpen, setXmlOpen] = useState(false);
 
-  const totals = computeTotals(form.lines);
+  const totals = computeTotals(form);
   const cadre = computeCadre(form);
 
   // ── Preset ────────────────────────────────────────────────────────────────
@@ -1044,6 +1223,81 @@ export default function InvoiceGeneratorPage() {
 
   const removeLine = (idx: number) =>
     setForm((prev) => ({ ...prev, lines: prev.lines.filter((_, i) => i !== idx) }));
+
+  // ── Remises / charges de ligne (BG-27/28) ─────────────────────────────────
+  const addLineAc = (idx: number) =>
+    setForm((prev) => {
+      const lines = [...prev.lines];
+      const acs: AllowanceChargeInput[] = [
+        ...(lines[idx].allowanceCharges ?? []),
+        { isCharge: false, amount: 0, reasonCode: ALLOWANCE_REASON_CODES[0].code },
+      ];
+      lines[idx] = { ...lines[idx], allowanceCharges: acs };
+      return { ...prev, lines };
+    });
+  const updateLineAc = (idx: number, acIdx: number, patch: Partial<AllowanceChargeInput>) =>
+    setForm((prev) => {
+      const lines = [...prev.lines];
+      const acs = [...(lines[idx].allowanceCharges ?? [])];
+      acs[acIdx] = { ...acs[acIdx], ...patch };
+      lines[idx] = { ...lines[idx], allowanceCharges: acs };
+      return { ...prev, lines };
+    });
+  const removeLineAc = (idx: number, acIdx: number) =>
+    setForm((prev) => {
+      const lines = [...prev.lines];
+      const acs = (lines[idx].allowanceCharges ?? []).filter((_, i) => i !== acIdx);
+      lines[idx] = { ...lines[idx], allowanceCharges: acs.length ? acs : undefined };
+      return { ...prev, lines };
+    });
+
+  // ── Remises / charges document (BG-20/21) ─────────────────────────────────
+  const addDocAc = () =>
+    setForm((prev) => ({
+      ...prev,
+      documentAllowanceCharges: [
+        ...(prev.documentAllowanceCharges ?? []),
+        {
+          isCharge: false,
+          amount: 0,
+          reasonCode: ALLOWANCE_REASON_CODES[0].code,
+          vatCategory: 'S',
+          vatRate: 20,
+        },
+      ],
+    }));
+  const updateDocAc = (acIdx: number, patch: Partial<AllowanceChargeInput>) =>
+    setForm((prev) => {
+      const acs = [...(prev.documentAllowanceCharges ?? [])];
+      acs[acIdx] = { ...acs[acIdx], ...patch };
+      return { ...prev, documentAllowanceCharges: acs };
+    });
+  const removeDocAc = (acIdx: number) =>
+    setForm((prev) => ({
+      ...prev,
+      documentAllowanceCharges: (prev.documentAllowanceCharges ?? []).filter((_, i) => i !== acIdx),
+    }));
+
+  // ── Mentions structurées BT-21 (BG-1) ─────────────────────────────────────
+  const addNote = (note: InvoiceNote = { text: '' }) =>
+    setForm((prev) => ({ ...prev, notes: [...(prev.notes ?? []), note] }));
+  const updateNote = (idx: number, patch: Partial<InvoiceNote>) =>
+    setForm((prev) => {
+      const notes = [...(prev.notes ?? [])];
+      notes[idx] = { ...notes[idx], ...patch };
+      return { ...prev, notes };
+    });
+  const removeNote = (idx: number) =>
+    setForm((prev) => ({ ...prev, notes: (prev.notes ?? []).filter((_, i) => i !== idx) }));
+
+  // ── Bénéficiaire / factor (BG-10) ─────────────────────────────────────────
+  const setPayeeField = (field: keyof NonNullable<InvoiceGenData['payee']>, value: string) =>
+    setForm((prev) => {
+      const payee = { name: '', ...prev.payee, [field]: value };
+      // On retire le bloc payee si tout est vide (sauf en affacturage où name est requis).
+      const empty = !payee.name?.trim() && !payee.identifier?.trim() && !payee.legalId?.trim();
+      return { ...prev, payee: empty ? undefined : payee };
+    });
 
   // ── Validation client ─────────────────────────────────────────────────────
   const validateForm = (): string | null => {
@@ -1234,6 +1488,23 @@ export default function InvoiceGeneratorPage() {
               ))}
             </div>
           </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
+              Autofacturation / Affacturage (389 / 393)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {MENTIONS_TYPES_PRESETS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => applyPreset(p)}
+                  title={p.description}
+                  className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-rose-500/35 hover:bg-rose-500/10 hover:text-rose-600"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -1258,10 +1529,15 @@ export default function InvoiceGeneratorPage() {
                 className={inputCls}
                 value={form.direction}
                 onChange={(e) =>
-                  setForm((p) => ({ ...p, direction: e.target.value as 'INVOICE' | 'CREDIT_NOTE' }))
+                  setForm((p) => ({
+                    ...p,
+                    direction: e.target.value as InvoiceGenData['direction'],
+                  }))
                 }
               >
                 <option value="INVOICE">Facture (380)</option>
+                <option value="SELF_BILLED">Autofacturation (389)</option>
+                <option value="FACTORING">Affacturage (393)</option>
               </select>
             </Field>
             <Field label="Devise *">
@@ -1330,7 +1606,9 @@ export default function InvoiceGeneratorPage() {
                 />
               </Field>
             )}
-            {form.direction === 'INVOICE' && (
+            {(form.direction === 'INVOICE' ||
+              form.direction === 'SELF_BILLED' ||
+              form.direction === 'FACTORING') && (
               <Field label="Acompte versé (BT-113)">
                 <input
                   type="number"
@@ -1369,6 +1647,19 @@ export default function InvoiceGeneratorPage() {
                 <option value="paid">Déjà payée (chiffre 2)</option>
               </select>
             </Field>
+            {form.paymentStatus === 'paid' && (
+              <Field label="Date de paiement (BT-9)">
+                <input
+                  type="date"
+                  className={inputCls}
+                  value={form.paymentDate ?? ''}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, paymentDate: e.target.value || undefined }))
+                  }
+                  placeholder={form.invoiceDate}
+                />
+              </Field>
+            )}
           </div>
 
           {/* Cadre de facturation BT-23 calculé en temps réel (lecture seule) */}
@@ -1396,14 +1687,99 @@ export default function InvoiceGeneratorPage() {
             )}
           </div>
 
-          <div className="mt-4">
-            <Field label="Note (optionnel)">
-              <input
-                className={inputCls}
-                value={form.note ?? ''}
-                onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))}
-              />
-            </Field>
+          {/* Mentions structurées BT-21 (BG-1) */}
+          <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-border/80 bg-card-muted/40 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Mentions (BT-21)
+              </span>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    addNote({
+                      subjectCode: 'AAB',
+                      text: 'Escompte pour paiement anticipé : néant.',
+                    })
+                  }
+                  className="rounded-lg border border-border/80 bg-background/60 px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary/35 hover:text-primary"
+                >
+                  + Escompte (AAB)
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    addNote({
+                      text: "Éco-participation incluse (art. L.541-10 du code de l'environnement).",
+                    })
+                  }
+                  className="rounded-lg border border-border/80 bg-background/60 px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary/35 hover:text-primary"
+                >
+                  + Éco-participation (BLU)
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    addNote({
+                      subjectCode: 'REG',
+                      text: 'Régime particulier — membre d’un assujetti unique (art. 242 nonies A).',
+                    })
+                  }
+                  className="rounded-lg border border-border/80 bg-background/60 px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary/35 hover:text-primary"
+                >
+                  + Régime particulier (REG)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addNote()}
+                  className="rounded-lg border border-border/80 bg-background/60 px-2 py-1 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary/35 hover:text-primary"
+                >
+                  + Note
+                </button>
+              </div>
+            </div>
+            {(form.notes ?? []).length === 0 && (
+              <p className="text-xs text-muted-foreground/70">
+                Aucune mention. Les mentions « Autofacturation » (389) et de subrogation (393) sont
+                ajoutées automatiquement à la génération si absentes.
+              </p>
+            )}
+            {(form.notes ?? []).map((n, idx) => (
+              <div key={idx} className="flex flex-wrap items-end gap-2">
+                <Field label="Code sujet">
+                  <select
+                    className={`${inputCls} text-xs w-72`}
+                    value={n.subjectCode ?? ''}
+                    onChange={(e) => updateNote(idx, { subjectCode: e.target.value || undefined })}
+                  >
+                    {NOTE_SUBJECT_CODES.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Texte" className="flex-1 min-w-48">
+                  <input
+                    className={`${inputCls} text-xs`}
+                    value={n.text}
+                    onChange={(e) => updateNote(idx, { text: e.target.value })}
+                    placeholder="Texte de la mention"
+                  />
+                </Field>
+                <button
+                  type="button"
+                  onClick={() => removeNote(idx)}
+                  className="text-muted-foreground hover:text-destructive transition-colors p-2"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            <p className="text-[11px] text-muted-foreground/70">
+              BT-21 : seuls les codes UNTDID 4451 confirmés (REG, AAB, ABL, AAI, SUR, TXD) sont émis
+              dans <code>cbc:Note</code> (préfixe « CODE# ») ; BLU / autres sont émis en texte seul.
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -1537,6 +1913,18 @@ export default function InvoiceGeneratorPage() {
                 placeholder="12345678901234"
               />
             </Field>
+            <Field label="Code de routage CTC (EAS 0225)">
+              <input
+                className={inputCls}
+                value={form.supplier.routingCode ?? ''}
+                onChange={(e) => setSupplierField('routingCode', e.target.value)}
+                placeholder="pour identifiants TVA OSS/étrangers sans EAS national"
+              />
+              <p className="text-xs text-muted-foreground">
+                Requis pour un vendeur étranger/OSS (ex. TVA « EU… ») non mappable sur un EAS de TVA
+                national.
+              </p>
+            </Field>
             <Field label="IBAN">
               <input
                 className={inputCls}
@@ -1641,6 +2029,20 @@ export default function InvoiceGeneratorPage() {
                 maxLength={2}
               />
             </Field>
+            <Field label="Code de routage CTC (EAS 0225)">
+              <input
+                className={inputCls}
+                value={form.buyerRoutingCode ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyerRoutingCode: e.target.value || undefined }))
+                }
+                placeholder="pour identifiants TVA OSS/étrangers sans EAS national"
+              />
+              <p className="text-xs text-muted-foreground">
+                Requis pour un acheteur étranger/OSS (ex. TVA « EU… ») non mappable sur un EAS de
+                TVA national.
+              </p>
+            </Field>
             <Field label="Adresse *" className="col-span-2 md:col-span-3">
               <input
                 className={inputCls}
@@ -1668,6 +2070,46 @@ export default function InvoiceGeneratorPage() {
                 onChange={(e) => setForm((p) => ({ ...p, buyerCity: e.target.value || undefined }))}
               />
             </Field>
+          </div>
+
+          {/* Bénéficiaire / Factor (BG-10 / BT-59-61) — obligatoire pour l'affacturage (393) */}
+          <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-border/80 bg-card-muted/40 px-4 py-3">
+            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              Bénéficiaire / Factor (BG-10)
+              {form.direction === 'FACTORING' && (
+                <span className="ml-2 text-destructive">— obligatoire (affacturage)</span>
+              )}
+            </span>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <Field label={`Nom (BT-59)${form.direction === 'FACTORING' ? ' *' : ''}`}>
+                <input
+                  className={inputCls}
+                  value={form.payee?.name ?? ''}
+                  onChange={(e) => setPayeeField('name', e.target.value)}
+                  placeholder="Ex : CréditFactor SA"
+                />
+              </Field>
+              <Field label="Identifiant (BT-60)">
+                <input
+                  className={inputCls}
+                  value={form.payee?.identifier ?? ''}
+                  onChange={(e) => setPayeeField('identifier', e.target.value)}
+                  placeholder="Réf. cession / identifiant"
+                />
+              </Field>
+              <Field label="SIREN/SIRET (BT-61)">
+                <input
+                  className={inputCls}
+                  value={form.payee?.legalId ?? ''}
+                  onChange={(e) => setPayeeField('legalId', e.target.value)}
+                  placeholder="Identifiant légal du factor"
+                />
+              </Field>
+            </div>
+            <p className="text-[11px] text-muted-foreground/70">
+              L'IBAN de règlement (BT-84) reste celui du bloc fournisseur ; pour l'affacturage,
+              saisissez-y l'IBAN du factor.
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -1787,90 +2229,172 @@ export default function InvoiceGeneratorPage() {
                   const lineHt = round2(line.quantity * line.unitPrice);
                   const codeOk = line.accountingCode.startsWith('6');
                   const codeMiss = !line.accountingCode.trim();
+                  const lineAcs = line.allowanceCharges ?? [];
                   return (
-                    <tr key={idx} className="transition-colors hover:bg-muted/20">
-                      <td className="px-2 py-1.5">
-                        <input
-                          className={`${inputCls} text-xs`}
-                          value={line.description}
-                          onChange={(e) => updateLine(idx, 'description', e.target.value)}
-                          placeholder="Description..."
-                        />
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <input
-                          className={`${inputCls} text-xs font-mono ${
-                            codeMiss
-                              ? 'border-amber-400 bg-amber-50/30'
-                              : codeOk
-                                ? 'border-success/40'
-                                : 'border-destructive/60 bg-destructive/5'
-                          }`}
-                          value={line.accountingCode}
-                          onChange={(e) => updateLine(idx, 'accountingCode', e.target.value)}
-                          placeholder="606400"
-                          maxLength={10}
-                        />
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <input
-                          className={`${inputCls} text-xs text-muted-foreground`}
-                          value={line.accountingLabel ?? ''}
-                          onChange={(e) => updateLine(idx, 'accountingLabel', e.target.value)}
-                          placeholder="auto"
-                        />
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <input
-                          type="number"
-                          className={`${inputCls} text-xs text-right`}
-                          value={line.quantity}
-                          min={0.001}
-                          step={0.001}
-                          onChange={(e) =>
-                            updateLine(idx, 'quantity', parseFloat(e.target.value) || 0)
-                          }
-                        />
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <input
-                          type="number"
-                          className={`${inputCls} text-xs text-right`}
-                          value={line.unitPrice}
-                          min={0}
-                          step={0.01}
-                          onChange={(e) =>
-                            updateLine(idx, 'unitPrice', parseFloat(e.target.value) || 0)
-                          }
-                        />
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <select
-                          className={`${inputCls} text-xs`}
-                          value={line.taxRate}
-                          onChange={(e) => updateLine(idx, 'taxRate', parseFloat(e.target.value))}
-                        >
-                          <option value={20}>20 %</option>
-                          <option value={10}>10 %</option>
-                          <option value={5.5}>5,5 %</option>
-                          <option value={2.1}>2,1 %</option>
-                          <option value={0}>0 %</option>
-                        </select>
-                      </td>
-                      <td className="px-2 py-1.5 text-right text-xs font-medium">
-                        {fmtAmt(lineHt)}
-                      </td>
-                      <td className="px-2 py-1.5 text-right">
-                        {form.lines.length > 1 && (
-                          <button
-                            onClick={() => removeLine(idx)}
-                            className="text-muted-foreground hover:text-destructive transition-colors p-1"
+                    <Fragment key={idx}>
+                      <tr className="transition-colors hover:bg-muted/20">
+                        <td className="px-2 py-1.5">
+                          <input
+                            className={`${inputCls} text-xs`}
+                            value={line.description}
+                            onChange={(e) => updateLine(idx, 'description', e.target.value)}
+                            placeholder="Description..."
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            className={`${inputCls} text-xs font-mono ${
+                              codeMiss
+                                ? 'border-amber-400 bg-amber-50/30'
+                                : codeOk
+                                  ? 'border-success/40'
+                                  : 'border-destructive/60 bg-destructive/5'
+                            }`}
+                            value={line.accountingCode}
+                            onChange={(e) => updateLine(idx, 'accountingCode', e.target.value)}
+                            placeholder="606400"
+                            maxLength={10}
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            className={`${inputCls} text-xs text-muted-foreground`}
+                            value={line.accountingLabel ?? ''}
+                            onChange={(e) => updateLine(idx, 'accountingLabel', e.target.value)}
+                            placeholder="auto"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            type="number"
+                            className={`${inputCls} text-xs text-right`}
+                            value={line.quantity}
+                            min={0.001}
+                            step={0.001}
+                            onChange={(e) =>
+                              updateLine(idx, 'quantity', parseFloat(e.target.value) || 0)
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <input
+                            type="number"
+                            className={`${inputCls} text-xs text-right`}
+                            value={line.unitPrice}
+                            min={0}
+                            step={0.01}
+                            onChange={(e) =>
+                              updateLine(idx, 'unitPrice', parseFloat(e.target.value) || 0)
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <select
+                            className={`${inputCls} text-xs`}
+                            value={line.taxRate}
+                            onChange={(e) => updateLine(idx, 'taxRate', parseFloat(e.target.value))}
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </td>
-                    </tr>
+                            <option value={20}>20 %</option>
+                            <option value={10}>10 %</option>
+                            <option value={5.5}>5,5 %</option>
+                            <option value={2.1}>2,1 %</option>
+                            <option value={0}>0 %</option>
+                          </select>
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-xs font-medium">
+                          {fmtAmt(lineHt)}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={() => addLineAc(idx)}
+                              title="Ajouter une remise / charge à cette ligne"
+                              className="text-muted-foreground hover:text-primary transition-colors p-1 text-xs font-semibold"
+                            >
+                              ±%
+                            </button>
+                            {form.lines.length > 1 && (
+                              <button
+                                onClick={() => removeLine(idx)}
+                                className="text-muted-foreground hover:text-destructive transition-colors p-1"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {lineAcs.map((ac, acIdx) => {
+                        const codes = ac.isCharge ? CHARGE_REASON_CODES : ALLOWANCE_REASON_CODES;
+                        return (
+                          <tr key={`ac-${acIdx}`} className="bg-muted/10">
+                            <td colSpan={8} className="px-2 py-1.5">
+                              <div className="flex flex-wrap items-center gap-2 pl-4 text-xs">
+                                <span className="text-muted-foreground">
+                                  {ac.isCharge ? '⬆' : '⬇'} Ligne {idx + 1}
+                                </span>
+                                <select
+                                  className={`${inputCls} text-xs w-28`}
+                                  value={ac.isCharge ? 'charge' : 'allowance'}
+                                  onChange={(e) => {
+                                    const isCharge = e.target.value === 'charge';
+                                    updateLineAc(idx, acIdx, {
+                                      isCharge,
+                                      reasonCode: (isCharge
+                                        ? CHARGE_REASON_CODES
+                                        : ALLOWANCE_REASON_CODES)[0].code,
+                                    });
+                                  }}
+                                >
+                                  <option value="allowance">Remise</option>
+                                  <option value="charge">Charge</option>
+                                </select>
+                                <input
+                                  type="number"
+                                  className={`${inputCls} text-xs w-24 text-right`}
+                                  value={ac.amount}
+                                  min={0}
+                                  step={0.01}
+                                  onChange={(e) =>
+                                    updateLineAc(idx, acIdx, {
+                                      amount: parseFloat(e.target.value) || 0,
+                                    })
+                                  }
+                                  placeholder="Montant"
+                                />
+                                <select
+                                  className={`${inputCls} text-xs w-44`}
+                                  value={ac.reasonCode ?? ''}
+                                  onChange={(e) =>
+                                    updateLineAc(idx, acIdx, { reasonCode: e.target.value })
+                                  }
+                                >
+                                  {codes.map((c) => (
+                                    <option key={c.code} value={c.code}>
+                                      {c.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <input
+                                  className={`${inputCls} text-xs flex-1 min-w-32`}
+                                  value={ac.reason ?? ''}
+                                  onChange={(e) =>
+                                    updateLineAc(idx, acIdx, { reason: e.target.value })
+                                  }
+                                  placeholder="Motif (texte libre, optionnel)"
+                                />
+                                <button
+                                  onClick={() => removeLineAc(idx, acIdx)}
+                                  className="text-muted-foreground hover:text-destructive transition-colors p-1"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -1879,7 +2403,31 @@ export default function InvoiceGeneratorPage() {
 
           {/* Totaux */}
           <div className="mt-4 flex justify-end">
-            <div className="text-sm space-y-1 min-w-48">
+            <div className="text-sm space-y-1 min-w-56">
+              {(totals.allowanceTotal > 0 || totals.chargeTotal > 0) && (
+                <div className="flex justify-between gap-8 text-muted-foreground">
+                  <span>Total HT lignes (BT-106)</span>
+                  <span className="font-medium text-foreground">
+                    {fmtAmt(totals.lineExtension)} {form.currency}
+                  </span>
+                </div>
+              )}
+              {totals.allowanceTotal > 0 && (
+                <div className="flex justify-between gap-8 text-muted-foreground">
+                  <span>Total remises (BT-107)</span>
+                  <span className="font-medium text-foreground">
+                    -{fmtAmt(totals.allowanceTotal)} {form.currency}
+                  </span>
+                </div>
+              )}
+              {totals.chargeTotal > 0 && (
+                <div className="flex justify-between gap-8 text-muted-foreground">
+                  <span>Total charges (BT-108)</span>
+                  <span className="font-medium text-foreground">
+                    +{fmtAmt(totals.chargeTotal)} {form.currency}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between gap-8 text-muted-foreground">
                 <span>Total HT</span>
                 <span className="font-medium text-foreground">
@@ -1898,8 +2446,142 @@ export default function InvoiceGeneratorPage() {
                   {fmtAmt(totals.ttc)} {form.currency}
                 </span>
               </div>
+              {cadre.digit === '2' && (
+                <>
+                  <div className="flex justify-between gap-8 text-muted-foreground">
+                    <span>Payé (BT-113)</span>
+                    <span className="font-medium text-foreground">
+                      -{fmtAmt(totals.prepaid)} {form.currency}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-8 border-t pt-1 font-semibold text-emerald-600">
+                    <span>Net à payer (BT-115)</span>
+                    <span>
+                      {fmtAmt(totals.payable)} {form.currency}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Remises & charges globales (document) */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="font-display text-2xl uppercase tracking-[0.08em]">
+              Remises &amp; charges globales
+            </CardTitle>
+            <Button variant="outline" size="sm" onClick={addDocAc}>
+              <Plus className="h-3.5 w-3.5" />
+              Ajouter
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Niveau document (BG-20/21) — chaque remise/charge porte obligatoirement une catégorie
+            TVA + taux car elle modifie la base de cette catégorie.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {(form.documentAllowanceCharges ?? []).length === 0 && (
+            <p className="text-xs text-muted-foreground/70">Aucune remise ou charge globale.</p>
+          )}
+          {(form.documentAllowanceCharges ?? []).map((ac, acIdx) => {
+            const codes = ac.isCharge ? CHARGE_REASON_CODES : ALLOWANCE_REASON_CODES;
+            return (
+              <div
+                key={acIdx}
+                className="flex flex-wrap items-end gap-2 rounded-2xl border border-border/80 bg-card-muted/40 px-3 py-2"
+              >
+                <Field label="Type">
+                  <select
+                    className={`${inputCls} text-xs w-28`}
+                    value={ac.isCharge ? 'charge' : 'allowance'}
+                    onChange={(e) => {
+                      const isCharge = e.target.value === 'charge';
+                      updateDocAc(acIdx, {
+                        isCharge,
+                        reasonCode: (isCharge ? CHARGE_REASON_CODES : ALLOWANCE_REASON_CODES)[0]
+                          .code,
+                      });
+                    }}
+                  >
+                    <option value="allowance">Remise</option>
+                    <option value="charge">Charge</option>
+                  </select>
+                </Field>
+                <Field label="Montant">
+                  <input
+                    type="number"
+                    className={`${inputCls} text-xs w-24 text-right`}
+                    value={ac.amount}
+                    min={0}
+                    step={0.01}
+                    onChange={(e) =>
+                      updateDocAc(acIdx, { amount: parseFloat(e.target.value) || 0 })
+                    }
+                  />
+                </Field>
+                <Field label="Cat. TVA *">
+                  <select
+                    className={`${inputCls} text-xs w-20`}
+                    value={ac.vatCategory ?? 'S'}
+                    onChange={(e) => updateDocAc(acIdx, { vatCategory: e.target.value })}
+                  >
+                    <option value="S">S</option>
+                    <option value="Z">Z</option>
+                    <option value="E">E</option>
+                    <option value="AE">AE</option>
+                    <option value="K">K</option>
+                    <option value="O">O</option>
+                    <option value="G">G</option>
+                  </select>
+                </Field>
+                <Field label="Taux %">
+                  <select
+                    className={`${inputCls} text-xs w-20`}
+                    value={ac.vatRate ?? 0}
+                    onChange={(e) => updateDocAc(acIdx, { vatRate: parseFloat(e.target.value) })}
+                  >
+                    <option value={20}>20</option>
+                    <option value={10}>10</option>
+                    <option value={5.5}>5,5</option>
+                    <option value={2.1}>2,1</option>
+                    <option value={0}>0</option>
+                  </select>
+                </Field>
+                <Field label="Code motif">
+                  <select
+                    className={`${inputCls} text-xs w-44`}
+                    value={ac.reasonCode ?? ''}
+                    onChange={(e) => updateDocAc(acIdx, { reasonCode: e.target.value })}
+                  >
+                    {codes.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Motif (texte)" className="flex-1 min-w-40">
+                  <input
+                    className={`${inputCls} text-xs`}
+                    value={ac.reason ?? ''}
+                    onChange={(e) => updateDocAc(acIdx, { reason: e.target.value })}
+                    placeholder="Ex : Remise commerciale"
+                  />
+                </Field>
+                <button
+                  onClick={() => removeDocAc(acIdx)}
+                  className="text-muted-foreground hover:text-destructive transition-colors p-2"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
         </CardContent>
       </Card>
 
@@ -1932,7 +2614,7 @@ export default function InvoiceGeneratorPage() {
               <SummaryItem label="Numéro" value={result.summary.invoiceNumber} />
               <SummaryItem
                 label="Type"
-                value={result.summary.direction === 'CREDIT_NOTE' ? 'Avoir' : 'Facture'}
+                value={directionLabel(result.summary.direction as InvoiceGenData['direction'])}
               />
               <SummaryItem label="Cadre (BT-23)" value={result.summary.cadreCode} />
               <SummaryItem label="Fournisseur" value={result.summary.supplierName} />
@@ -1955,6 +2637,15 @@ export default function InvoiceGeneratorPage() {
             {result.summary.cadreWarning && (
               <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
                 {result.summary.cadreWarning}
+              </div>
+            )}
+
+            {!result.summary.peppolRoutable && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                Routage Peppol non applicable : aucun EndpointID (BT-34/BT-49) n'a pu être émis pour
+                une partie étrangère/OSS sans EAS de TVA national. Renseignez un « Code de routage
+                CTC (EAS 0225) » pour la rendre routable, ou transmettez la facture par la voie PPF
+                (e-reporting). Le document reste valide EN16931.
               </div>
             )}
 

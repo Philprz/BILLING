@@ -6,7 +6,10 @@
  *   xmlns:cac = urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2
  *   xmlns:cbc = urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2
  *
- * InvoiceTypeCode : 380 = Invoice, 381/389 = CreditNote
+ * InvoiceTypeCode (UNTDID 1001) :
+ *   380 = facture commerciale, 381 = avoir, 386 = facture d'acompte,
+ *   384 = facture rectificative, 389 = autofacturation (facture),
+ *   393 = affacturage (facture), 503 = avoir de facture d'acompte.
  */
 
 import { XMLParser } from 'fast-xml-parser';
@@ -77,6 +80,7 @@ const xmlParser = new XMLParser({
     return [
       'InvoiceLine',
       'CreditNoteLine',
+      'TaxTotal',
       'TaxSubtotal',
       'AllowanceCharge',
       'AdditionalDocumentReference',
@@ -158,6 +162,32 @@ function extractSupplier(
   };
 }
 
+/**
+ * Mappe un InvoiceTypeCode/CreditNoteTypeCode (UNTDID 1001) vers une direction.
+ * `isCreditNote` = document de racine CreditNote (utilisé pour le défaut 381 implicite).
+ */
+function mapTypeCodeToDirection(
+  typeCode: string,
+  isCreditNote: boolean,
+): ParsedInvoice['direction'] {
+  switch (typeCode) {
+    case '389':
+      return 'SELF_BILLED'; // autofacturation — facture, pas un avoir
+    case '393':
+      return 'FACTORING'; // affacturage — facture
+    case '503':
+      return 'ADVANCE_CREDIT_NOTE'; // avoir de facture d'acompte
+    case '386':
+      return 'ADVANCE_INVOICE';
+    case '384':
+      return 'CORRECTIVE_INVOICE';
+    case '381':
+      return 'CREDIT_NOTE';
+    default:
+      return isCreditNote ? 'CREDIT_NOTE' : 'INVOICE';
+  }
+}
+
 // ─── Parser principal ─────────────────────────────────────────────────────────
 
 export function parseUbl(xmlContent: string): ParsedInvoice {
@@ -171,16 +201,10 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
 
   const isCreditNote = 'CreditNote' in doc;
 
-  // Direction
+  // Direction — mapping UNTDID 1001 (BT-3). 389 = autofacturation (facture, PAS un avoir),
+  // 393 = affacturage (facture), 503 = avoir de facture d'acompte (document CreditNote).
   const typeCode = textOf(root['cbc:InvoiceTypeCode'] ?? root['cbc:CreditNoteTypeCode']);
-  const direction: ParsedInvoice['direction'] =
-    isCreditNote || typeCode === '381' || typeCode === '389'
-      ? 'CREDIT_NOTE'
-      : typeCode === '386'
-        ? 'ADVANCE_INVOICE'
-        : typeCode === '384'
-          ? 'CORRECTIVE_INVOICE'
-          : 'INVOICE';
+  const direction: ParsedInvoice['direction'] = mapTypeCodeToDirection(typeCode, isCreditNote);
 
   // BT-3 — référence à la facture corrigée (TypeCode 384)
   const billingRef = root['cac:BillingReference'] as Record<string, unknown> | undefined;
@@ -246,9 +270,17 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
   const chargeTotalRaw = numStr(monetary['cbc:ChargeTotalAmount']);
   const chargeTotal = parseFloat(chargeTotalRaw) !== 0 ? chargeTotalRaw : null;
 
-  // TVA totale
-  const taxTotalNode = root['cac:TaxTotal'] as Record<string, unknown> | undefined;
-  const totalTax = numStr(taxTotalNode?.['cbc:TaxAmount']);
+  // TVA totale (BT-110). Une facture multidevise (BT-5 ≠ BT-6) porte deux
+  // cac:TaxTotal : celui en devise du document (porteur des cac:TaxSubtotal) et
+  // celui en devise de comptabilisation (BT-111 : cbc:TaxAmount seul, sans
+  // TaxSubtotal). On retient le bloc porteur des TaxSubtotal ; à défaut le
+  // premier. Une facture mono-TaxTotal (tableau de 1) reste inchangée.
+  const taxTotals = asArray(
+    root['cac:TaxTotal'] as Record<string, unknown> | Record<string, unknown>[] | undefined,
+  );
+  const documentTaxTotal =
+    taxTotals.find((tt) => tt['cac:TaxSubtotal'] !== undefined) ?? taxTotals[0];
+  const totalTax = numStr(documentTaxTotal?.['cbc:TaxAmount']);
 
   // Lignes
   const lineNodes =
@@ -272,8 +304,11 @@ export function parseUbl(xmlContent: string): ParsedInvoice {
     const priceNode = l['cac:Price'] as Record<string, unknown> | undefined;
     const unitPrice = numStr(priceNode?.['cbc:PriceAmount'] ?? priceNode?.['cbc:BaseQuantity']);
 
-    // TVA ligne
-    const lineTaxTotal = l['cac:TaxTotal'] as Record<string, unknown> | undefined;
+    // TVA ligne — cac:TaxTotal est désormais normalisé en tableau (cf. isArray) ;
+    // une ligne n'en porte qu'un seul, on prend le premier.
+    const lineTaxTotal = asArray(
+      l['cac:TaxTotal'] as Record<string, unknown> | Record<string, unknown>[] | undefined,
+    )[0];
     const taxAmount = numStr(lineTaxTotal?.['cbc:TaxAmount']);
 
     const taxSubtotals =

@@ -49,6 +49,9 @@ const DIRECTION_OPTIONS = [
   { value: 'CREDIT_NOTE', label: 'Avoirs' },
   { value: 'ADVANCE_INVOICE', label: 'Acomptes' },
   { value: 'CORRECTIVE_INVOICE', label: 'Rectificatives' },
+  { value: 'SELF_BILLED', label: 'Autofacturation' },
+  { value: 'FACTORING', label: 'Affacturage' },
+  { value: 'ADVANCE_CREDIT_NOTE', label: "Avoirs d'acompte" },
 ];
 
 function directionBadge(direction: string): { label: string; className: string } {
@@ -59,6 +62,12 @@ function directionBadge(direction: string): { label: string; className: string }
       return { label: 'Acompte', className: 'bg-emerald-100 text-emerald-800' };
     case 'CORRECTIVE_INVOICE':
       return { label: 'Rectificative', className: 'bg-violet-100 text-violet-800' };
+    case 'SELF_BILLED':
+      return { label: 'Autofacturation', className: 'bg-sky-100 text-sky-800' };
+    case 'FACTORING':
+      return { label: 'Affacturage', className: 'bg-indigo-100 text-indigo-800' };
+    case 'ADVANCE_CREDIT_NOTE':
+      return { label: "Avoir d'acompte", className: 'bg-rose-100 text-rose-800' };
     default:
       return { label: 'Facture', className: 'bg-muted text-muted-foreground' };
   }
@@ -98,6 +107,9 @@ export default function InvoiceListPage() {
     | 'CREDIT_NOTE'
     | 'ADVANCE_INVOICE'
     | 'CORRECTIVE_INVOICE'
+    | 'SELF_BILLED'
+    | 'FACTORING'
+    | 'ADVANCE_CREDIT_NOTE'
     | '';
   const paSource = searchParams.get('paSource') ?? '';
   const dateFrom = searchParams.get('dateFrom') ?? '';

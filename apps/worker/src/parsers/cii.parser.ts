@@ -4,7 +4,9 @@
  * Namespace racine :
  *   urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100
  *
- * TypeCode : 380 = Invoice, 381/389 = CreditNote
+ * TypeCode (UNTDID 1001) : 380 = facture, 381 = avoir, 386 = acompte,
+ *   384 = rectificative, 389 = autofacturation, 393 = affacturage,
+ *   503 = avoir de facture d'acompte.
  *
  * Structure XML :
  *   rsm:CrossIndustryInvoice
@@ -75,6 +77,26 @@ const xmlParser = new XMLParser({
   },
 });
 
+/** Mappe un TypeCode CII (UNTDID 1001) vers une direction (aligné sur le parseur UBL). */
+function mapTypeCodeToDirection(typeCode: string): ParsedInvoice['direction'] {
+  switch (typeCode) {
+    case '389':
+      return 'SELF_BILLED'; // autofacturation — facture, pas un avoir
+    case '393':
+      return 'FACTORING'; // affacturage — facture
+    case '503':
+      return 'ADVANCE_CREDIT_NOTE'; // avoir de facture d'acompte
+    case '386':
+      return 'ADVANCE_INVOICE';
+    case '384':
+      return 'CORRECTIVE_INVOICE';
+    case '381':
+      return 'CREDIT_NOTE';
+    default:
+      return 'INVOICE';
+  }
+}
+
 // ─── Parser principal ─────────────────────────────────────────────────────────
 
 export function parseCii(xmlContent: string): ParsedInvoice {
@@ -93,14 +115,9 @@ export function parseCii(xmlContent: string): ParsedInvoice {
 
   const docNumberPa = requireText(header['ram:ID'] ?? header['ID'], 'ram:ID');
   const typeCode = textOf(header['ram:TypeCode'] ?? header['TypeCode']);
-  const direction: ParsedInvoice['direction'] =
-    typeCode === '381' || typeCode === '389'
-      ? 'CREDIT_NOTE'
-      : typeCode === '386'
-        ? 'ADVANCE_INVOICE'
-        : typeCode === '384'
-          ? 'CORRECTIVE_INVOICE'
-          : 'INVOICE';
+  // Mapping UNTDID 1001 (BT-3) aligné sur le parseur UBL : 389 = autofacturation
+  // (facture, pas un avoir), 393 = affacturage, 503 = avoir de facture d'acompte.
+  const direction: ParsedInvoice['direction'] = mapTypeCodeToDirection(typeCode);
 
   const issueDateTimeNode = header['ram:IssueDateTime'] ?? header['IssueDateTime'];
   const rawDate = textOf(

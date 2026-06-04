@@ -24,6 +24,9 @@ enum InvoiceDirection {
   CREDIT_NOTE
   ADVANCE_INVOICE
   CORRECTIVE_INVOICE
+  SELF_BILLED
+  FACTORING
+  ADVANCE_CREDIT_NOTE
 }
 
 /// Format du document source reçu de la PA

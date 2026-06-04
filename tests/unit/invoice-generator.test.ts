@@ -2,10 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { XMLParser } from 'fast-xml-parser';
 import {
   computeAmounts,
+  computeAmountsForData,
+  computePeppolRoutable,
   computeCadre,
   documentTypeCode,
+  directionLabel,
   generateUblXml,
   validateExpenseLines,
+  validateAllowanceCharges,
+  validatePayee,
+  resolveNotes,
+  isConfirmedNoteSubjectCode,
   createZipBuffer,
   InvoiceValidationError,
   type InvoiceGenData,
@@ -64,7 +71,9 @@ const xmlParser = new XMLParser({
   trimValues: true,
   isArray: (tagName) => {
     const local = tagName.includes(':') ? tagName.split(':')[1] : tagName;
-    return ['InvoiceLine', 'CreditNoteLine', 'TaxSubtotal'].includes(local);
+    return ['InvoiceLine', 'CreditNoteLine', 'TaxSubtotal', 'AllowanceCharge', 'Note'].includes(
+      local,
+    );
   },
 });
 
@@ -748,6 +757,8 @@ describe('documentTypeCode — BT-3', () => {
     expect(documentTypeCode('CORRECTIVE_INVOICE')).toBe('384');
     expect(documentTypeCode('ADVANCE_INVOICE')).toBe('386');
     expect(documentTypeCode('ADVANCE_CREDIT_NOTE')).toBe('503');
+    expect(documentTypeCode('SELF_BILLED')).toBe('389');
+    expect(documentTypeCode('FACTORING')).toBe('393');
   });
 });
 
@@ -796,6 +807,356 @@ describe('generateUblXml — ProfileID = cadre BT-23', () => {
   });
 });
 
+// ─── BR-FR-CO-09 — facture déjà payée (cadre chiffre 2) ──────────────────────
+// AFNOR XP Z12-012 : pour un cadre chiffre 2 (B2/S2/M2), BT-113 PrepaidAmount = BT-112 TTC,
+// BT-115 PayableAmount = 0, BT-9 DueDate = date de paiement.
+
+describe('BR-FR-CO-09 — montants facture déjà payée (chiffre 2)', () => {
+  // 1 prestation à 100 HT, 20 % → TTC 120. accountingCode 622600 → service (lettre S).
+  const svc: InvoiceGenLine = {
+    description: 'Prestation',
+    quantity: 1,
+    unitPrice: 100,
+    taxRate: 20,
+    accountingCode: '622600',
+  };
+  const paid: InvoiceGenData = {
+    ...baseInvoice,
+    lines: [svc],
+    paymentStatus: 'paid',
+    paymentDate: '2026-04-25',
+  };
+
+  const monetaryOf = (xml: string) => {
+    const doc = xmlParser.parse(xml) as Record<string, unknown>;
+    const root = doc['Invoice'] as Record<string, unknown>;
+    return {
+      root,
+      monetary: root['cac:LegalMonetaryTotal'] as Record<string, unknown>,
+    };
+  };
+
+  it('cadre S2 → PrepaidAmount = TTC, PayableAmount = 0, DueDate = paymentDate', () => {
+    expect(computeCadre(paid).code).toBe('S2');
+    const xml = generateUblXml(paid);
+    const { root, monetary } = monetaryOf(xml);
+    expect(textOf(monetary['cbc:TaxInclusiveAmount'])).toBe('120.00');
+    expect(textOf(monetary['cbc:PrepaidAmount'])).toBe('120.00');
+    expect(textOf(monetary['cbc:PayableAmount'])).toBe('0.00');
+    expect(String(root['cbc:DueDate'])).toBe('2026-04-25');
+  });
+
+  it('payée sans paymentDate → DueDate = invoiceDate', () => {
+    const xml = generateUblXml({ ...paid, paymentDate: undefined });
+    const { root, monetary } = monetaryOf(xml);
+    expect(textOf(monetary['cbc:PayableAmount'])).toBe('0.00');
+    expect(String(root['cbc:DueDate'])).toBe(baseInvoice.invoiceDate); // 2026-04-22
+  });
+
+  it('computeAmountsForData reflète prepaid=TTC et payable=0 pour le chiffre 2', () => {
+    const amounts = computeAmountsForData(paid);
+    expect(amounts.taxInclusiveAmount).toBe(120);
+    expect(amounts.prepaidAmount).toBe(120);
+    expect(amounts.payableAmount).toBe(0);
+  });
+
+  it('non payée (chiffre 1) → S1, pas de prepaid forcé, PayableAmount = TTC', () => {
+    const unpaid: InvoiceGenData = { ...paid, paymentStatus: 'unpaid', paymentDate: undefined };
+    expect(computeCadre(unpaid).code).toBe('S1');
+    const xml = generateUblXml(unpaid);
+    const { root, monetary } = monetaryOf(xml);
+    expect(textOf(monetary['cbc:PrepaidAmount'])).toBe('0.00');
+    expect(textOf(monetary['cbc:PayableAmount'])).toBe('120.00');
+    // DueDate inchangé = dueDate saisi
+    expect(String(root['cbc:DueDate'])).toBe(baseInvoice.dueDate);
+  });
+
+  it('acompte (chiffre 4) → CO-09 ne s’applique pas : prepaid partiel, payable = TTC − acompte', () => {
+    // prepaidAmount d'entrée > 0 → chiffre 4 ; paymentStatus paid ne doit pas écraser le prepaid.
+    const advance: InvoiceGenData = {
+      ...paid,
+      paymentStatus: 'unpaid',
+      paymentDate: undefined,
+      prepaidAmount: 30,
+    };
+    expect(computeCadre(advance).code).toBe('S4');
+    const xml = generateUblXml(advance);
+    const { monetary } = monetaryOf(xml);
+    expect(textOf(monetary['cbc:PrepaidAmount'])).toBe('30.00');
+    expect(textOf(monetary['cbc:PayableAmount'])).toBe('90.00');
+  });
+});
+
+// ─── Remises & charges (AllowanceCharge) — ligne + document ──────────────────
+
+describe('AllowanceCharge — calcul des totaux (EN16931)', () => {
+  // Cas de référence du cadrage :
+  // Ligne 1 : 10 × 5,00 = 50,00, remise ligne 5,00 → BT-131 = 45,00
+  // Ligne 2 : 1 × 100,00 = 100,00 → BT-131 = 100,00
+  // Remise document 10,00 (S 20 %) + Charge document 15,00 (S 20 %)
+  const refInvoice: InvoiceGenData = {
+    ...baseInvoice,
+    lines: [
+      {
+        description: 'Article remisé',
+        quantity: 10,
+        unitPrice: 5,
+        taxRate: 20,
+        accountingCode: '606400',
+        allowanceCharges: [
+          { isCharge: false, amount: 5, reasonCode: '95', reason: 'Remise volume' },
+        ],
+      },
+      {
+        description: 'Prestation',
+        quantity: 1,
+        unitPrice: 100,
+        taxRate: 20,
+        accountingCode: '622600',
+      },
+    ],
+    documentAllowanceCharges: [
+      {
+        isCharge: false,
+        amount: 10,
+        vatCategory: 'S',
+        vatRate: 20,
+        reason: 'Remise commerciale',
+        reasonCode: '95',
+      },
+      {
+        isCharge: true,
+        amount: 15,
+        vatCategory: 'S',
+        vatRate: 20,
+        reason: 'Frais de transport',
+        reasonCode: 'FC',
+      },
+    ],
+  };
+
+  it('BT-131 net de ligne = gross − remises + charges', () => {
+    const c = computeAmounts(refInvoice.lines, refInvoice.documentAllowanceCharges, 0);
+    expect(c.computedLines[0].amountExclTax).toBe(45);
+    expect(c.computedLines[1].amountExclTax).toBe(100);
+  });
+
+  it('BT-106/107/108/109 corrects', () => {
+    const c = computeAmounts(refInvoice.lines, refInvoice.documentAllowanceCharges, 0);
+    expect(c.lineExtensionTotal).toBe(145); // BT-106
+    expect(c.allowanceTotal).toBe(10); // BT-107
+    expect(c.chargeTotal).toBe(15); // BT-108
+    expect(c.taxExclusiveAmount).toBe(150); // BT-109
+  });
+
+  it('base TVA catégorie S = 150, BT-117 = 30, BT-110 = 30', () => {
+    const c = computeAmounts(refInvoice.lines, refInvoice.documentAllowanceCharges, 0);
+    const s = c.taxCategories.find((g) => g.cat === 'S' && g.rate === 20);
+    expect(s?.taxable).toBe(150); // BT-116
+    expect(s?.tax).toBe(30); // BT-117
+    expect(c.totalTax).toBe(30); // BT-110
+  });
+
+  it('BT-112 = 180, BT-115 = 180', () => {
+    const c = computeAmounts(refInvoice.lines, refInvoice.documentAllowanceCharges, 0);
+    expect(c.taxInclusiveAmount).toBe(180); // BT-112
+    expect(c.payableAmount).toBe(180); // BT-115
+  });
+
+  it('TVA calculée par catégorie (base×taux), pas par ligne arrondie', () => {
+    // 2 lignes à 0,015 € de base théorique : round par ligne → 0,00+0,00 ; par catégorie → round2(0,03×0,2)
+    const lines: InvoiceGenLine[] = [
+      { description: 'A', quantity: 1, unitPrice: 0.07, taxRate: 20, accountingCode: '606400' },
+      { description: 'B', quantity: 1, unitPrice: 0.08, taxRate: 20, accountingCode: '606400' },
+    ];
+    const c = computeAmounts(lines);
+    // base S = 0,15 → TVA = round2(0,15×0,2) = 0,03
+    const s = c.taxCategories.find((g) => g.cat === 'S');
+    expect(s?.taxable).toBe(0.15);
+    expect(s?.tax).toBe(0.03);
+  });
+});
+
+describe('AllowanceCharge — émission XML', () => {
+  const refInvoice: InvoiceGenData = {
+    ...baseInvoice,
+    lines: [
+      {
+        description: 'Article remisé',
+        quantity: 10,
+        unitPrice: 5,
+        taxRate: 20,
+        accountingCode: '606400',
+        allowanceCharges: [
+          { isCharge: false, amount: 5, reasonCode: '95', reason: 'Remise volume' },
+        ],
+      },
+      {
+        description: 'Prestation',
+        quantity: 1,
+        unitPrice: 100,
+        taxRate: 20,
+        accountingCode: '622600',
+      },
+    ],
+    documentAllowanceCharges: [
+      {
+        isCharge: false,
+        amount: 10,
+        vatCategory: 'S',
+        vatRate: 20,
+        reason: 'Remise commerciale',
+        reasonCode: '95',
+      },
+      {
+        isCharge: true,
+        amount: 15,
+        vatCategory: 'S',
+        vatRate: 20,
+        reason: 'Frais de transport',
+        reasonCode: 'FC',
+      },
+    ],
+  };
+
+  it('émet un cac:AllowanceCharge de ligne SANS cac:TaxCategory', () => {
+    const xml = generateUblXml(refInvoice);
+    const start = xml.indexOf('<cac:InvoiceLine>');
+    const end = xml.indexOf('</cac:InvoiceLine>');
+    const lineXml = xml.substring(start, end);
+    expect(lineXml).toContain('<cac:AllowanceCharge>');
+    expect(lineXml).toContain('<cbc:ChargeIndicator>false</cbc:ChargeIndicator>');
+    expect(lineXml).toContain('<cbc:AllowanceChargeReasonCode>95</cbc:AllowanceChargeReasonCode>');
+    expect(lineXml).toContain('<cbc:Amount currencyID="EUR">5.00</cbc:Amount>');
+    expect(lineXml).not.toContain('<cac:TaxCategory>'); // héritée de la ligne
+  });
+
+  it('LineExtensionAmount de ligne reflète le net (BT-131 = 45.00)', () => {
+    const xml = generateUblXml(refInvoice);
+    const doc = xmlParser.parse(xml) as Record<string, unknown>;
+    const root = doc['Invoice'] as Record<string, unknown>;
+    const lines = root['cac:InvoiceLine'] as Record<string, unknown>[];
+    expect(textOf(lines[0]['cbc:LineExtensionAmount'])).toBe('45.00');
+  });
+
+  it('émet les cac:AllowanceCharge document AVEC cac:TaxCategory, avant cac:TaxTotal', () => {
+    const xml = generateUblXml(refInvoice);
+    const docAcPos = xml.indexOf('<cbc:AllowanceChargeReason>Remise commerciale');
+    const taxTotalPos = xml.indexOf('<cac:TaxTotal>');
+    expect(docAcPos).toBeGreaterThan(0);
+    expect(docAcPos).toBeLessThan(taxTotalPos);
+    // charge document avec sa catégorie TVA
+    expect(xml).toContain('<cbc:AllowanceChargeReasonCode>FC</cbc:AllowanceChargeReasonCode>');
+  });
+
+  it('document AllowanceCharge porte une cac:TaxCategory (S 20.00)', () => {
+    const xml = generateUblXml(refInvoice);
+    const doc = xmlParser.parse(xml) as Record<string, unknown>;
+    const root = doc['Invoice'] as Record<string, unknown>;
+    const acs = root['cac:AllowanceCharge'] as Record<string, unknown>[];
+    expect(acs).toHaveLength(2);
+    const cat = acs[0]['cac:TaxCategory'] as Record<string, unknown>;
+    expect(String(cat['cbc:ID'])).toBe('S');
+    expect(textOf(cat['cbc:Percent'])).toBe('20.00');
+  });
+
+  it('LegalMonetaryTotal contient AllowanceTotalAmount=10 et ChargeTotalAmount=15', () => {
+    const xml = generateUblXml(refInvoice);
+    const doc = xmlParser.parse(xml) as Record<string, unknown>;
+    const root = doc['Invoice'] as Record<string, unknown>;
+    const m = root['cac:LegalMonetaryTotal'] as Record<string, unknown>;
+    expect(textOf(m['cbc:LineExtensionAmount'])).toBe('145.00');
+    expect(textOf(m['cbc:TaxExclusiveAmount'])).toBe('150.00');
+    expect(textOf(m['cbc:TaxInclusiveAmount'])).toBe('180.00');
+    expect(textOf(m['cbc:AllowanceTotalAmount'])).toBe('10.00');
+    expect(textOf(m['cbc:ChargeTotalAmount'])).toBe('15.00');
+    expect(textOf(m['cbc:PayableAmount'])).toBe('180.00');
+  });
+
+  it('TaxSubtotal : TaxableAmount=150 et TaxAmount=30', () => {
+    const xml = generateUblXml(refInvoice);
+    const doc = xmlParser.parse(xml) as Record<string, unknown>;
+    const root = doc['Invoice'] as Record<string, unknown>;
+    const taxTotal = root['cac:TaxTotal'] as Record<string, unknown>;
+    expect(textOf(taxTotal['cbc:TaxAmount'])).toBe('30.00');
+    const subs = taxTotal['cac:TaxSubtotal'] as Record<string, unknown>[];
+    const s = subs.find((x) => {
+      const c = x['cac:TaxCategory'] as Record<string, unknown>;
+      return String(c['cbc:ID']) === 'S';
+    });
+    expect(textOf(s?.['cbc:TaxableAmount'])).toBe('150.00');
+    expect(textOf(s?.['cbc:TaxAmount'])).toBe('30.00');
+  });
+
+  it('reste parseable par parseUbl (allowanceTotal/chargeTotal extraits)', async () => {
+    const { parseUbl } = await import('../../apps/worker/src/parsers/ubl.parser');
+    const xml = generateUblXml(refInvoice);
+    const parsed = parseUbl(xml);
+    expect(parsed.allowanceTotal).toBe('10.00');
+    expect(parsed.chargeTotal).toBe('15.00');
+  });
+
+  it('CreditNote : remise de ligne dans CreditNoteLine', () => {
+    const xml = generateUblXml({ ...refInvoice, direction: 'CREDIT_NOTE' });
+    const start = xml.indexOf('<cac:CreditNoteLine>');
+    const end = xml.indexOf('</cac:CreditNoteLine>');
+    const lineXml = xml.substring(start, end);
+    expect(lineXml).toContain('<cac:AllowanceCharge>');
+    expect(lineXml).toContain('<cbc:Amount currencyID="EUR">5.00</cbc:Amount>');
+  });
+});
+
+describe('validateAllowanceCharges', () => {
+  it('accepte une remise/charge valide', () => {
+    expect(() =>
+      validateAllowanceCharges({
+        ...baseInvoice,
+        documentAllowanceCharges: [
+          { isCharge: false, amount: 10, vatCategory: 'S', vatRate: 20, reasonCode: '95' },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejette un montant absent ou nul', () => {
+    expect(() =>
+      validateAllowanceCharges({
+        ...baseInvoice,
+        lines: [
+          { ...baseLine, allowanceCharges: [{ isCharge: false, amount: 0, reasonCode: '95' }] },
+        ],
+      }),
+    ).toThrow(InvoiceValidationError);
+  });
+
+  it('rejette une remise sans motif ni code motif (BR-33/BR-42)', () => {
+    expect(() =>
+      validateAllowanceCharges({
+        ...baseInvoice,
+        lines: [{ ...baseLine, allowanceCharges: [{ isCharge: false, amount: 5 }] }],
+      }),
+    ).toThrow(InvoiceValidationError);
+  });
+
+  it('rejette une remise/charge document sans catégorie TVA (BR-32/BR-43)', () => {
+    expect(() =>
+      validateAllowanceCharges({
+        ...baseInvoice,
+        documentAllowanceCharges: [{ isCharge: true, amount: 15, reasonCode: 'FC' }],
+      }),
+    ).toThrow(InvoiceValidationError);
+  });
+
+  it('generateUblXml lève si remise/charge invalide', () => {
+    expect(() =>
+      generateUblXml({
+        ...baseInvoice,
+        documentAllowanceCharges: [{ isCharge: false, amount: 10, vatCategory: 'S', vatRate: 20 }],
+      }),
+    ).toThrow(InvoiceValidationError);
+  });
+});
+
 // ─── createZipBuffer ─────────────────────────────────────────────────────────
 
 describe('createZipBuffer', () => {
@@ -836,6 +1197,267 @@ describe('createZipBuffer', () => {
   });
 });
 
+// ─── Types 389 (autofacturation) & 393 (affacturage) ─────────────────────────
+
+const svcLine: InvoiceGenLine = {
+  description: 'Prestation',
+  quantity: 1,
+  unitPrice: 100,
+  taxRate: 20,
+  accountingCode: '622600',
+};
+
+describe('SELF_BILLED — autofacturation (389)', () => {
+  const selfBilled: InvoiceGenData = {
+    ...baseInvoice,
+    lines: [svcLine],
+    direction: 'SELF_BILLED',
+  };
+
+  it('émet InvoiceTypeCode 389 dans un document Invoice (pas un CreditNote)', () => {
+    const xml = generateUblXml(selfBilled);
+    expect(xml).toContain('<cbc:InvoiceTypeCode>389</cbc:InvoiceTypeCode>');
+    expect(xml).toContain('xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"');
+    expect(xml).toContain('<cac:InvoiceLine>');
+    expect(xml).not.toContain('<CreditNote ');
+  });
+
+  it('ajoute automatiquement une mention « Autofacturation »', () => {
+    const xml = generateUblXml(selfBilled);
+    expect(xml).toContain('<cbc:Note>Autofacturation</cbc:Note>');
+  });
+
+  it('ne duplique pas la mention si déjà présente', () => {
+    const notes = resolveNotes({
+      ...selfBilled,
+      notes: [{ text: 'Autofacturation (mandat 2026)' }],
+    });
+    expect(notes.filter((n) => /autofacturation/i.test(n.text))).toHaveLength(1);
+  });
+
+  it('calcule le cadre comme un 380 (S1 par défaut, S4 si acompte)', () => {
+    expect(computeCadre(selfBilled).code).toBe('S1');
+    expect(computeCadre({ ...selfBilled, prepaidAmount: 50 }).code).toBe('S4');
+    expect(computeCadre({ ...selfBilled, paymentStatus: 'paid' }).code).toBe('S2');
+  });
+
+  it('directionLabel renvoie « Autofacturation (389) »', () => {
+    expect(directionLabel('SELF_BILLED')).toBe('Autofacturation (389)');
+  });
+});
+
+describe('FACTORING — affacturage (393)', () => {
+  const factoring: InvoiceGenData = {
+    ...baseInvoice,
+    lines: [svcLine],
+    direction: 'FACTORING',
+    payee: { name: 'CréditFactor SA', identifier: 'CESSION-001', legalId: '38291746500031' },
+  };
+
+  it('émet InvoiceTypeCode 393 dans un document Invoice', () => {
+    const xml = generateUblXml(factoring);
+    expect(xml).toContain('<cbc:InvoiceTypeCode>393</cbc:InvoiceTypeCode>');
+    expect(xml).toContain('xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"');
+  });
+
+  it('émet cac:PayeeParty avec BT-59/60/61', () => {
+    const xml = generateUblXml(factoring);
+    const doc = xmlParser.parse(xml) as Record<string, unknown>;
+    const root = doc['Invoice'] as Record<string, unknown>;
+    const payee = root['cac:PayeeParty'] as Record<string, unknown>;
+    expect(payee).toBeTruthy();
+    const name = (payee['cac:PartyName'] as Record<string, unknown>)['cbc:Name'];
+    expect(String(name)).toBe('CréditFactor SA');
+    const ident = (payee['cac:PartyIdentification'] as Record<string, unknown>)['cbc:ID'];
+    expect(String(ident)).toBe('CESSION-001');
+    const legal = (payee['cac:PartyLegalEntity'] as Record<string, unknown>)['cbc:CompanyID'];
+    expect(String(legal)).toBe('38291746500031');
+  });
+
+  it('positionne PayeeParty après AccountingCustomerParty et avant TaxTotal', () => {
+    const xml = generateUblXml(factoring);
+    const posCustomer = xml.indexOf('</cac:AccountingCustomerParty>');
+    const posPayee = xml.indexOf('<cac:PayeeParty>');
+    const posTax = xml.indexOf('<cac:TaxTotal>');
+    expect(posCustomer).toBeLessThan(posPayee);
+    expect(posPayee).toBeLessThan(posTax);
+  });
+
+  it('ajoute automatiquement une mention de subrogation (code ABL)', () => {
+    const xml = generateUblXml(factoring);
+    expect(xml).toContain('<cbc:Note>ABL#Facture cédée');
+    expect(xml).toContain('subrogation');
+  });
+
+  it('validation : rejette un 393 sans payee.name', () => {
+    expect(() => validatePayee({ ...factoring, payee: undefined })).toThrow(InvoiceValidationError);
+    expect(() => generateUblXml({ ...factoring, payee: undefined })).toThrow(
+      InvoiceValidationError,
+    );
+  });
+
+  it('validation : accepte un 393 avec payee.name', () => {
+    expect(() => validatePayee(factoring)).not.toThrow();
+  });
+
+  it('n’émet pas PayeeParty pour une facture 380 sans payee', () => {
+    const xml = generateUblXml({ ...baseInvoice, lines: [svcLine] });
+    expect(xml).not.toContain('<cac:PayeeParty>');
+  });
+});
+
+// ─── Mentions structurées BT-21 (BG-1) ───────────────────────────────────────
+
+describe('Notes structurées BT-21', () => {
+  it('isConfirmedNoteSubjectCode : REG/AAB/ABL confirmés, BLU/INV non', () => {
+    expect(isConfirmedNoteSubjectCode('REG')).toBe(true);
+    expect(isConfirmedNoteSubjectCode('AAB')).toBe(true);
+    expect(isConfirmedNoteSubjectCode('ABL')).toBe(true);
+    expect(isConfirmedNoteSubjectCode('BLU')).toBe(false);
+    expect(isConfirmedNoteSubjectCode('INV')).toBe(false);
+    expect(isConfirmedNoteSubjectCode(undefined)).toBe(false);
+  });
+
+  it('émet les codes confirmés avec préfixe « CODE# » et BLU en texte seul', () => {
+    const xml = generateUblXml({
+      ...baseInvoice,
+      lines: [svcLine],
+      notes: [
+        { subjectCode: 'REG', text: 'Régime particulier' },
+        { subjectCode: 'AAB', text: 'Escompte 2 %' },
+        { subjectCode: 'BLU', text: 'Éco-participation' },
+      ],
+    });
+    expect(xml).toContain('<cbc:Note>REG#Régime particulier</cbc:Note>');
+    expect(xml).toContain('<cbc:Note>AAB#Escompte 2 %</cbc:Note>');
+    // BLU non confirmé → texte seul, sans préfixe
+    expect(xml).toContain('<cbc:Note>Éco-participation</cbc:Note>');
+    expect(xml).not.toContain('BLU#');
+  });
+
+  it('émet les 3 notes au niveau document', () => {
+    const xml = generateUblXml({
+      ...baseInvoice,
+      lines: [svcLine],
+      notes: [
+        { subjectCode: 'REG', text: 'A' },
+        { subjectCode: 'AAB', text: 'B' },
+        { subjectCode: 'BLU', text: 'C' },
+      ],
+    });
+    const doc = xmlParser.parse(xml) as Record<string, unknown>;
+    const root = doc['Invoice'] as Record<string, unknown>;
+    expect(root['cbc:Note']).toHaveLength(3);
+  });
+
+  it('conversion ascendante : note (string) → 1 entrée', () => {
+    const notes = resolveNotes({ ...baseInvoice, lines: [svcLine], note: 'Ancienne note libre' });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toEqual({ text: 'Ancienne note libre' });
+  });
+
+  it('notes (tableau) a la priorité sur note (string)', () => {
+    const notes = resolveNotes({
+      ...baseInvoice,
+      lines: [svcLine],
+      note: 'libre',
+      notes: [{ text: 'structurée' }],
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0].text).toBe('structurée');
+  });
+
+  it('reste parseable par parseUbl avec des notes', async () => {
+    const { parseUbl } = await import('../../apps/worker/src/parsers/ubl.parser');
+    const xml = generateUblXml({
+      ...baseInvoice,
+      lines: [svcLine],
+      notes: [{ subjectCode: 'REG', text: 'Régime particulier' }],
+    });
+    expect(() => parseUbl(xml)).not.toThrow();
+  });
+});
+
 function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
+
+// ─── generateUblXml — EndpointID (BT-34/BT-49) EAS Peppol ─────────────────────
+// Vendeurs étrangers / OSS « EU » : jamais de scheme faux, jamais d'EndpointID sans
+// schemeID. Hypothèse 0225 (FRCTC) pour les non mappables avec routingCode.
+describe('generateUblXml — EndpointID EAS (BT-34/BT-49)', () => {
+  // Extrait le 1er cbc:EndpointID d'une portion de XML (ou null si absent).
+  const endpointIn = (section: string): { scheme: string; value: string } | null => {
+    const m = section.match(/<cbc:EndpointID schemeID="([^"]+)">([^<]*)<\/cbc:EndpointID>/);
+    return m ? { scheme: m[1], value: m[2] } : null;
+  };
+  // Sépare le XML entre partie vendeur (avant AccountingCustomerParty) et acheteur (après).
+  const endpoints = (xml: string) => {
+    const idx = xml.indexOf('<cac:AccountingCustomerParty');
+    return {
+      supplier: endpointIn(xml.slice(0, idx)),
+      buyer: endpointIn(xml.slice(idx)),
+    };
+  };
+
+  it('vendeur FR avec SIRET → scheme 0009 (SIRET)', () => {
+    const xml = generateUblXml(baseInvoice); // supplier.siret renseigné
+    expect(endpoints(xml).supplier).toEqual({
+      scheme: '0009',
+      value: baseInvoice.supplier.siret,
+    });
+  });
+
+  it('vendeur DE (TVA DE…, sans SIRET) → scheme 9930 (Allemagne)', () => {
+    const xml = generateUblXml({
+      ...baseInvoice,
+      supplier: { name: 'Muster GmbH', taxId: 'DE123456789' }, // pas de SIRET
+    });
+    expect(endpoints(xml).supplier).toEqual({ scheme: '9930', value: 'DE123456789' });
+  });
+
+  it('vendeur IT (Partita IVA) → scheme 0211 (Italie)', () => {
+    const xml = generateUblXml({
+      ...baseInvoice,
+      supplier: { name: 'Esempio SRL', taxId: 'IT12345678901' },
+    });
+    expect(endpoints(xml).supplier).toEqual({ scheme: '0211', value: 'IT12345678901' });
+  });
+
+  it('vendeur OSS « EU » AVEC routingCode → scheme 0225 + valeur = routingCode (pas la TVA, pas 9957)', () => {
+    const xml = generateUblXml({
+      ...baseInvoice,
+      supplier: { name: 'OpenAI', taxId: 'EU372041333', routingCode: 'FR-CTC-OPENAI-001' },
+    });
+    const ep = endpoints(xml).supplier;
+    expect(ep).toEqual({ scheme: '0225', value: 'FR-CTC-OPENAI-001' });
+    expect(ep?.scheme).not.toBe('9957');
+    expect(ep?.value).not.toBe('EU372041333');
+  });
+
+  it('vendeur OSS « EU » SANS routingCode → aucun cbc:EndpointID émis + peppolRoutable=false', () => {
+    const data: InvoiceGenData = {
+      ...baseInvoice,
+      supplier: { name: 'OpenAI', taxId: 'EU372041333' }, // ni SIRET ni routingCode
+      buyerSiret: '40483304800022', // acheteur routable pour isoler le vendeur
+    };
+    const xml = generateUblXml(data);
+    expect(endpoints(xml).supplier).toBeNull();
+    // jamais de scheme faux 9957 pour un identifiant non-FR
+    expect(xml).not.toContain('schemeID="9957">EU372041333');
+    expect(computePeppolRoutable(data)).toBe(false);
+  });
+
+  it('acheteur FR (TVA FR…, sans SIRET) → scheme 9957 (légitime, identifiant français)', () => {
+    const xml = generateUblXml({
+      ...baseInvoice,
+      buyerSiret: undefined,
+      buyerVatNumber: 'FR12404833048',
+    });
+    expect(endpoints(xml).buyer).toEqual({ scheme: '9957', value: 'FR12404833048' });
+  });
+
+  it('computePeppolRoutable=true quand vendeur ET acheteur ont un EndpointID', () => {
+    expect(computePeppolRoutable({ ...baseInvoice, buyerSiret: '40483304800022' })).toBe(true);
+  });
+});

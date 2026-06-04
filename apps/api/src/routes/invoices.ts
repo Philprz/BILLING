@@ -184,7 +184,15 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             search: { type: 'string', maxLength: 100 },
             direction: {
               type: 'string',
-              enum: ['INVOICE', 'CREDIT_NOTE', 'ADVANCE_INVOICE', 'CORRECTIVE_INVOICE'],
+              enum: [
+                'INVOICE',
+                'CREDIT_NOTE',
+                'ADVANCE_INVOICE',
+                'CORRECTIVE_INVOICE',
+                'SELF_BILLED',
+                'FACTORING',
+                'ADVANCE_CREDIT_NOTE',
+              ],
             },
             amountMin: { type: 'number', minimum: 0 },
             amountMax: { type: 'number', minimum: 0 },
@@ -373,8 +381,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             sapDocEntry = 99900 + Math.floor(Math.random() * 99);
             sapDocNum = sapDocEntry;
           } else {
+            // Routage SAP par direction (BT-3) :
+            //   389 SELF_BILLED / 393 FACTORING → PurchaseInvoices (comme 380, via défaut)
+            //   503 ADVANCE_CREDIT_NOTE → PurchaseCreditNotes (par défaut)
+            // TODO 503 : contre-passation APDownPayment (cf. matrice S/B) — différé, route avoir simple.
             const docType =
-              invoice.direction === 'CREDIT_NOTE'
+              invoice.direction === 'CREDIT_NOTE' || invoice.direction === 'ADVANCE_CREDIT_NOTE'
                 ? 'PurchaseCreditNotes'
                 : invoice.direction === 'ADVANCE_INVOICE'
                   ? 'APDownPayments'
@@ -1048,8 +1060,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           };
 
           if (integrationMode === 'SERVICE_INVOICE') {
+            // Routage SAP par direction (BT-3) :
+            //   389 SELF_BILLED / 393 FACTORING → PurchaseInvoices (comme 380, via défaut)
+            //   503 ADVANCE_CREDIT_NOTE → PurchaseCreditNotes (par défaut)
+            // TODO 503 : contre-passation APDownPayment (cf. matrice S/B) — différé, route avoir simple.
             const docType =
-              invoice.direction === 'CREDIT_NOTE'
+              invoice.direction === 'CREDIT_NOTE' || invoice.direction === 'ADVANCE_CREDIT_NOTE'
                 ? 'PurchaseCreditNotes'
                 : invoice.direction === 'ADVANCE_INVOICE'
                   ? 'APDownPayments'
