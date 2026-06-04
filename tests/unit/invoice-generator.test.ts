@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { XMLParser } from 'fast-xml-parser';
 import {
   computeAmounts,
+  computeCadre,
+  documentTypeCode,
   generateUblXml,
   validateExpenseLines,
   createZipBuffer,
@@ -609,6 +611,188 @@ describe('generateUblXml — compatibilité avec ubl.parser', () => {
     };
     const xml = generateUblXml(inv);
     expect(() => parseUbl(xml)).not.toThrow();
+  });
+});
+
+// ─── Cadre de facturation BT-23 (matrice B/S/M × 1/2/4) ──────────────────────
+
+describe('computeCadre — lettre B/S/M', () => {
+  const svcLine: InvoiceGenLine = {
+    description: 'Prestation',
+    quantity: 1,
+    unitPrice: 100,
+    taxRate: 20,
+    accountingCode: '622600',
+  };
+  const goodLine: InvoiceGenLine = {
+    description: 'Fournitures',
+    quantity: 1,
+    unitPrice: 100,
+    taxRate: 20,
+    accountingCode: '606400',
+  };
+
+  it('classe 60 → Bien', () => {
+    expect(computeCadre({ ...baseInvoice, lines: [goodLine] }).letter).toBe('B');
+  });
+
+  it('classe 62 → Service', () => {
+    expect(computeCadre({ ...baseInvoice, lines: [svcLine] }).letter).toBe('S');
+  });
+
+  it('classe 63-67 → Service (défaut frais généraux)', () => {
+    const tax: InvoiceGenLine = { ...svcLine, accountingCode: '635100' };
+    const perso: InvoiceGenLine = { ...svcLine, accountingCode: '645000' };
+    expect(computeCadre({ ...baseInvoice, lines: [tax] }).letter).toBe('S');
+    expect(computeCadre({ ...baseInvoice, lines: [perso] }).letter).toBe('S');
+  });
+
+  it('mélange Biens + Services → M', () => {
+    expect(computeCadre({ ...baseInvoice, lines: [goodLine, svcLine] }).letter).toBe('M');
+  });
+});
+
+describe('computeCadre — chiffre 1/2/4', () => {
+  const svc: InvoiceGenLine = {
+    description: 'Prestation',
+    quantity: 1,
+    unitPrice: 100,
+    taxRate: 20,
+    accountingCode: '622600',
+  };
+  const base = { ...baseInvoice, lines: [svc] };
+
+  it('380 non payée → 1 (S1)', () => {
+    const c = computeCadre({ ...base, direction: 'INVOICE', paymentStatus: 'unpaid' });
+    expect(c.code).toBe('S1');
+    expect(c.digit).toBe('1');
+  });
+
+  it('380 déjà payée → 2 (S2)', () => {
+    const c = computeCadre({ ...base, direction: 'INVOICE', paymentStatus: 'paid' });
+    expect(c.code).toBe('S2');
+  });
+
+  it('380 avec acompte (prepaidAmount > 0) → 4 (définitive après acompte)', () => {
+    const goods = { ...svc, accountingCode: '606400' };
+    const c = computeCadre({
+      ...base,
+      lines: [goods],
+      direction: 'INVOICE',
+      prepaidAmount: 1000,
+    });
+    expect(c.code).toBe('B4');
+  });
+
+  it('386 (acompte) ne produit JAMAIS 4, même avec prepaidAmount', () => {
+    const c = computeCadre({ ...base, direction: 'ADVANCE_INVOICE', prepaidAmount: 5000 });
+    expect(c.digit).not.toBe('4');
+    expect(c.code).toBe('S1');
+  });
+
+  it('381 (avoir) non payé → 1, jamais 4', () => {
+    const c = computeCadre({ ...base, direction: 'CREDIT_NOTE', paymentStatus: 'unpaid' });
+    expect(c.code).toBe('S1');
+  });
+
+  it("503 (avoir d'acompte) → jamais 4", () => {
+    const c = computeCadre({
+      ...base,
+      direction: 'ADVANCE_CREDIT_NOTE',
+      prepaidAmount: 5000,
+      paymentStatus: 'paid',
+    });
+    expect(c.digit).not.toBe('4');
+    expect(c.code).toBe('S2');
+  });
+});
+
+describe('computeCadre — contrôle de cohérence typeTransaction', () => {
+  it('aucune divergence si typeTransaction concorde avec les lignes', () => {
+    const svc: InvoiceGenLine = {
+      description: 'Prestation',
+      quantity: 1,
+      unitPrice: 100,
+      taxRate: 20,
+      accountingCode: '622600',
+    };
+    const c = computeCadre({ ...baseInvoice, lines: [svc], typeTransaction: '2' });
+    expect(c.divergence).toBe(false);
+  });
+
+  it('divergence si lignes Services mais typeTransaction = 1 (Biens)', () => {
+    const svc: InvoiceGenLine = {
+      description: 'Prestation',
+      quantity: 1,
+      unitPrice: 100,
+      taxRate: 20,
+      accountingCode: '622600',
+    };
+    const c = computeCadre({ ...baseInvoice, lines: [svc], typeTransaction: '1' });
+    expect(c.divergence).toBe(true);
+    expect(c.inferredLetter).toBe('S'); // valeur émise = inférée des lignes
+    expect(c.letter).toBe('S');
+    expect(c.transactionLetter).toBe('B');
+  });
+
+  it('pas de divergence si typeTransaction absent', () => {
+    const c = computeCadre({ ...baseInvoice, typeTransaction: undefined });
+    expect(c.divergence).toBe(false);
+  });
+});
+
+describe('documentTypeCode — BT-3', () => {
+  it('mappe chaque direction au bon code', () => {
+    expect(documentTypeCode('INVOICE')).toBe('380');
+    expect(documentTypeCode('CREDIT_NOTE')).toBe('381');
+    expect(documentTypeCode('CORRECTIVE_INVOICE')).toBe('384');
+    expect(documentTypeCode('ADVANCE_INVOICE')).toBe('386');
+    expect(documentTypeCode('ADVANCE_CREDIT_NOTE')).toBe('503');
+  });
+});
+
+describe('generateUblXml — ProfileID = cadre BT-23', () => {
+  const svc: InvoiceGenLine = {
+    description: 'Prestation',
+    quantity: 1,
+    unitPrice: 100,
+    taxRate: 20,
+    accountingCode: '622600',
+  };
+
+  it("émet le code court dans cbc:ProfileID (et non plus l'URN Peppol)", () => {
+    const xml = generateUblXml({ ...baseInvoice, lines: [svc], paymentStatus: 'unpaid' });
+    expect(xml).toContain('<cbc:ProfileID>S1</cbc:ProfileID>');
+    expect(xml).not.toContain('urn:fdc:peppol.eu:2017:poacc:billing:01:1.0');
+  });
+
+  it('CustomizationID (BT-24) reste inchangé', () => {
+    const xml = generateUblXml({ ...baseInvoice, lines: [svc] });
+    expect(xml).toContain(
+      '<cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0</cbc:CustomizationID>',
+    );
+  });
+
+  it('M2 pour mélange biens+services déjà payé', () => {
+    const goods: InvoiceGenLine = { ...svc, accountingCode: '606400' };
+    const xml = generateUblXml({
+      ...baseInvoice,
+      lines: [goods, svc],
+      paymentStatus: 'paid',
+    });
+    expect(xml).toContain('<cbc:ProfileID>M2</cbc:ProfileID>');
+  });
+
+  it('B4 pour facture définitive après acompte sur des biens', () => {
+    const goods: InvoiceGenLine = { ...svc, accountingCode: '606400' };
+    const xml = generateUblXml({ ...baseInvoice, lines: [goods], prepaidAmount: 500 });
+    expect(xml).toContain('<cbc:ProfileID>B4</cbc:ProfileID>');
+  });
+
+  it('503 produit un document CreditNote', () => {
+    const xml = generateUblXml({ ...baseInvoice, lines: [svc], direction: 'ADVANCE_CREDIT_NOTE' });
+    expect(xml).toContain('<cbc:CreditNoteTypeCode>503</cbc:CreditNoteTypeCode>');
+    expect(xml).toContain('<cac:CreditNoteLine>');
   });
 });
 

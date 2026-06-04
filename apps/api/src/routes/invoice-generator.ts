@@ -91,11 +91,25 @@ export async function invoiceGeneratorRoutes(app: FastifyInstance): Promise<void
             invoiceDate: { type: 'string', format: 'date' },
             dueDate: { type: 'string', format: 'date' },
             currency: { type: 'string', minLength: 3, maxLength: 3 },
+            // BT-6 — devise de comptabilisation TVA (défaut EUR côté usage)
+            taxCurrency: { type: 'string', minLength: 3, maxLength: 3 },
+            // Taux de conversion devise facture → devise de comptabilisation (BT-111)
+            taxExchangeRate: { type: 'number', exclusiveMinimum: 0 },
+            // BT-72 — date de livraison / fin de prestation
+            deliveryDate: { type: 'string', format: 'date' },
             direction: {
               type: 'string',
-              enum: ['INVOICE', 'CREDIT_NOTE', 'ADVANCE_INVOICE', 'CORRECTIVE_INVOICE'],
+              enum: [
+                'INVOICE',
+                'CREDIT_NOTE',
+                'ADVANCE_INVOICE',
+                'CORRECTIVE_INVOICE',
+                'ADVANCE_CREDIT_NOTE',
+              ],
             },
             prepaidAmount: { type: 'number', minimum: 0 },
+            // Statut de paiement à l'émission — pilote le chiffre 1/2 du cadre BT-23
+            paymentStatus: { type: 'string', enum: ['unpaid', 'paid'] },
             correctedInvoiceRef: { type: 'string', maxLength: 100 },
             buyerName: { type: 'string', maxLength: 200 },
             buyerSiret: { type: 'string', maxLength: 14 },

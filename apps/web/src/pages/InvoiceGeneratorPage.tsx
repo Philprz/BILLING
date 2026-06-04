@@ -552,6 +552,46 @@ const AVOIR_PRESETS: Preset[] = [
       ],
     },
   },
+
+  // A503 — Avoir de facture d'acompte (TypeCode 503)
+  {
+    label: "A503 — Avoir d'acompte",
+    category: "Avoir — Annulation d'un acompte facturé",
+    description:
+      "Avoir de facture d'acompte (503) annulant un acompte de prestation — réf. à la facture d'acompte",
+    data: {
+      currency: 'EUR',
+      direction: 'ADVANCE_CREDIT_NOTE',
+      correctedInvoiceRef: 'ACOMPTE-2026-0099',
+      supplier: {
+        name: S.informatique[0].name,
+        legalForm: S.informatique[0].legalForm,
+        address: S.informatique[0].address,
+        city: S.informatique[0].city,
+        postalCode: S.informatique[0].postalCode,
+        country: 'FR',
+        taxId: S.informatique[0].vatNumber,
+        siret: S.informatique[0].siret,
+        iban: S.informatique[0].iban,
+        bic: S.informatique[0].bic,
+        phone: S.informatique[0].phone,
+        email: S.informatique[0].email,
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      note: "Avoir annulant l'acompte 30% — projet infogérance annulé (réf. ACOMPTE-2026-0099)",
+      lines: [
+        {
+          description: "Annulation acompte 30% — Projet infogérance 2026 (avoir d'acompte)",
+          quantity: 1,
+          unitPrice: 5400.0,
+          taxRate: 20,
+          accountingCode: '622600',
+          accountingLabel: 'Honoraires',
+        },
+      ],
+    },
+  },
 ];
 
 // ─── Scénarios prédéfinis — acomptes ─────────────────────────────────────────
@@ -678,6 +718,48 @@ const RECTIFICATIVE_PRESETS: Preset[] = [
   },
 ];
 
+// ─── Scénarios prédéfinis — autoliquidation (catégorie AE) ───────────────────
+
+const REVERSE_CHARGE_PRESETS: Preset[] = [
+  {
+    label: 'AE — Prestation intracommunautaire',
+    category: 'Autoliquidation — Prestation de services intracommunautaire',
+    description:
+      'Prestation de services UE en autoliquidation (catégorie AE, 0 %) — motif VATEX-FR-AE / « Autoliquidation » auto-complété',
+    data: {
+      currency: 'EUR',
+      direction: 'INVOICE',
+      // Fournisseur établi dans un autre État membre (reverse charge côté preneur FR)
+      supplier: {
+        name: 'Cloud Infra GmbH',
+        legalForm: 'GmbH',
+        address: 'Friedrichstraße 100',
+        city: 'Berlin',
+        postalCode: '10117',
+        country: 'DE',
+        taxId: 'DE123456789',
+        email: 'billing@cloudinfra.example',
+      } satisfies PresetSupplier,
+      ...DEMO_BUYER,
+      typeTransaction: '2',
+      deliveryDate: undefined,
+      note: 'Autoliquidation par le preneur — art. 283-2 du CGI',
+      lines: [
+        {
+          description: 'Abonnement plateforme cloud — mai 2026 (prestation intra-UE)',
+          quantity: 1,
+          unitPrice: 1200.0,
+          taxRate: 0,
+          taxCategoryCode: 'AE',
+          // motif laissé vide : auto-complété en VATEX-FR-AE / « Autoliquidation »
+          accountingCode: '628000',
+          accountingLabel: 'Divers (prestations externes)',
+        },
+      ],
+    },
+  },
+];
+
 // ─── Valeurs initiales ────────────────────────────────────────────────────────
 
 function todayStr() {
@@ -705,8 +787,12 @@ function defaultForm(): InvoiceGenData {
     invoiceDate: todayStr(),
     dueDate: dueDateStr(),
     currency: 'EUR',
+    taxCurrency: 'EUR',
+    taxExchangeRate: undefined,
+    deliveryDate: undefined,
     direction: 'INVOICE',
     prepaidAmount: 0,
+    paymentStatus: 'unpaid',
     correctedInvoiceRef: undefined,
     supplier: {
       name: '',
@@ -756,6 +842,88 @@ function getAccountLabel(code: string): string {
   return CHART_OF_ACCOUNTS[code] ?? '';
 }
 
+// ─── Cadre de facturation BT-23 (miroir client de computeCadre côté API) ─────
+// Référence : AFNOR XP Z12-012 / BR-FR-08. Recalculé en temps réel pour l'affichage
+// lecture seule ; la valeur émise dans le XML reste celle calculée côté serveur.
+type CadreLetter = 'B' | 'S' | 'M';
+type CadreDigit = '1' | '2' | '4';
+
+const CADRE_LETTER_LABEL: Record<CadreLetter, string> = {
+  B: 'livraison de biens',
+  S: 'prestation de services',
+  M: 'mixte (biens + services)',
+};
+const CADRE_DIGIT_LABEL: Record<CadreDigit, string> = {
+  '1': 'non payée',
+  '2': 'déjà payée',
+  '4': 'définitive après acompte',
+};
+
+function docTypeCode(direction: InvoiceGenData['direction']): string {
+  switch (direction) {
+    case 'CREDIT_NOTE':
+      return '381';
+    case 'ADVANCE_CREDIT_NOTE':
+      return '503';
+    case 'ADVANCE_INVOICE':
+      return '386';
+    case 'CORRECTIVE_INVOICE':
+      return '384';
+    default:
+      return '380';
+  }
+}
+
+function inferCadreLetter(lines: GenLine[]): CadreLetter {
+  let hasBien = false;
+  let hasService = false;
+  for (const l of lines) {
+    if ((l.accountingCode ?? '').trim().startsWith('60')) hasBien = true;
+    else hasService = true;
+  }
+  if (hasBien && hasService) return 'M';
+  if (hasBien) return 'B';
+  return 'S';
+}
+
+function transactionLetter(t?: '1' | '2' | '3'): CadreLetter | null {
+  if (t === '1') return 'B';
+  if (t === '2') return 'S';
+  if (t === '3') return 'M';
+  return null;
+}
+
+interface CadrePreview {
+  code: string;
+  label: string;
+  letter: CadreLetter;
+  digit: CadreDigit;
+  inferredLetter: CadreLetter;
+  txLetter: CadreLetter | null;
+  divergence: boolean;
+}
+
+function computeCadre(form: InvoiceGenData): CadrePreview {
+  const typeCode = docTypeCode(form.direction);
+  const inferred = inferCadreLetter(form.lines);
+  const txLetter = transactionLetter(form.typeTransaction);
+  const divergence = txLetter !== null && txLetter !== inferred;
+  const prepaid = form.prepaidAmount ?? 0;
+  const paid = form.paymentStatus === 'paid';
+  const digit: CadreDigit = typeCode === '380' && prepaid > 0 ? '4' : paid ? '2' : '1';
+  const letter = inferred;
+  const code = `${letter}${digit}`;
+  return {
+    code,
+    label: `${code} — ${CADRE_LETTER_LABEL[letter]}, ${CADRE_DIGIT_LABEL[digit]}`,
+    letter,
+    digit,
+    inferredLetter: inferred,
+    txLetter,
+    divergence,
+  };
+}
+
 // ─── Composant principal ──────────────────────────────────────────────────────
 
 export default function InvoiceGeneratorPage() {
@@ -773,6 +941,7 @@ export default function InvoiceGeneratorPage() {
   const [xmlOpen, setXmlOpen] = useState(false);
 
   const totals = computeTotals(form.lines);
+  const cadre = computeCadre(form);
 
   // ── Preset ────────────────────────────────────────────────────────────────
   const applyPreset = (preset: Preset) => {
@@ -999,7 +1168,7 @@ export default function InvoiceGeneratorPage() {
           </div>
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
-              Avoirs (381)
+              Avoirs (381 / 503)
             </p>
             <div className="flex flex-wrap gap-2">
               {AVOIR_PRESETS.map((p, i) => (
@@ -1042,6 +1211,23 @@ export default function InvoiceGeneratorPage() {
                   onClick={() => applyPreset(p)}
                   title={p.description}
                   className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-violet-500/35 hover:bg-violet-500/10 hover:text-violet-600"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
+              Autoliquidation (AE)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {REVERSE_CHARGE_PRESETS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => applyPreset(p)}
+                  title={p.description}
+                  className="rounded-xl border border-border/80 bg-background/60 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:border-sky-500/35 hover:bg-sky-500/10 hover:text-sky-600"
                 >
                   {p.label}
                 </button>
@@ -1105,6 +1291,45 @@ export default function InvoiceGeneratorPage() {
                 onChange={(e) => setForm((p) => ({ ...p, dueDate: e.target.value || undefined }))}
               />
             </Field>
+            <Field label="Date de livraison (BT-72)">
+              <input
+                type="date"
+                className={inputCls}
+                value={form.deliveryDate ?? ''}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, deliveryDate: e.target.value || undefined }))
+                }
+              />
+            </Field>
+            <Field label="Devise compta. TVA (BT-6)">
+              <select
+                className={inputCls}
+                value={form.taxCurrency ?? 'EUR'}
+                onChange={(e) => setForm((p) => ({ ...p, taxCurrency: e.target.value }))}
+              >
+                <option value="EUR">EUR</option>
+                <option value="USD">USD</option>
+                <option value="GBP">GBP</option>
+              </select>
+            </Field>
+            {(form.taxCurrency ?? 'EUR') !== form.currency && (
+              <Field label="Taux de conversion TVA">
+                <input
+                  type="number"
+                  className={inputCls}
+                  min={0}
+                  step={0.0001}
+                  value={form.taxExchangeRate ?? ''}
+                  onChange={(e) =>
+                    setForm((p) => ({
+                      ...p,
+                      taxExchangeRate: parseFloat(e.target.value) || undefined,
+                    }))
+                  }
+                  placeholder={`1 ${form.currency} = ? ${form.taxCurrency ?? 'EUR'}`}
+                />
+              </Field>
+            )}
             {form.direction === 'INVOICE' && (
               <Field label="Acompte versé (BT-113)">
                 <input
@@ -1132,7 +1357,45 @@ export default function InvoiceGeneratorPage() {
                 />
               </Field>
             )}
+            <Field label="Payée à l'émission">
+              <select
+                className={inputCls}
+                value={form.paymentStatus ?? 'unpaid'}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, paymentStatus: e.target.value as 'unpaid' | 'paid' }))
+                }
+              >
+                <option value="unpaid">Non payée (chiffre 1)</option>
+                <option value="paid">Déjà payée (chiffre 2)</option>
+              </select>
+            </Field>
           </div>
+
+          {/* Cadre de facturation BT-23 calculé en temps réel (lecture seule) */}
+          <div className="mt-4 flex flex-col gap-2 rounded-2xl border border-border/80 bg-card-muted/60 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Cadre de facturation (BT-23)
+              </span>
+              <span className="rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1 font-mono text-sm font-bold text-primary">
+                {cadre.code}
+              </span>
+              <span className="text-sm text-muted-foreground">{cadre.label}</span>
+            </div>
+            <p className="text-xs text-muted-foreground/70">
+              Calculé automatiquement (lettre inférée des comptes de charge, chiffre selon le statut
+              de paiement et l'acompte). Porté par <code>cbc:ProfileID</code>.
+            </p>
+            {cadre.divergence && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                <strong>Divergence de nature :</strong> les lignes sont inférées «&nbsp;
+                {cadre.inferredLetter}&nbsp;» mais le type de transaction CIUS-FR saisi vaut «&nbsp;
+                {cadre.txLetter}&nbsp;». La valeur émise est «&nbsp;{cadre.code}&nbsp;» (inférée des
+                lignes). Réconciliez le type de transaction si nécessaire.
+              </div>
+            )}
+          </div>
+
           <div className="mt-4">
             <Field label="Note (optionnel)">
               <input
@@ -1671,6 +1934,7 @@ export default function InvoiceGeneratorPage() {
                 label="Type"
                 value={result.summary.direction === 'CREDIT_NOTE' ? 'Avoir' : 'Facture'}
               />
+              <SummaryItem label="Cadre (BT-23)" value={result.summary.cadreCode} />
               <SummaryItem label="Fournisseur" value={result.summary.supplierName} />
               <SummaryItem label="Identifiant" value={result.summary.supplierIdentifier} />
               <SummaryItem
@@ -1687,6 +1951,12 @@ export default function InvoiceGeneratorPage() {
               />
               <SummaryItem label="Lignes" value={String(result.summary.lineCount)} />
             </div>
+
+            {result.summary.cadreWarning && (
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                {result.summary.cadreWarning}
+              </div>
+            )}
 
             {/* Téléchargements */}
             <div className="flex flex-wrap gap-3">

@@ -51,8 +51,24 @@ export interface InvoiceGenData {
   invoiceDate: string; // YYYY-MM-DD
   dueDate?: string;
   currency: string; // ISO 4217, ex : EUR
-  direction: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
+  // BT-6 — devise de comptabilisation de la TVA (défaut EUR). Si ≠ currency,
+  // un second cac:TaxTotal portant la TVA convertie (BT-111) est émis.
+  taxCurrency?: string;
+  // Taux de conversion devise facture → devise de comptabilisation (obligatoire si taxCurrency ≠ currency).
+  taxExchangeRate?: number;
+  // BT-72 — date de livraison / fin de prestation.
+  deliveryDate?: string; // YYYY-MM-DD
+  // BT-3 — type de document. ADVANCE_CREDIT_NOTE = avoir de facture d'acompte (TypeCode 503).
+  direction:
+    | 'INVOICE'
+    | 'CREDIT_NOTE'
+    | 'ADVANCE_INVOICE'
+    | 'CORRECTIVE_INVOICE'
+    | 'ADVANCE_CREDIT_NOTE';
   prepaidAmount?: number; // BT-113 — montant acompte déjà versé (0 ou absent = aucun)
+  // Statut de paiement à l'émission — pilote le chiffre 1 (non payée) vs 2 (déjà payée)
+  // du cadre de facturation BT-23. Défaut : 'unpaid'.
+  paymentStatus?: 'unpaid' | 'paid';
   correctedInvoiceRef?: string; // BT-3 — ID de la facture originale (TypeCode 384)
   supplier: InvoiceGenSupplier;
   buyerName?: string;
@@ -108,6 +124,11 @@ export interface GeneratedInvoice {
     payableAmount: number;
     currency: string;
     lineCount: number;
+    // BT-23 — cadre de facturation calculé (lettre B/S/M + chiffre 1/2/4), ex. « S1 ».
+    cadreCode: string;
+    cadreLabel: string;
+    // Alerte non bloquante : la lettre inférée des lignes diverge de typeTransaction.
+    cadreWarning?: string;
   };
 }
 
@@ -135,6 +156,197 @@ function escapeXml(str: string): string {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+// ─── Cadre de facturation BT-23 (matrice B/S/M × 1/2/4) ───────────────────────
+// Référentiel : AFNOR XP Z12-012 (socle Réforme Facture électronique), règle
+// BR-FR-08. Le cadre est porté par BT-23 = cbc:ProfileID (le BT-24 / CustomizationID
+// reste l'URN EN16931 + CIUS-FR, inchangé). Valeur = code court (ex. « S1 »).
+// 1ʳᵉ lettre = nature (B=bien, S=service, M=mixte) ; chiffre = processus
+// (1=non payée, 2=déjà payée, 4=définitive après acompte).
+
+export type CadreLetter = 'B' | 'S' | 'M';
+export type CadreDigit = '1' | '2' | '4';
+
+export interface CadreResult {
+  code: string; // ex. « S1 », « M4 »
+  letter: CadreLetter; // lettre émise (= inférée des lignes)
+  digit: CadreDigit;
+  label: string; // libellé humain, ex. « S1 — prestation de services, non payée »
+  inferredLetter: CadreLetter; // lettre inférée de accountingCode
+  transactionLetter: CadreLetter | null; // lettre dérivée de typeTransaction (si fourni)
+  divergence: boolean; // true si inferredLetter ≠ transactionLetter (alerte non bloquante)
+  documentTypeCode: string; // BT-3
+}
+
+// BT-3 — type de document (UNTDID 1001) à partir de la direction.
+export function documentTypeCode(direction: InvoiceGenData['direction']): string {
+  switch (direction) {
+    case 'CREDIT_NOTE':
+      return '381';
+    case 'ADVANCE_CREDIT_NOTE':
+      return '503';
+    case 'ADVANCE_INVOICE':
+      return '386';
+    case 'CORRECTIVE_INVOICE':
+      return '384';
+    default:
+      return '380';
+  }
+}
+
+// Nature d'une ligne déduite de la classe PCG du compte de charge :
+// - classe 60 (achats : marchandises, matières, fournitures) → Bien
+// - 61/62 (services extérieurs) et 63-67 (impôts, personnel, gestion courante,
+//   financières, exceptionnelles) → Service (défaut, frais généraux).
+function lineNature(accountingCode?: string): 'B' | 'S' {
+  return (accountingCode ?? '').trim().startsWith('60') ? 'B' : 'S';
+}
+
+// Agrégation document : toutes Biens → B ; toutes Services → S ; mélange → M.
+function inferDocumentLetter(lines: InvoiceGenLine[]): CadreLetter {
+  let hasBien = false;
+  let hasService = false;
+  for (const line of lines) {
+    if (lineNature(line.accountingCode) === 'B') hasBien = true;
+    else hasService = true;
+  }
+  if (hasBien && hasService) return 'M';
+  if (hasBien) return 'B';
+  return 'S'; // toutes services, ou aucune ligne
+}
+
+// Lettre dérivée de typeTransaction CIUS-FR : 1→B, 2→S, 3→M.
+function transactionLetter(typeTransaction?: '1' | '2' | '3'): CadreLetter | null {
+  if (typeTransaction === '1') return 'B';
+  if (typeTransaction === '2') return 'S';
+  if (typeTransaction === '3') return 'M';
+  return null;
+}
+
+const CADRE_LETTER_LABEL: Record<CadreLetter, string> = {
+  B: 'livraison de biens',
+  S: 'prestation de services',
+  M: 'mixte (biens + services)',
+};
+const CADRE_DIGIT_LABEL: Record<CadreDigit, string> = {
+  '1': 'non payée',
+  '2': 'déjà payée',
+  '4': 'définitive après acompte',
+};
+
+// Détermine le cadre de facturation complet (lettre + chiffre + contrôle de cohérence).
+// La lettre ÉMISE est celle inférée des lignes (reflète le contenu réel) ; en cas de
+// divergence avec typeTransaction, une alerte non bloquante est renseignée.
+export function computeCadre(data: InvoiceGenData): CadreResult {
+  const typeCode = documentTypeCode(data.direction);
+  const inferred = inferDocumentLetter(data.lines);
+  const txLetter = transactionLetter(data.typeTransaction);
+  const divergence = txLetter !== null && txLetter !== inferred;
+
+  // Chiffre : 4 réservé à la facture définitive après acompte (BT-3=380 + acompte > 0).
+  // Les avoirs (381/503), la rectificative (384) et l'acompte (386) ne produisent JAMAIS 4
+  // (BR-FR-CO-08). Sinon : 2 si déjà payée à l'émission, 1 sinon.
+  const prepaid = data.prepaidAmount ?? 0;
+  const paid = data.paymentStatus === 'paid';
+  const digit: CadreDigit = typeCode === '380' && prepaid > 0 ? '4' : paid ? '2' : '1';
+
+  const letter = inferred;
+  const code = `${letter}${digit}`;
+  const label = `${code} — ${CADRE_LETTER_LABEL[letter]}, ${CADRE_DIGIT_LABEL[digit]}`;
+
+  return {
+    code,
+    letter,
+    digit,
+    label,
+    inferredLetter: inferred,
+    transactionLetter: txLetter,
+    divergence,
+    documentTypeCode: typeCode,
+  };
+}
+
+// Message d'alerte de cohérence (lettre lignes vs typeTransaction), ou undefined.
+export function cadreDivergenceWarning(cadre: CadreResult): string | undefined {
+  if (!cadre.divergence || cadre.transactionLetter === null) return undefined;
+  return (
+    `Cadre BT-23 : la nature inférée des lignes (${cadre.inferredLetter}) diverge du ` +
+    `type de transaction CIUS-FR saisi (${cadre.transactionLetter}). ` +
+    `La valeur émise est « ${cadre.code} » (inférée des lignes) — réconciliez typeTransaction.`
+  );
+}
+
+// ─── EndpointID (BT-34 / BT-49) — schemes Peppol EAS ──────────────────────────
+// Mapping préfixe pays du n° de TVA → code EAS Peppol pour les identifiants
+// « XX:VAT ». Source : Peppol Code List « Electronic Address Scheme (EAS) »
+// (docs.peppol.eu/poacc/billing/3.0/codelist/eas/). Le préfixe TVA grec est « EL »
+// (mais correspond au code GR 9933). On NE met JAMAIS 9957 (FR:VAT) pour un
+// identifiant non français.
+const VAT_EAS_BY_PREFIX: Record<string, string> = {
+  HU: '9910',
+  AT: '9914',
+  ES: '9920',
+  AD: '9922',
+  AL: '9923',
+  BA: '9924',
+  BE: '9925',
+  BG: '9926',
+  CH: '9927',
+  CY: '9928',
+  CZ: '9929',
+  DE: '9930',
+  EE: '9931',
+  GB: '9932',
+  EL: '9933', // Grèce — préfixe TVA « EL »
+  HR: '9934',
+  IE: '9935',
+  LI: '9936',
+  LT: '9937',
+  LU: '9938',
+  LV: '9939',
+  MC: '9940',
+  ME: '9941',
+  MK: '9942',
+  MT: '9943',
+  NL: '9944',
+  PL: '9945',
+  PT: '9946',
+  RO: '9947',
+  RS: '9948',
+  SI: '9949',
+  SK: '9950',
+  SM: '9951',
+  TR: '9952',
+  VA: '9953',
+  FR: '9957',
+};
+
+function vatEasScheme(vat: string): string | null {
+  const prefix = vat.trim().slice(0, 2).toUpperCase();
+  return VAT_EAS_BY_PREFIX[prefix] ?? null;
+}
+
+// Construit l'élément cbc:EndpointID (BT-34/BT-49). Priorité au SIRET (scheme 0009).
+// À défaut, l'identifiant TVA reçoit le scheme EAS de son pays ; si le préfixe est
+// inconnu/non standard (ex. OSS « EU… »), on émet l'EndpointID SANS scheme erroné,
+// précédé d'un commentaire TODO — plutôt qu'un faux 9957.
+function buildEndpointId(siret?: string, vat?: string): string {
+  if (siret) {
+    return `
+      <cbc:EndpointID schemeID="0009">${escapeXml(siret)}</cbc:EndpointID>`;
+  }
+  if (vat) {
+    const scheme = vatEasScheme(vat);
+    if (scheme) {
+      return `
+      <cbc:EndpointID schemeID="${scheme}">${escapeXml(vat)}</cbc:EndpointID>`;
+    }
+    return `
+      <!-- TODO EAS scheme à confirmer pour le préfixe TVA "${escapeXml(vat.trim().slice(0, 2))}" -->
+      <cbc:EndpointID>${escapeXml(vat)}</cbc:EndpointID>`;
+  }
+  return '';
 }
 
 function getGeneratedDir(): string {
@@ -199,21 +411,34 @@ export function computeAmounts(lines: InvoiceGenLine[]): ComputedAmounts {
 export function generateUblXml(data: InvoiceGenData): string {
   const { computedLines, totalExclTax, totalTax, totalInclTax } = computeAmounts(data.lines);
 
-  const isCreditNote = data.direction === 'CREDIT_NOTE';
+  // BT-6 — devise de comptabilisation TVA : un second TaxTotal (TVA convertie, BT-111)
+  // n'est requis que si la devise de comptabilisation diffère de la devise de facture.
+  const needsTaxCurrency = !!data.taxCurrency && data.taxCurrency !== data.currency;
+  if (needsTaxCurrency && (data.taxExchangeRate === undefined || data.taxExchangeRate === null)) {
+    throw new InvoiceValidationError(
+      `Devise de comptabilisation TVA (${data.taxCurrency}) différente de la devise de facture ` +
+        `(${data.currency}) : le taux de conversion (taxExchangeRate) est obligatoire pour produire ` +
+        `le montant de TVA en devise de comptabilisation (BT-111).`,
+    );
+  }
+  const taxTotalInTaxCurrency = needsTaxCurrency
+    ? round2(totalTax * (data.taxExchangeRate as number))
+    : 0;
+
+  // Un avoir (381) comme un avoir d'acompte (503) sont des documents « typés avoirs »
+  // → document CreditNote (CreditNoteLine, CreditNoteTypeCode).
+  const isCreditNote = data.direction === 'CREDIT_NOTE' || data.direction === 'ADVANCE_CREDIT_NOTE';
   const rootTag = isCreditNote ? 'CreditNote' : 'Invoice';
   const lineTag = isCreditNote ? 'CreditNoteLine' : 'InvoiceLine';
   const qtyTag = isCreditNote ? 'cbc:CreditedQuantity' : 'cbc:InvoicedQuantity';
   const typeCodeTag = isCreditNote ? 'cbc:CreditNoteTypeCode' : 'cbc:InvoiceTypeCode';
-  const typeCode = isCreditNote
-    ? '381'
-    : data.direction === 'ADVANCE_INVOICE'
-      ? '386'
-      : data.direction === 'CORRECTIVE_INVOICE'
-        ? '384'
-        : '380';
+  const typeCode = documentTypeCode(data.direction);
   const xmlns = isCreditNote
     ? 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2'
     : 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2';
+
+  // BT-23 — cadre de facturation (porté par cbc:ProfileID, code court ex. « S1 »).
+  const cadre = computeCadre(data);
 
   const fmt = (n: number) => n.toFixed(2);
   const fmt4 = (n: number) => n.toFixed(4);
@@ -253,18 +478,28 @@ export function generateUblXml(data: InvoiceGenData): string {
     });
   }
 
-  const renderExemption = (code?: string, reason?: string): string =>
-    `${
-      code
+  // Pour la catégorie AE (autoliquidation), EN16931 (BR-AE-*) exige un motif :
+  // on auto-complète VATEX-FR-AE / « Autoliquidation » si aucun motif explicite
+  // n'a été saisi. Aucune autre catégorie n'est modifiée.
+  const renderExemption = (cat: string, code?: string, reason?: string): string => {
+    let exCode = code;
+    let exReason = reason;
+    if (cat === 'AE') {
+      exCode = exCode || 'VATEX-FR-AE';
+      exReason = exReason || 'Autoliquidation';
+    }
+    return `${
+      exCode
         ? `
-        <cbc:TaxExemptionReasonCode>${escapeXml(code)}</cbc:TaxExemptionReasonCode>`
+        <cbc:TaxExemptionReasonCode>${escapeXml(exCode)}</cbc:TaxExemptionReasonCode>`
         : ''
     }${
-      reason
+      exReason
         ? `
-        <cbc:TaxExemptionReason>${escapeXml(reason)}</cbc:TaxExemptionReason>`
+        <cbc:TaxExemptionReason>${escapeXml(exReason)}</cbc:TaxExemptionReason>`
         : ''
     }`;
+  };
 
   const taxSubtotals = Array.from(taxGroups.values())
     .map(
@@ -274,7 +509,7 @@ export function generateUblXml(data: InvoiceGenData): string {
       <cbc:TaxAmount currencyID="${data.currency}">${fmt(g.tax)}</cbc:TaxAmount>
       <cac:TaxCategory>
         <cbc:ID>${g.cat}</cbc:ID>
-        <cbc:Percent>${g.rate.toFixed(2)}</cbc:Percent>${renderExemption(g.exemptionCode, g.exemptionReason)}
+        <cbc:Percent>${g.rate.toFixed(2)}</cbc:Percent>${renderExemption(g.cat, g.exemptionCode, g.exemptionReason)}
         <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
       </cac:TaxCategory>
     </cac:TaxSubtotal>`,
@@ -300,7 +535,7 @@ export function generateUblXml(data: InvoiceGenData): string {
       <cbc:Name>${escapeXml(itemName)}</cbc:Name>
       <cac:ClassifiedTaxCategory>
         <cbc:ID>${cat}</cbc:ID>
-        <cbc:Percent>${line.taxRate.toFixed(2)}</cbc:Percent>${renderExemption(line.taxExemptionReasonCode, line.taxExemptionReason)}
+        <cbc:Percent>${line.taxRate.toFixed(2)}</cbc:Percent>${renderExemption(cat, line.taxExemptionReasonCode, line.taxExemptionReason)}
         <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
       </cac:ClassifiedTaxCategory>
     </cac:Item>
@@ -312,9 +547,9 @@ export function generateUblXml(data: InvoiceGenData): string {
     })
     .join('');
 
-  const supplierAddress =
-    data.supplier.address || data.supplier.city
-      ? `
+  // BT-40 : le pays vendeur est obligatoire (BR-09) → cac:PostalAddress avec au
+  // minimum cac:Country est TOUJOURS émis, même si rue et ville sont vides.
+  const supplierAddress = `
       <cac:PostalAddress>${
         data.supplier.address
           ? `
@@ -334,8 +569,7 @@ export function generateUblXml(data: InvoiceGenData): string {
         <cac:Country>
           <cbc:IdentificationCode>${data.supplier.country ?? 'FR'}</cbc:IdentificationCode>
         </cac:Country>
-      </cac:PostalAddress>`
-      : '';
+      </cac:PostalAddress>`;
 
   const supplierTaxScheme = data.supplier.taxId
     ? `
@@ -390,30 +624,17 @@ export function generateUblXml(data: InvoiceGenData): string {
   </cac:PaymentTerms>`
     : '';
 
-  // BT-34 : EndpointID Peppol fournisseur (SIRET prioritaire, puis taxId)
-  const supplierEndpoint = data.supplier.siret
-    ? `
-      <cbc:EndpointID schemeID="0009">${escapeXml(data.supplier.siret)}</cbc:EndpointID>`
-    : data.supplier.taxId
-      ? `
-      <cbc:EndpointID schemeID="9957">${escapeXml(data.supplier.taxId)}</cbc:EndpointID>`
-      : '';
+  // BT-34 : EndpointID Peppol fournisseur (SIRET prioritaire, puis n° TVA avec scheme EAS du pays)
+  const supplierEndpoint = buildEndpointId(data.supplier.siret, data.supplier.taxId);
 
   const buyerName = data.buyerName ?? 'DEMO INDUSTRIE SAS';
 
-  // BT-49 : EndpointID Peppol acheteur
-  const buyerEndpoint = data.buyerSiret
-    ? `
-      <cbc:EndpointID schemeID="0009">${escapeXml(data.buyerSiret)}</cbc:EndpointID>`
-    : data.buyerVatNumber
-      ? `
-      <cbc:EndpointID schemeID="9957">${escapeXml(data.buyerVatNumber)}</cbc:EndpointID>`
-      : '';
+  // BT-49 : EndpointID Peppol acheteur (SIRET prioritaire, puis n° TVA avec scheme EAS du pays)
+  const buyerEndpoint = buildEndpointId(data.buyerSiret, data.buyerVatNumber);
 
-  // BT-50 à BT-56 : adresse acheteur (obligatoire EN16931)
-  const buyerAddressBlock =
-    data.buyerAddress || data.buyerCity || data.buyerPostalCode
-      ? `
+  // BT-50 à BT-55 : adresse acheteur (obligatoire EN16931). Le pays (BT-55, BR-11)
+  // est TOUJOURS émis via cac:Country, même si rue/ville/CP sont vides.
+  const buyerAddressBlock = `
       <cac:PostalAddress>${
         data.buyerAddress
           ? `
@@ -433,8 +654,7 @@ export function generateUblXml(data: InvoiceGenData): string {
         <cac:Country>
           <cbc:IdentificationCode>${data.buyerCountry ?? 'FR'}</cbc:IdentificationCode>
         </cac:Country>
-      </cac:PostalAddress>`
-      : '';
+      </cac:PostalAddress>`;
 
   const buyerTaxScheme = data.buyerVatNumber
     ? `
@@ -517,11 +737,36 @@ export function generateUblXml(data: InvoiceGenData): string {
   const effectiveBuyerReference =
     data.buyerReference?.trim() || data.orderReference?.trim() || `REF-${data.invoiceNumber}`;
 
+  // BT-72 — date de livraison / fin de prestation.
+  // Structure extensible : accueillera plus tard cac:DeliveryLocation/cac:Address (BG-15,
+  // adresse de livraison « Ship to ») — HORS PÉRIMÈTRE de cette passe.
+  const deliveryBlock = data.deliveryDate
+    ? `
+  <cac:Delivery>
+    <cbc:ActualDeliveryDate>${data.deliveryDate}</cbc:ActualDeliveryDate>
+  </cac:Delivery>`
+    : '';
+
+  // BT-6 — code de la devise de comptabilisation TVA (émis seulement si ≠ devise facture).
+  const taxCurrencyCodeBlock = needsTaxCurrency
+    ? `
+  <cbc:TaxCurrencyCode>${data.taxCurrency}</cbc:TaxCurrencyCode>`
+    : '';
+
+  // BT-111 — second cac:TaxTotal portant uniquement le montant de TVA converti dans la
+  // devise de comptabilisation (émis seulement si ≠ devise facture).
+  const taxTotalTaxCurrencyBlock = needsTaxCurrency
+    ? `
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="${data.taxCurrency}">${fmt(taxTotalInTaxCurrency)}</cbc:TaxAmount>
+  </cac:TaxTotal>`
+    : '';
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <${rootTag} xmlns="${xmlns}" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ccts="urn:un:unece:uncefact:documentation:2" xmlns:qdt="urn:oasis:names:specification:ubl:schema:xsd:QualifiedDatatypes-2" xmlns:udt="urn:oasis:names:specification:ubl:schema:xsd:UnqualifiedDataTypes-2">
   <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
   <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0</cbc:CustomizationID>
-  <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
+  <cbc:ProfileID>${cadre.code}</cbc:ProfileID>
   <cbc:ID>${escapeXml(data.invoiceNumber)}</cbc:ID>
   <cbc:IssueDate>${data.invoiceDate}</cbc:IssueDate>${
     data.dueDate
@@ -530,7 +775,7 @@ export function generateUblXml(data: InvoiceGenData): string {
       : ''
   }
   <${typeCodeTag}>${typeCode}</${typeCodeTag}>
-  <cbc:DocumentCurrencyCode>${data.currency}</cbc:DocumentCurrencyCode>
+  <cbc:DocumentCurrencyCode>${data.currency}</cbc:DocumentCurrencyCode>${taxCurrencyCodeBlock}
   <cbc:AccountingCost>FRAIS-GESTION-CLASSE6</cbc:AccountingCost>
   <cbc:BuyerReference>${escapeXml(effectiveBuyerReference)}</cbc:BuyerReference>${
     data.note
@@ -562,10 +807,10 @@ export function generateUblXml(data: InvoiceGenData): string {
       </cac:PartyName>${buyerAddressBlock}${buyerTaxScheme}${buyerLegalEntity}
     </cac:Party>
   </cac:AccountingCustomerParty>
-${paymentMeans}
+${deliveryBlock}${paymentMeans}
   <cac:TaxTotal>
     <cbc:TaxAmount currencyID="${data.currency}">${fmt(totalTax)}</cbc:TaxAmount>${taxSubtotals}
-  </cac:TaxTotal>
+  </cac:TaxTotal>${taxTotalTaxCurrencyBlock}
 
   <cac:LegalMonetaryTotal>
     <cbc:LineExtensionAmount currencyID="${data.currency}">${fmt(totalExclTax)}</cbc:LineExtensionAmount>
@@ -589,6 +834,9 @@ function writePdf(
     const doc = new PDFDocument({ margin: 45, size: 'A4' });
     const stream = fs.createWriteStream(outputPath);
     doc.pipe(stream);
+
+    // BT-23 — cadre de facturation (lettre B/S/M + chiffre 1/2/4).
+    const cadre = computeCadre(data);
 
     const fmt = (n: number) => n.toFixed(2) + ' ' + data.currency;
     const PAGE_W = 595 - 90; // largeur utile (A4 - marges)
@@ -676,12 +924,15 @@ function writePdf(
         'Type',
         data.direction === 'CREDIT_NOTE'
           ? 'Avoir (381)'
-          : data.direction === 'ADVANCE_INVOICE'
-            ? "Facture d'acompte (386)"
-            : data.direction === 'CORRECTIVE_INVOICE'
-              ? 'Facture rectificative (384)'
-              : 'Facture (380)',
+          : data.direction === 'ADVANCE_CREDIT_NOTE'
+            ? "Avoir d'acompte (503)"
+            : data.direction === 'ADVANCE_INVOICE'
+              ? "Facture d'acompte (386)"
+              : data.direction === 'CORRECTIVE_INVOICE'
+                ? 'Facture rectificative (384)'
+                : 'Facture (380)',
       ],
+      ['Cadre (BT-23)', cadre.label],
     ];
     for (const [label, value] of infoRows) {
       doc.font('Helvetica-Bold').text(`${label} :`, COL_R, yRr, { width: 90, continued: false });
@@ -759,6 +1010,9 @@ function writePdf(
     }
     if (data.salesOrderId) {
       refRows.push(['Référence vendeur (BT-14)', data.salesOrderId]);
+    }
+    if (data.deliveryDate) {
+      refRows.push(['Date de livraison (BT-72)', data.deliveryDate]);
     }
     if (data.typeTransaction) {
       const labels: Record<'1' | '2' | '3', string> = {
@@ -894,19 +1148,49 @@ function writePdf(
           { width: PAGE_W },
         );
       tableY += 10;
-      if (g.cat === 'E' && (g.exemptionCode || g.exemptionReason)) {
-        const parts: string[] = [];
-        if (g.exemptionReason) parts.push(g.exemptionReason);
-        if (g.exemptionCode) parts.push(`(${g.exemptionCode})`);
-        doc
-          .fillColor('#666666')
-          .fontSize(6.5)
-          .text(`    Motif d'exonération : ${parts.join(' ')}`, LEFT, tableY, {
-            width: PAGE_W,
-          });
-        tableY = doc.y + 1;
-        doc.fillColor('#000000').fontSize(7);
+      // Mention/motif imprimé pour toutes les catégories exonérées ou autoliquidées
+      // (E, AE, K, G, O). Pour AE, on auto-complète la mention « Autoliquidation »
+      // (VATEX-FR-AE) si aucun motif explicite n'a été saisi — cohérent avec le XML.
+      const EXEMPT_CATS = ['E', 'AE', 'K', 'G', 'O'];
+      if (EXEMPT_CATS.includes(g.cat)) {
+        let exReason = g.exemptionReason;
+        let exCode = g.exemptionCode;
+        if (g.cat === 'AE') {
+          exCode = exCode || 'VATEX-FR-AE';
+          exReason = exReason || 'Autoliquidation';
+        }
+        if (exReason || exCode) {
+          const parts: string[] = [];
+          if (exReason) parts.push(exReason);
+          if (exCode) parts.push(`(${exCode})`);
+          const label = g.cat === 'AE' ? 'Mention' : "Motif d'exonération";
+          doc
+            .fillColor('#666666')
+            .fontSize(6.5)
+            .text(`    ${label} : ${parts.join(' ')}`, LEFT, tableY, {
+              width: PAGE_W,
+            });
+          tableY = doc.y + 1;
+          doc.fillColor('#000000').fontSize(7);
+        }
       }
+    }
+
+    // BT-6/BT-111 — total TVA dans la devise de comptabilisation (si ≠ devise facture)
+    if (data.taxCurrency && data.taxCurrency !== data.currency && data.taxExchangeRate != null) {
+      const taxInTaxCur = round2(computed.totalTax * data.taxExchangeRate);
+      doc
+        .font('Helvetica')
+        .fillColor('#000000')
+        .fontSize(7)
+        .text(
+          `Total TVA (devise de comptabilisation) : ${taxInTaxCur.toFixed(2)} ${data.taxCurrency} ` +
+            `(taux ${data.taxExchangeRate})`,
+          LEFT,
+          tableY,
+          { width: PAGE_W },
+        );
+      tableY = doc.y + 1;
     }
     tableY += 4;
 
@@ -1114,6 +1398,7 @@ export async function generateAndSave(data: InvoiceGenData): Promise<GeneratedIn
 
   const xmlContent = generateUblXml(data);
   const computed = computeAmounts(data.lines);
+  const cadre = computeCadre(data);
   const dir = getGeneratedDir();
   const xmlFilename = buildFilename(data.invoiceNumber, 'xml');
   const pdfFilename = buildFilename(data.invoiceNumber, 'pdf');
@@ -1154,6 +1439,9 @@ export async function generateAndSave(data: InvoiceGenData): Promise<GeneratedIn
       payableAmount: round2(Math.max(0, computed.totalInclTax - (data.prepaidAmount ?? 0))),
       currency: data.currency,
       lineCount: data.lines.length,
+      cadreCode: cadre.code,
+      cadreLabel: cadre.label,
+      cadreWarning: cadreDivergenceWarning(cadre),
     },
   };
 }

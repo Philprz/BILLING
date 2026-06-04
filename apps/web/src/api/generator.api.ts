@@ -32,8 +32,17 @@ export interface InvoiceGenData {
   invoiceDate: string;
   dueDate?: string;
   currency: string;
-  direction: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE_INVOICE' | 'CORRECTIVE_INVOICE';
+  taxCurrency?: string; // BT-6 — devise de comptabilisation TVA (défaut EUR)
+  taxExchangeRate?: number; // taux de conversion devise facture → devise compta. (BT-111)
+  deliveryDate?: string; // BT-72 — date de livraison / fin de prestation
+  direction:
+    | 'INVOICE'
+    | 'CREDIT_NOTE'
+    | 'ADVANCE_INVOICE'
+    | 'CORRECTIVE_INVOICE'
+    | 'ADVANCE_CREDIT_NOTE'; // 503 — avoir de facture d'acompte
   prepaidAmount?: number; // BT-113 — montant acompte déjà versé
+  paymentStatus?: 'unpaid' | 'paid'; // pilote le chiffre 1/2 du cadre BT-23
   correctedInvoiceRef?: string; // BT-3 — ID de la facture originale corrigée (TypeCode 384)
   supplier: GenSupplier;
   buyerName?: string;
@@ -81,6 +90,9 @@ export interface GeneratedInvoice {
     payableAmount: number;
     currency: string;
     lineCount: number;
+    cadreCode: string; // BT-23 — ex. « S1 »
+    cadreLabel: string;
+    cadreWarning?: string; // alerte divergence lignes vs typeTransaction
   };
 }
 
