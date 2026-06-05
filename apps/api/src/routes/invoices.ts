@@ -59,12 +59,14 @@ const INVOICE_STATUSES = [
   'LINKED',
   'REJECTED',
   'DISPUTED',
+  'SUPERSEDED',
   'ERROR',
 ] as const;
 const SORT_FIELDS = ['receivedAt', 'docDate', 'totalInclTax', 'status', 'supplierNameRaw'] as const;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
-const TERMINAL_STATUSES = new Set(['POSTED', 'LINKED', 'REJECTED']);
+// SUPERSEDED = clôture terminale (originale remplacée par un 384) : aucune action SAP / modification.
+const TERMINAL_STATUSES = new Set(['POSTED', 'LINKED', 'REJECTED', 'SUPERSEDED']);
 
 interface PostInvoiceBody {
   integrationMode: 'SERVICE_INVOICE' | 'JOURNAL_ENTRY';
@@ -1324,7 +1326,7 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // ── 2. Garde-fous métier ──────────────────────────────────────────────
-      const nonLinkableStatuses = new Set(['POSTED', 'LINKED', 'REJECTED']);
+      const nonLinkableStatuses = new Set(['POSTED', 'LINKED', 'REJECTED', 'SUPERSEDED']);
       if (nonLinkableStatuses.has(invoice.status)) {
         return reply.code(422).send({
           success: false,

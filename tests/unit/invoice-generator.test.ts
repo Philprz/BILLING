@@ -714,6 +714,25 @@ describe('computeCadre — chiffre 1/2/4', () => {
     expect(c.digit).not.toBe('4');
     expect(c.code).toBe('S2');
   });
+
+  it('384 (rectificative) suit la famille commerciale : S1 / S2 / B4 si acompte', () => {
+    // Non payée → S1
+    expect(computeCadre({ ...base, direction: 'CORRECTIVE_INVOICE' }).code).toBe('S1');
+    // Déjà payée → S2
+    expect(
+      computeCadre({ ...base, direction: 'CORRECTIVE_INVOICE', paymentStatus: 'paid' }).code,
+    ).toBe('S2');
+    // Acompte (prepaidAmount > 0) sur lignes Biens → B4 (comme un 380)
+    const goods = { ...svc, accountingCode: '606400' };
+    const c = computeCadre({
+      ...base,
+      lines: [goods],
+      direction: 'CORRECTIVE_INVOICE',
+      prepaidAmount: 1000,
+    });
+    expect(c.code).toBe('B4');
+    expect(c.digit).toBe('4');
+  });
 });
 
 describe('computeCadre — contrôle de cohérence typeTransaction', () => {

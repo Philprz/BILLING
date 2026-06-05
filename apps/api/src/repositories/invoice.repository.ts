@@ -72,11 +72,20 @@ export interface InvoiceFileDto {
   sha256: string;
 }
 
+export interface InvoiceSupersedeRefDto {
+  id: string;
+  docNumberPa: string;
+  direction: string;
+  status: string;
+}
+
 export interface InvoiceDetailDto extends InvoiceSummaryDto {
   lines: InvoiceLineDto[];
   files: InvoiceFileDto[];
   supplierInCache: boolean | null; // null = pas de CardCode assigné
   supplierExtracted: Record<string, unknown> | null;
+  replaces: InvoiceSupersedeRefDto | null; // sur un 384 : l'originale remplacée
+  supersededBy: InvoiceSupersedeRefDto | null; // sur une originale SUPERSEDED : son 384
 }
 
 // ─── Params ──────────────────────────────────────────────────────────────────
@@ -347,11 +356,20 @@ export async function findInvoices(
 }
 
 export async function findInvoiceById(id: string): Promise<InvoiceDetailDto | null> {
+  const supersedeRefSelect = {
+    id: true,
+    docNumberPa: true,
+    direction: true,
+    status: true,
+  } as const;
+
   const inv = await prisma.invoice.findUnique({
     where: { id },
     include: {
       lines: { orderBy: { lineNo: 'asc' } },
       files: true,
+      replaces: { select: supersedeRefSelect },
+      supersededBy: { select: supersedeRefSelect, take: 1 },
     },
   });
   if (!inv) return null;
@@ -367,6 +385,22 @@ export async function findInvoiceById(id: string): Promise<InvoiceDetailDto | nu
     files: inv.files.map(mapFile),
     supplierInCache,
     supplierExtracted,
+    replaces: inv.replaces ? mapSupersedeRef(inv.replaces) : null,
+    supersededBy: inv.supersededBy[0] ? mapSupersedeRef(inv.supersededBy[0]) : null,
+  };
+}
+
+function mapSupersedeRef(ref: {
+  id: string;
+  docNumberPa: string;
+  direction: string;
+  status: string;
+}): InvoiceSupersedeRefDto {
+  return {
+    id: ref.id,
+    docNumberPa: ref.docNumberPa,
+    direction: ref.direction,
+    status: ref.status,
   };
 }
 

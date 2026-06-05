@@ -348,10 +348,11 @@ export function computeCadre(data: InvoiceGenData): CadreResult {
   const divergence = txLetter !== null && txLetter !== inferred;
 
   // Chiffre : 4 réservé à la facture définitive après acompte. Concerne les factures
-  // « commerciales » : 380, ainsi que l'autofacturation (389) et l'affacturage (393), qui
-  // suivent la même logique que le 380. Les avoirs (381/503), la rectificative (384) et
-  // l'acompte (386) ne produisent JAMAIS 4 (BR-FR-CO-08). Sinon : 2 si déjà payée, 1 sinon.
-  const COMMERCIAL_TYPES = new Set(['380', '389', '393']);
+  // « commerciales » : 380, l'autofacturation (389), l'affacturage (393) et la rectificative
+  // (384), qui est une NOUVELLE facture de remplacement (pas un avoir) et suit donc la logique
+  // du 380. Les avoirs (381/503) et l'acompte (386) ne produisent JAMAIS 4 (BR-FR-CO-08).
+  // Sinon : 2 si déjà payée, 1 sinon.
+  const COMMERCIAL_TYPES = new Set(['380', '389', '393', '384']);
   const prepaid = data.prepaidAmount ?? 0;
   const paid = data.paymentStatus === 'paid';
   const digit: CadreDigit = COMMERCIAL_TYPES.has(typeCode) && prepaid > 0 ? '4' : paid ? '2' : '1';

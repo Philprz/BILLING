@@ -55,6 +55,8 @@ enum InvoiceStatus {
   REJECTED
   /// En litige — suspension temporaire, échange en cours avec le fournisseur (motif dans litige_motif)
   DISPUTED
+  /// Remplacée par une facture rectificative 384 (clôture terminale, distincte de REJECTED)
+  SUPERSEDED
   /// Erreur technique lors de l'intégration
   ERROR
 }
@@ -173,6 +175,8 @@ model Invoice {
   chargeTotal             Decimal?         @db.Decimal(19, 4) @map("charge_total")
   /// Référence à la facture originale corrigée (BT-3 BillingReference) — TypeCode 384 uniquement
   correctedInvoiceRef     String?          @map("corrected_invoice_ref")
+  /// Self-relation de supersession : porté par le 384, pointe vers l'originale qu'il remplace (passée SUPERSEDED)
+  replacesInvoiceId       String?          @db.Uuid @map("replaces_invoice_id")
   /// Nature commerciale CIUS-FR : 1=Biens, 2=Services, 3=Mixte (AdditionalDocumentReference TypeTransaction). Null si absent.
   typeTransaction         String?          @map("type_transaction")
   status                  InvoiceStatus    @default(NEW)
@@ -202,7 +206,16 @@ model Invoice {
   lines InvoiceLine[]
   files InvoiceFile[]
 
-  @@unique([docNumberPa, supplierPaIdentifier], name: "uq_invoices_doc_supplier")
+  /// Self-relation "Correction" : la rectificative 384 (`replaces`) ↔ l'originale superseédée (`supersededBy`).
+  replaces     Invoice?  @relation("Correction", fields: [replacesInvoiceId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  supersededBy Invoice[] @relation("Correction")
+
+  // Unicité métier (doc_number_pa, supplier_pa_identifier) : appliquée par un INDEX UNIQUE PARTIEL
+  // "uq_invoices_doc_supplier_active" (WHERE status <> 'SUPERSEDED'), créé en SQL brut car Prisma ne
+  // sait pas exprimer les index partiels. Une rectificative 384 peut ainsi coexister avec son originale
+  // SUPERSEDED même à n° de document identique, sans rompre le dédoublonnage des factures actives.
+  // L'index plein ci-dessous sert aux lookups de dédoublonnage (findFirst doc+fournisseur, tous statuts).
+  @@index([docNumberPa, supplierPaIdentifier], name: "idx_invoices_doc_supplier")
   @@index([status], name: "idx_invoices_status")
   @@index([paSource], name: "idx_invoices_pa_source")
   @@index([docDate], name: "idx_invoices_doc_date")

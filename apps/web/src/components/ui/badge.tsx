@@ -20,6 +20,10 @@ const STATUS_CONFIG: Record<InvoiceStatus, { label: string; className: string }>
     className:
       'border-[#E67E22]/40 bg-[#E67E22]/10 text-[#E67E22] dark:text-[#F39C42] dark:border-[#F39C42]/40',
   },
+  SUPERSEDED: {
+    label: 'Remplacée',
+    className: 'border-slate-400/30 bg-slate-400/10 text-slate-500 dark:text-slate-400',
+  },
   ERROR: { label: 'Erreur', className: 'border-destructive/30 bg-destructive/10 text-destructive' },
 };
 

@@ -10,6 +10,7 @@ export type InvoiceStatus =
   | 'LINKED'
   | 'REJECTED'
   | 'DISPUTED'
+  | 'SUPERSEDED'
   | 'ERROR';
 export type InvoiceDirection =
   | 'INVOICE'
@@ -103,12 +104,24 @@ export interface SupplierExtracted {
   phone: string | null;
 }
 
+/** Référence légère vers une facture liée par supersession (rectificative 384 ↔ originale). */
+export interface InvoiceSupersedeRef {
+  id: string;
+  docNumberPa: string;
+  direction: InvoiceDirection;
+  status: InvoiceStatus;
+}
+
 export interface InvoiceDetail extends InvoiceSummary {
   lines: InvoiceLine[];
   files: InvoiceFile[];
   paStatusSentAt?: string | null;
   supplierInCache: boolean | null;
   supplierExtracted: SupplierExtracted | null;
+  /** Sur un 384 : l'originale qu'il remplace (SUPERSEDED). Null sinon. */
+  replaces: InvoiceSupersedeRef | null;
+  /** Sur une originale SUPERSEDED : la rectificative 384 qui l'a remplacée. Null sinon. */
+  supersededBy: InvoiceSupersedeRef | null;
 }
 
 export type AuditAction =

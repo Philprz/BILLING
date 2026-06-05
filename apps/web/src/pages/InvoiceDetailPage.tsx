@@ -2160,6 +2160,42 @@ export default function InvoiceDetailPage() {
         </div>
       )}
 
+      {/* Bandeau supersession — lien rectificative 384 ↔ originale */}
+      {(invoice.replaces || invoice.supersededBy) && (
+        <div
+          role="status"
+          className="flex items-start gap-3 rounded-lg border border-slate-400/30 bg-slate-400/10 px-4 py-3 text-sm"
+        >
+          <Link2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-500" />
+          <div className="min-w-0 flex-1">
+            {invoice.replaces && (
+              <p className="text-foreground/90">
+                Cette facture rectificative (384) remplace la facture{' '}
+                <Link
+                  to={`/invoices/${invoice.replaces.id}`}
+                  className="font-semibold text-primary underline-offset-2 hover:underline"
+                >
+                  {invoice.replaces.docNumberPa}
+                </Link>{' '}
+                (mise en litige, désormais remplacée).
+              </p>
+            )}
+            {invoice.supersededBy && (
+              <p className="text-foreground/90">
+                Facture remplacée par la rectificative (384){' '}
+                <Link
+                  to={`/invoices/${invoice.supersededBy.id}`}
+                  className="font-semibold text-primary underline-offset-2 hover:underline"
+                >
+                  {invoice.supersededBy.docNumberPa}
+                </Link>
+                .
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Reject modal */}
       {showReject && (
         <div className="modal-backdrop" role="presentation">
