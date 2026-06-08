@@ -98,15 +98,17 @@ export async function listCachedAccounts(limit = 500): Promise<CachedAccount[]> 
 /**
  * Comptes pertinents pour la facturation fournisseurs (AP) :
  *   - classe 6 (charges) — comptes de charge des lignes de facture
+ *   - classe 4 (tiers) — fournisseurs (401), TVA déductible (4456), factures
+ *     non parvenues (408), avances/avoirs fournisseurs (409)…
  *   - classe 2 (immobilisations) — factures d'investissement / capex
  *   - tout compte explicitement référencé par une règle de mappage, quelle que
- *     soit sa classe (le moteur de mappage peut imputer hors 2/6)
+ *     soit sa classe (le moteur de mappage peut imputer hors 2/4/6)
  * Actifs + imputables uniquement. Pas de plafond : l'ensemble est borné par
  * nature (quelques centaines de comptes), inutile de tronquer comme le faisait
  * l'ancien listCachedAccounts(limit=500) qui masquait la classe 6 (triée après
  * les classes 1-5).
  */
-const SUPPLIER_BILLING_ACCOUNT_CLASSES = ['2', '6'];
+const SUPPLIER_BILLING_ACCOUNT_CLASSES = ['2', '4', '6'];
 
 export async function listSupplierBillingAccounts(): Promise<CachedAccount[]> {
   // Codes référencés par les règles de mappage (toutes classes confondues).
