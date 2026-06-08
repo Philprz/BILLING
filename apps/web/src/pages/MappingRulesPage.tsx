@@ -86,6 +86,9 @@ const RULE_COLUMNS: RuleColumn[] = [
   { id: 'active', label: 'Actif', text: (r) => (r.active ? 'Actif' : 'Inactif') },
 ];
 
+// Critère unique « sans code TVA B1 » — partagé par le compteur et le filtre cliquable.
+const isEmptyTva = (r: MappingRule): boolean => !r.taxCodeB1 || r.taxCodeB1.trim() === '';
+
 function ConfidenceBadge({ value }: { value: number }) {
   const color = value >= 80 ? 'text-success' : value >= 50 ? 'text-warning' : 'text-destructive';
   return <span className={`font-mono text-xs font-semibold ${color}`}>{value}%</span>;
@@ -550,6 +553,7 @@ export default function MappingRulesPage() {
   const [vatLoading, setVatLoading] = useState(false);
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
   const [sort, setSort] = useState<{ id: string; dir: SortDir } | null>(null);
+  const [emptyTvaOnly, setEmptyTvaOnly] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -632,7 +636,7 @@ export default function MappingRulesPage() {
   }
 
   const activeCount = rules.filter((r) => r.active).length;
-  const emptyTvaCount = rules.filter((r) => !r.taxCodeB1 || r.taxCodeB1.trim() === '').length;
+  const emptyTvaCount = rules.filter(isEmptyTva).length;
 
   // Filtres auto-alimentés (hybride par cardinalité), calculés sur `rules` :
   // `select` (égalité) si peu de valeurs distinctes, sinon `text` (contient) + datalist.
@@ -649,7 +653,9 @@ export default function MappingRulesPage() {
 
   // Filtres colonne + tri appliqués côté client sur `rules` (pas de recherche serveur).
   const rows = useMemo(() => {
-    let r = rules.filter((rule) =>
+    // Filtre « sans code TVA » (bascule) appliqué en amont des filtres de colonne et du tri.
+    const base = emptyTvaOnly ? rules.filter(isEmptyTva) : rules;
+    let r = base.filter((rule) =>
       RULE_COLUMNS.every((c) => {
         const f = columnFilters[c.id]?.trim();
         if (!f) return true;
@@ -678,7 +684,7 @@ export default function MappingRulesPage() {
       }
     }
     return r;
-  }, [rules, columnFilters, sort, columnMode]);
+  }, [rules, columnFilters, sort, columnMode, emptyTvaOnly]);
 
   function toggleSort(id: string) {
     setSort((prev) =>
@@ -687,7 +693,7 @@ export default function MappingRulesPage() {
   }
 
   const hasColumnFiltersOrSort =
-    Object.values(columnFilters).some((v) => v?.trim()) || Boolean(sort);
+    Object.values(columnFilters).some((v) => v?.trim()) || Boolean(sort) || emptyTvaOnly;
 
   return (
     <div className="app-page">
@@ -711,7 +717,22 @@ export default function MappingRulesPage() {
             {emptyTvaCount > 0 && (
               <>
                 {' · '}
-                <span className="font-semibold text-warning">{emptyTvaCount} sans code TVA</span>
+                <button
+                  type="button"
+                  onClick={() => setEmptyTvaOnly((v) => !v)}
+                  aria-pressed={emptyTvaOnly}
+                  aria-label="Filtrer les règles sans code TVA"
+                  title={
+                    emptyTvaOnly
+                      ? 'Afficher toutes les règles'
+                      : 'Afficher uniquement les règles sans code TVA'
+                  }
+                  className={`cursor-pointer rounded font-semibold text-warning underline-offset-2 transition-colors hover:underline ${
+                    emptyTvaOnly ? 'bg-warning/10 px-1.5 py-0.5 underline' : ''
+                  }`}
+                >
+                  {emptyTvaCount} sans code TVA
+                </button>
               </>
             )}
           </p>
@@ -862,6 +883,7 @@ export default function MappingRulesPage() {
                           onClick={() => {
                             setColumnFilters({});
                             setSort(null);
+                            setEmptyTvaOnly(false);
                           }}
                           className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                           aria-label="Réinitialiser les filtres et le tri"
