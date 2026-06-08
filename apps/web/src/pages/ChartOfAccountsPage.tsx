@@ -62,7 +62,8 @@ export default function ChartOfAccountsPage() {
         <div>
           <p className="page-eyebrow">Référentiel</p>
           <p className="page-subtitle">
-            {allAccounts.length} compte{allAccounts.length !== 1 ? 's' : ''} en cache local
+            {allAccounts.length} compte{allAccounts.length !== 1 ? 's' : ''} de facturation
+            fournisseurs (classes 2 &amp; 6 + règles de mappage)
           </p>
         </div>
         <Button onClick={handleSync} disabled={syncing} size="sm">

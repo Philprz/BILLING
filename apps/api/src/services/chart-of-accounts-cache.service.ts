@@ -95,6 +95,46 @@ export async function listCachedAccounts(limit = 500): Promise<CachedAccount[]> 
   return rows.map(mapCachedAccount);
 }
 
+/**
+ * Comptes pertinents pour la facturation fournisseurs (AP) :
+ *   - classe 6 (charges) — comptes de charge des lignes de facture
+ *   - classe 2 (immobilisations) — factures d'investissement / capex
+ *   - tout compte explicitement référencé par une règle de mappage, quelle que
+ *     soit sa classe (le moteur de mappage peut imputer hors 2/6)
+ * Actifs + imputables uniquement. Pas de plafond : l'ensemble est borné par
+ * nature (quelques centaines de comptes), inutile de tronquer comme le faisait
+ * l'ancien listCachedAccounts(limit=500) qui masquait la classe 6 (triée après
+ * les classes 1-5).
+ */
+const SUPPLIER_BILLING_ACCOUNT_CLASSES = ['2', '6'];
+
+export async function listSupplierBillingAccounts(): Promise<CachedAccount[]> {
+  // Codes référencés par les règles de mappage (toutes classes confondues).
+  let ruleCodes: string[] = [];
+  try {
+    const rules = await prisma.mappingRule.findMany({
+      select: { accountCode: true },
+      distinct: ['accountCode'],
+    });
+    ruleCodes = [...new Set(rules.map((r) => (r.accountCode ?? '').trim()).filter(Boolean))];
+  } catch {
+    ruleCodes = [];
+  }
+
+  const rows = await prisma.chartOfAccountCache.findMany({
+    where: {
+      activeAccount: true,
+      postable: true,
+      OR: [
+        ...SUPPLIER_BILLING_ACCOUNT_CLASSES.map((c) => ({ acctCode: { startsWith: c } })),
+        ...(ruleCodes.length > 0 ? [{ acctCode: { in: ruleCodes } }] : []),
+      ],
+    },
+    orderBy: [{ acctCode: 'asc' }],
+  });
+  return rows.map(mapCachedAccount);
+}
+
 export async function validateCachedAccount(
   accountCode: string | null | undefined,
 ): Promise<AccountValidationResult> {

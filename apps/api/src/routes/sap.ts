@@ -9,7 +9,7 @@ import {
   createSapUdfNovaDoublon,
 } from '../services/sap-sl.service';
 import {
-  listCachedAccounts,
+  listSupplierBillingAccounts,
   searchCachedAccounts,
   syncChartOfAccountsCache,
 } from '../services/chart-of-accounts-cache.service';
@@ -129,7 +129,11 @@ export async function sapRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       try {
         const q = (request.query.search ?? request.query.q ?? '').trim();
-        const accounts = q ? await searchCachedAccounts(q) : await listCachedAccounts();
+        // Sans recherche : on ne renvoie que les comptes liés à la facturation
+        // fournisseurs (classes 2 & 6 + comptes des règles de mappage), sans
+        // plafond — l'ancien listCachedAccounts(limit=500) tronquait avant la
+        // classe 6. Avec recherche : recherche libre sur tout le cache.
+        const accounts = q ? await searchCachedAccounts(q) : await listSupplierBillingAccounts();
         return reply.send({ success: true, data: accounts });
       } catch (err) {
         const msg =
