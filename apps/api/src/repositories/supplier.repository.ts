@@ -246,21 +246,8 @@ export async function mergeSuppliers(params: {
 
   const allAliases = [...aliasSet];
 
-  for (const alias of allAliases) {
-    await prisma.supplierMerge.upsert({
-      where: { aliasCardcode: alias },
-      create: {
-        aliasCardcode: alias,
-        masterCardcode,
-        reason: reason ?? null,
-        createdBy: createdBy ?? null,
-      },
-      update: { masterCardcode, reason: reason ?? null, createdBy: createdBy ?? null },
-    });
-  }
-
-  // Lire les factures concernées AVANT le repointage (détail par alias) → trace d'audit
-  // et source de vérité pour une éventuelle ré-version au détachement.
+  // Lire les factures concernées AVANT le repointage (détail par alias) → liste complète
+  // persistée sur la ligne SupplierMerge (source de vérité de la ré-version) + trace d'audit.
   let repoints: MergeRepoint[] = [];
   let invoicesRepointed = 0;
   if (allAliases.length) {
@@ -268,15 +255,51 @@ export async function mergeSuppliers(params: {
       where: { supplierB1Cardcode: { in: allAliases } },
       select: { id: true, supplierB1Cardcode: true },
     });
-    await prisma.invoice.updateMany({
-      where: { supplierB1Cardcode: { in: allAliases } },
-      data: { supplierB1Cardcode: masterCardcode },
-    });
     invoicesRepointed = affected.length;
     repoints = allAliases.map((alias) => ({
       aliasCardcode: alias,
       invoiceIds: affected.filter((i) => i.supplierB1Cardcode === alias).map((i) => i.id),
     }));
+  } else {
+    repoints = [];
+  }
+
+  // Upsert du mapping par alias avec la liste COMPLÈTE (non plafonnée) des factures
+  // repointées. En cas de re-rattachement, fusionne avec les IDs déjà mémorisés (dédupliqué).
+  const repointByAlias = new Map(repoints.map((r) => [r.aliasCardcode, r.invoiceIds]));
+  for (const alias of allAliases) {
+    const newIds = repointByAlias.get(alias) ?? [];
+    const existing = await prisma.supplierMerge.findUnique({
+      where: { aliasCardcode: alias },
+      select: { repointedInvoiceIds: true },
+    });
+    const prevIds = Array.isArray(existing?.repointedInvoiceIds)
+      ? (existing!.repointedInvoiceIds as string[])
+      : [];
+    const mergedIds = Array.from(new Set([...prevIds, ...newIds]));
+    await prisma.supplierMerge.upsert({
+      where: { aliasCardcode: alias },
+      create: {
+        aliasCardcode: alias,
+        masterCardcode,
+        reason: reason ?? null,
+        createdBy: createdBy ?? null,
+        repointedInvoiceIds: newIds,
+      },
+      update: {
+        masterCardcode,
+        reason: reason ?? null,
+        createdBy: createdBy ?? null,
+        repointedInvoiceIds: mergedIds,
+      },
+    });
+  }
+
+  if (allAliases.length) {
+    await prisma.invoice.updateMany({
+      where: { supplierB1Cardcode: { in: allAliases } },
+      data: { supplierB1Cardcode: masterCardcode },
+    });
   }
 
   return { merged: allAliases.length, invoicesRepointed, repoints };
@@ -347,24 +370,29 @@ export async function listSupplierMerges(): Promise<SupplierMergeItem[]> {
 }
 
 /**
- * Détachement : re-réaffecte les factures (uniquement celles ENCORE sur le maître,
- * pour ne pas écraser une réaffectation manuelle ultérieure) vers l'alias, puis
- * supprime le mapping. La liste des `invoiceIds` provient de l'audit (côté route).
+ * Détachement : re-réaffecte vers l'alias les factures (uniquement celles ENCORE sur
+ * le maître — garde anti-écrasement d'une réaffectation manuelle ultérieure) puis
+ * supprime le mapping. La liste des `invoiceIds` est lue sur la ligne `SupplierMerge`
+ * (`repointedInvoiceIds`, non plafonnée) — l'audit n'est plus sollicité pour l'undo.
+ * Retourne `null` si le mapping est introuvable (→ 404 côté route).
  */
-export async function detachSupplier(params: {
-  aliasCardcode: string;
-  masterCardcode: string;
-  invoiceIds: string[];
-}): Promise<{ invoicesReverted: number }> {
-  const { aliasCardcode, masterCardcode, invoiceIds } = params;
+export async function detachSupplier(
+  aliasCardcode: string,
+): Promise<{ masterCardcode: string; invoicesReverted: number } | null> {
+  const merge = await prisma.supplierMerge.findUnique({ where: { aliasCardcode } });
+  if (!merge) return null;
+
+  const ids = Array.isArray(merge.repointedInvoiceIds)
+    ? (merge.repointedInvoiceIds as string[])
+    : [];
   let invoicesReverted = 0;
-  if (invoiceIds.length) {
+  if (ids.length) {
     const res = await prisma.invoice.updateMany({
-      where: { id: { in: invoiceIds }, supplierB1Cardcode: masterCardcode },
+      where: { id: { in: ids }, supplierB1Cardcode: merge.masterCardcode },
       data: { supplierB1Cardcode: aliasCardcode },
     });
     invoicesReverted = res.count;
   }
   await prisma.supplierMerge.delete({ where: { aliasCardcode } });
-  return { invoicesReverted };
+  return { masterCardcode: merge.masterCardcode, invoicesReverted };
 }

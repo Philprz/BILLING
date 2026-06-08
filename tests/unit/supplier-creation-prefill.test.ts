@@ -120,7 +120,7 @@ describe('supplier creation prefill data', () => {
       CardName: 'ACME SERVICES',
       CardType: 'cSupplier',
       FederalTaxID: 'FR12123456789',
-      LicTradNum: '12345678900012',
+      AdditionalID: '12345678900012',
       U_PA_RoutageCode: '12345678900012',
       EmailAddress: 'contact@acme.test',
       Phone1: '+33123456789',
@@ -138,13 +138,13 @@ describe('supplier creation prefill data', () => {
     });
   });
 
-  it('omits LicTradNum and U_PA_RoutageCode when not provided', () => {
+  it('omits AdditionalID and U_PA_RoutageCode when not provided', () => {
     const payload = buildBusinessPartnerPayload({
       cardCode: 'F00042',
       cardName: 'ACME SERVICES',
       federalTaxId: 'FR12123456789',
     });
-    expect(payload).not.toHaveProperty('LicTradNum');
+    expect(payload).not.toHaveProperty('AdditionalID');
     expect(payload).not.toHaveProperty('U_PA_RoutageCode');
     expect(payload).toMatchObject({ FederalTaxID: 'FR12123456789' });
   });

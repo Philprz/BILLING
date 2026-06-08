@@ -293,7 +293,9 @@ export interface SapBpFiscalPatch {
  * PATCH un fournisseur SAP B1 pour mettre à jour les identifiants fiscaux et
  * de routage PA :
  *   - FederalTaxID         = TVA intracommunautaire (FR...)
- *   - LicTradNum           = SIRET (14 chiffres)
+ *   - AdditionalID         = SIRET (14 chiffres) — champ réel de la localisation FR
+ *                            (le SL SBODemoFR n'expose PAS `LicTradNum` sur BusinessPartner :
+ *                            tout accès renvoie « Property 'LicTradNum' … is invalid »).
  *   - U_PA_RoutageCode     = code de routage Piste d'Audit Fiable (UDF OCRD)
  *
  * Les champs absents de `fields` ne sont pas écrasés.
@@ -305,7 +307,7 @@ export async function patchBusinessPartnerFiscal(
 ): Promise<void> {
   const body: Record<string, unknown> = {};
   if (fields.federalTaxId !== undefined) body.FederalTaxID = fields.federalTaxId ?? '';
-  if (fields.licTradNum !== undefined) body.LicTradNum = fields.licTradNum ?? '';
+  if (fields.licTradNum !== undefined) body.AdditionalID = fields.licTradNum ?? '';
   if (fields.routageCode !== undefined) body.U_PA_RoutageCode = fields.routageCode ?? '';
   if (fields.doublon !== undefined) body.U_NOVA_Doublon = fields.doublon ?? '';
 
@@ -348,7 +350,7 @@ export interface SapBpCreatePayload {
   cardName: string;
   /** N° TVA intracommunautaire (FR + 11 chiffres) → SAP `FederalTaxID`. */
   federalTaxId?: string;
-  /** SIRET 14 chiffres → SAP `LicTradNum`. */
+  /** SIRET 14 chiffres → SAP `AdditionalID` (champ FR ; `LicTradNum` n'existe pas sur ce SL). */
   licTradNum?: string;
   /** Code de routage PA (Piste d'Audit Fiable) → UDF `U_PA_RoutageCode` (OCRD). */
   routageCode?: string;
@@ -376,7 +378,7 @@ export function buildBusinessPartnerPayload(bp: SapBpCreatePayload): Record<stri
     CardName: bp.cardName,
     CardType: 'cSupplier',
     ...(bp.federalTaxId ? { FederalTaxID: bp.federalTaxId } : {}),
-    ...(bp.licTradNum ? { LicTradNum: bp.licTradNum } : {}),
+    ...(bp.licTradNum ? { AdditionalID: bp.licTradNum } : {}),
     ...(bp.routageCode ? { U_PA_RoutageCode: bp.routageCode } : {}),
     ...(vatRegistrationNumber ? { VATRegistrationNumber: vatRegistrationNumber } : {}),
     ...(bp.email ? { EmailAddress: bp.email } : {}),

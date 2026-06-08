@@ -65,7 +65,7 @@ export interface CreateSupplierPayload {
   cardName: string;
   /** N° TVA intracommunautaire (FR + 11 chiffres) → SAP FederalTaxID. */
   federalTaxId?: string;
-  /** SIRET 14 chiffres → SAP LicTradNum. */
+  /** SIRET 14 chiffres → SAP AdditionalID (champ FR ; LicTradNum inexistant sur ce SL). */
   licTradNum?: string;
   /** Code de routage PA propre au fournisseur → UDF U_PA_RoutageCode. */
   routageCode?: string;

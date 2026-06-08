@@ -361,6 +361,9 @@ model SupplierMerge {
   masterCardcode String   @map("master_cardcode")
   reason         String?
   createdBy      String?  @map("created_by")
+  /// IDs des factures repointées vers le maître lors du rattachement (source de
+  /// vérité pour la ré-version au détachement — non plafonné, contrairement à l'audit).
+  repointedInvoiceIds Json @default("[]") @map("repointed_invoice_ids") @db.JsonB
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([masterCardcode], name: "idx_supplier_merges_master")

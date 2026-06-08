@@ -595,7 +595,8 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── DELETE /api/suppliers/merge/:aliasCardcode ─────────────────────────────
-  // Détachement : ré-version des factures (via l'audit MERGE_SUPPLIER) vers l'alias,
+  // Détachement : ré-version des factures vers l'alias (IDs lus sur la ligne
+  // SupplierMerge.repointedInvoiceIds — non plafonné, l'audit n'est plus sollicité),
   // retrait du flag SAP (best-effort), suppression du mapping, audit UNMERGE.
   app.delete<{ Params: { aliasCardcode: string } }>(
     '/api/suppliers/merge/:aliasCardcode',
@@ -604,38 +605,11 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
       const { aliasCardcode } = request.params;
       const { sapCookieHeader, sapUser } = request.sapSession!;
       try {
-        const merge = await prisma.supplierMerge.findUnique({ where: { aliasCardcode } });
-        if (!merge) {
+        const detached = await detachSupplier(aliasCardcode);
+        if (!detached) {
           return reply.code(404).send({ success: false, error: 'Rattachement introuvable.' });
         }
-        const { masterCardcode } = merge;
-
-        // Retrouver les factures repointées depuis la dernière trace MERGE_SUPPLIER.
-        const auditRows = await prisma.auditLog.findMany({
-          where: { action: 'MERGE_SUPPLIER', entityType: 'SUPPLIER' },
-          orderBy: { occurredAt: 'desc' },
-          take: 200,
-          select: { payloadAfter: true },
-        });
-        let invoiceIds: string[] = [];
-        for (const row of auditRows) {
-          const repoints = (
-            row.payloadAfter as { repoints?: { aliasCardcode: string; invoiceIds: string[] }[] }
-          )?.repoints;
-          const match = Array.isArray(repoints)
-            ? repoints.find((r) => r.aliasCardcode === aliasCardcode)
-            : undefined;
-          if (match) {
-            invoiceIds = Array.isArray(match.invoiceIds) ? match.invoiceIds : [];
-            break;
-          }
-        }
-
-        const { invoicesReverted } = await detachSupplier({
-          aliasCardcode,
-          masterCardcode,
-          invoiceIds,
-        });
+        const { masterCardcode, invoicesReverted } = detached;
 
         // Retirer le flag SAP (best-effort) — ignore si l'alias n'est pas dans SAP.
         try {
