@@ -7,6 +7,20 @@ export {
   isPaStatusRetryDue,
 } from './pa-status';
 export type { PaStatusOutcome, PaStatusPayload, PaStatusRetryPolicy } from './pa-status';
+export {
+  NOVA_STATUT_SCALE,
+  novaStatutRank,
+  isNovaStatut,
+  mapSapSettlementToNovaStatut,
+  mapPaLifecycleToNovaStatut,
+  consolidateNovaStatut,
+} from './nova-statut';
+export type {
+  NovaStatut,
+  NovaStatutSource,
+  NovaStatutCandidate,
+  NovaStatutConsolidated,
+} from './nova-statut';
 
 // Re-export des types Prisma pour éviter aux consommateurs
 // d'importer directement depuis @prisma/client

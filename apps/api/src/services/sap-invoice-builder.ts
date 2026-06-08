@@ -95,6 +95,21 @@ export function buildPurchaseDocPayload(
   lines: LineData[],
   attachmentEntry: number,
   taxRateMap: Record<string, string>,
+  // Tirage / contre-passation d'acompte. Quand présent, ajoute la collection
+  // DownPaymentsToDraw au document. Deux usages (mécanisme SL identique) :
+  //   - F3  (PurchaseInvoices)    : la facture définitive tire l'acompte 386 →
+  //     SAP réduit le PayableAmount du montant tiré (prepaidAmount BT-113).
+  //   - 503 (PurchaseCreditNotes) : l'avoir d'acompte contre-passe l'acompte 386
+  //     d'un montant variable = total du 503 (partiel ou total).
+  // Dans les deux cas, le montant n'est PAS soustrait manuellement des lignes HT :
+  // c'est le tirage DownPaymentsToDraw qui porte la déduction/contre-passation.
+  downPaymentDraw?: { docEntry: number; amountToDraw: number },
+  // 386 — quand le document est posté vers PurchaseDownPayments (facture d'acompte
+  // fournisseur), SAP attend DownPaymentType = 'dptInvoice' (montant ferme reçu,
+  // par opposition à 'dptRequest' = demande d'acompte). Valeurs confirmées LIVE
+  // ($metadata DownPaymentTypeEnum, voir scripts/inspect-purchasedownpayment-metadata.ts).
+  // Sans effet pour PurchaseInvoices / PurchaseCreditNotes (champ non émis).
+  isDownPayment?: boolean,
 ): BuildResult {
   const skippedLines: number[] = [];
   const documentLines: unknown[] = [];
@@ -142,6 +157,27 @@ export function buildPurchaseDocPayload(
     DocumentLines: documentLines,
   };
   if (attachmentEntry > 0) payload.AttachmentEntry = attachmentEntry;
+
+  // 386 — facture d'acompte fournisseur (PurchaseDownPayments). Le seul écart de
+  // structure vs PurchaseInvoices est DownPaymentType ; les lignes (acAccount,
+  // dDocument_Service), la TVA et la traçabilité U_PA_REF sont identiques.
+  if (isDownPayment) {
+    payload.DownPaymentType = 'dptInvoice';
+  }
+
+  // Déduction / contre-passation de l'acompte. Structure SL standard exposée sur
+  // Document (PurchaseInvoices ET PurchaseCreditNotes) : collection
+  // DownPaymentsToDraw [{ DocEntry, AmountToDraw }] référençant le DocEntry de
+  // l'A/P Down Payment (386). SAP applique le montant tiré (F3) ou contre-passé
+  // (503) sans soustraction manuelle dans les lignes HT.
+  if (downPaymentDraw) {
+    payload.DownPaymentsToDraw = [
+      {
+        DocEntry: downPaymentDraw.docEntry,
+        AmountToDraw: downPaymentDraw.amountToDraw,
+      },
+    ];
+  }
 
   return { payload, skippedLines, balanceWarning: null };
 }

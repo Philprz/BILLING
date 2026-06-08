@@ -111,11 +111,17 @@ describe('writeInvoice — rectificative 384 liée à un litige', () => {
       select: { id: true },
     });
 
-    // Transaction : supersession de l'originale AVANT création du 384
+    // Transaction : supersession de l'originale AVANT création du 384.
+    // L'originale est réarmée pour la livraison PA (paStatusSentAt = null) afin que le
+    // job ré-émette l'issue dérivée REJECTED malgré l'IN_DISPUTE déjà envoyé.
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     expect(db.invoice.update).toHaveBeenCalledWith({
       where: { id: 'orig-id' },
-      data: { status: 'SUPERSEDED', statusReason: 'Remplacée par rectificative DOC-ORIG-42' },
+      data: {
+        status: 'SUPERSEDED',
+        statusReason: 'Remplacée par rectificative DOC-ORIG-42',
+        paStatusSentAt: null,
+      },
     });
     const createArg = db.invoice.create.mock.calls[0][0];
     expect(createArg.data.status).toBe('NEW');

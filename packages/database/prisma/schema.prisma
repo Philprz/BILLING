@@ -191,6 +191,17 @@ model Invoice {
   sapAttachmentUploadedAt DateTime?        @map("sap_attachment_uploaded_at") @db.Timestamptz(6)
   /// Horodatage d'envoi du statut vers la PA
   paStatusSentAt          DateTime?        @map("pa_status_sent_at") @db.Timestamptz(6)
+  /// Niveau payé (matrice S/B 2) — paiement sortant NOVA (OutgoingPayments SAP).
+  /// DocEntry / DocNum du paiement fournisseur créé par l'action « Payer ». Idempotence : un seul paiement par facture.
+  sapPaymentDocEntry      Int?             @map("sap_payment_doc_entry")
+  sapPaymentDocNum        Int?             @map("sap_payment_doc_num")
+  /// Suivi U_NOVA_Statut (échelle NON_PAYE<PROGRAMME<PARTIEL<PAYE<SOLDE), miroir base du UDF SAP pour l'affichage.
+  /// novaPaymentStatus = état consolidé courant ; *Source = SAP|PA (origine de l'état le plus avancé) ; *At = horodatage.
+  novaPaymentStatus       String?          @map("nova_payment_status")
+  novaPaymentStatusSource String?          @map("nova_payment_status_source")
+  novaPaymentStatusAt     DateTime?        @map("nova_payment_status_at") @db.Timestamptz(6)
+  /// Statut de paiement remonté par le cycle de vie réforme (source PA). Candidat de consolidation distinct de l'état SAP.
+  paPaymentStatus         String?          @map("pa_payment_status")
   /// Données fournisseur extraites du XML (adresse, TVA, SIREN, contact) pour pré-remplissage SAP B1
   supplierExtracted       Json?            @map("supplier_extracted")
   /// Commentaire libre saisi par l'utilisateur (max 254 car. pour rester compatible Comments SAP B1).

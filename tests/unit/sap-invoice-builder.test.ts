@@ -63,6 +63,83 @@ describe('sap-invoice-builder', () => {
     });
   });
 
+  it('adds DownPaymentsToDraw when a draw is provided (F3)', () => {
+    const result = buildPurchaseDocPayload(
+      invoice,
+      [lineWithAccount],
+      0,
+      { '20.00': 'S1' },
+      {
+        docEntry: 4242,
+        amountToDraw: 30,
+      },
+    );
+
+    const payload = result.payload as {
+      DownPaymentsToDraw?: Array<{ DocEntry: number; AmountToDraw: number }>;
+    };
+
+    expect(payload.DownPaymentsToDraw).toEqual([{ DocEntry: 4242, AmountToDraw: 30 }]);
+  });
+
+  it('adds DownPaymentsToDraw on an advance credit note (503 contre-passation, partial)', () => {
+    // Même paramètre downPaymentDraw que F3 ; la route poste ce payload vers
+    // PurchaseCreditNotes. Le builder est agnostique du docType.
+    const result = buildPurchaseDocPayload(
+      { ...invoice, direction: 'ADVANCE_CREDIT_NOTE' },
+      [lineWithAccount],
+      0,
+      { '20.00': 'S1' },
+      { docEntry: 4242, amountToDraw: 50 },
+    );
+
+    const payload = result.payload as {
+      DownPaymentsToDraw?: Array<{ DocEntry: number; AmountToDraw: number }>;
+    };
+
+    expect(payload.DownPaymentsToDraw).toEqual([{ DocEntry: 4242, AmountToDraw: 50 }]);
+  });
+
+  it('does not add DownPaymentsToDraw for a normal invoice (no draw)', () => {
+    const result = buildPurchaseDocPayload(invoice, [lineWithAccount], 0, { '20.00': 'S1' });
+
+    const payload = result.payload as { DownPaymentsToDraw?: unknown };
+
+    expect(payload.DownPaymentsToDraw).toBeUndefined();
+  });
+
+  it('sets DownPaymentType=dptInvoice for a down payment (386, PurchaseDownPayments)', () => {
+    const result = buildPurchaseDocPayload(
+      { ...invoice, direction: 'ADVANCE_INVOICE' },
+      [lineWithAccount],
+      0,
+      { '20.00': 'S1' },
+      undefined, // pas de tirage : le 386 EST l'acompte
+      true, // isDownPayment
+    );
+
+    const payload = result.payload as {
+      DownPaymentType?: string;
+      DocType?: string;
+      DocumentLines: Array<Record<string, unknown>>;
+      DownPaymentsToDraw?: unknown;
+    };
+
+    // Seul écart vs PurchaseInvoices : DownPaymentType. Lignes/DocType inchangés.
+    expect(payload.DownPaymentType).toBe('dptInvoice');
+    expect(payload.DocType).toBe('dDocument_Service');
+    expect(payload.DownPaymentsToDraw).toBeUndefined();
+    expect(payload.DocumentLines[0]).toMatchObject({ AccountCode: '601000', TaxCode: 'S1' });
+  });
+
+  it('does not set DownPaymentType for a normal invoice (PurchaseInvoices)', () => {
+    const result = buildPurchaseDocPayload(invoice, [lineWithAccount], 0, { '20.00': 'S1' });
+
+    const payload = result.payload as { DownPaymentType?: string };
+
+    expect(payload.DownPaymentType).toBeUndefined();
+  });
+
   it('builds a balanced journal entry payload', () => {
     const result = buildJournalEntryPayload(invoice, [lineWithAccount], 321, { '20.00': 'S1' });
 

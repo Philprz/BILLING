@@ -5,6 +5,7 @@ import {
   searchChartOfAccounts,
   SapSlError,
   createSapUdfPaRef,
+  createSapUdfNovaStatut,
 } from '../services/sap-sl.service';
 import {
   listCachedAccounts,
@@ -39,6 +40,29 @@ export async function sapRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(code).send({ success: false, error: msg });
     }
   });
+
+  // ── POST /api/sap/setup/udf-nova-statut ───────────────────────────────────
+  // Crée l'UDF U_NOVA_Statut sur OPCH (suivi niveau payé). Idempotent. Setup manuel.
+  app.post(
+    '/api/sap/setup/udf-nova-statut',
+    { preHandler: requireSession },
+    async (request, reply) => {
+      const { sapCookieHeader } = request.sapSession!;
+      try {
+        const result = await createSapUdfNovaStatut(sapCookieHeader);
+        return reply.send({ success: true, data: result });
+      } catch (err) {
+        const msg =
+          err instanceof SapSlError
+            ? err.sapDetail
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        const code = err instanceof SapSlError ? err.httpStatus : 502;
+        return reply.code(code).send({ success: false, error: msg });
+      }
+    },
+  );
 
   // ── GET /api/sap/accounts/search?q=... ────────────────────────────────────
   app.get<{ Querystring: { q?: string } }>(

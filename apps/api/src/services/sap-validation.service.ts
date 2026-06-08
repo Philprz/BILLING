@@ -9,6 +9,13 @@ import {
 import { validateVatCode } from './sap-vat-code.service';
 import { getCachedAccountsByCode, findClosestAccounts } from './chart-of-accounts-cache.service';
 import { resolveLineForSap, type LineData } from './sap-invoice-builder';
+import {
+  isFinalInvoiceWithDownPayment,
+  resolveDownPaymentDraw,
+  isAdvanceCreditNote,
+  resolveAdvanceForCreditNote,
+} from './down-payment.service';
+import type { Prisma } from '@pa-sap-bridge/database';
 
 export interface SapValidationIssue {
   severity: 'ERROR' | 'WARNING';
@@ -25,6 +32,7 @@ export interface SapValidationIssue {
     | 'INVALID_COST_CENTER'
     | 'MISSING_LEGAL_IDENTIFIER'
     | 'MISSING_VAT_IDENTIFIER'
+    | 'DOWN_PAYMENT_DRAW'
     | 'SAP_REFERENCE_ERROR';
   message: string;
   lineNo?: number;
@@ -52,6 +60,13 @@ export interface InvoiceForSapValidation {
   supplierB1Cardcode: string | null;
   files: Array<{ id: string }>;
   lines: LineData[];
+  // Champs F3 (déduction d'acompte) / 503 (contre-passation) — optionnels :
+  // absents = ni un F3 ni un 503, comportement inchangé.
+  direction?: string;
+  prepaidAmount?: Prisma.Decimal | number | null;
+  correctedInvoiceRef?: string | null;
+  supplierPaIdentifier?: string;
+  totalInclTax?: Prisma.Decimal | number;
 }
 
 function buildIssue(issue: SapValidationIssue): SapValidationIssue {
@@ -146,6 +161,84 @@ export async function validateInvoiceForSapPost(
     }
     if (resolved.taxCode) checkedRefs.taxCodes.push(resolved.taxCode);
     if (resolved.costCenter) checkedRefs.costCenters.push(resolved.costCenter);
+  }
+
+  // ── Contrôle F3 (déduction d'acompte) — par type de document ────────────────
+  // Garde-fou qui manquait : un F3 non rapprochable ne doit jamais poster à TTC
+  // plein. On remonte une anomalie bloquante AVANT l'intégration pour que
+  // l'utilisateur la voie dès la validation/simulation.
+  if (
+    invoice.direction !== undefined &&
+    invoice.supplierPaIdentifier !== undefined &&
+    isFinalInvoiceWithDownPayment({
+      direction: invoice.direction,
+      prepaidAmount: invoice.prepaidAmount ?? null,
+    })
+  ) {
+    if (integrationMode === 'JOURNAL_ENTRY') {
+      issues.push(
+        buildIssue({
+          severity: 'ERROR',
+          code: 'DOWN_PAYMENT_DRAW',
+          message:
+            "Déduction d'acompte non supportée en mode écriture (JOURNAL_ENTRY) — différé. Intégrez la facture définitive en mode facture de service.",
+        }),
+      );
+    } else {
+      const draw = await resolveDownPaymentDraw({
+        direction: invoice.direction,
+        prepaidAmount: invoice.prepaidAmount ?? null,
+        correctedInvoiceRef: invoice.correctedInvoiceRef ?? null,
+        supplierPaIdentifier: invoice.supplierPaIdentifier,
+      });
+      if (!draw.ok) {
+        issues.push(
+          buildIssue({
+            severity: 'ERROR',
+            code: 'DOWN_PAYMENT_DRAW',
+            message: draw.reason,
+          }),
+        );
+      }
+    }
+  }
+
+  // ── Contrôle 503 (contre-passation d'acompte) — par type de document ────────
+  // Symétrique du contrôle F3 : un 503 non rapprochable ne doit jamais être posté
+  // en avoir générique (acompte 386 non soldé). On remonte une anomalie bloquante
+  // AVANT l'intégration (visible en validation/simulation). Code partagé avec F3
+  // (DOWN_PAYMENT_DRAW) → déjà exclu des hardErrors génériques côté routes.
+  if (
+    invoice.supplierPaIdentifier !== undefined &&
+    invoice.direction !== undefined &&
+    isAdvanceCreditNote({ direction: invoice.direction })
+  ) {
+    if (integrationMode === 'JOURNAL_ENTRY') {
+      issues.push(
+        buildIssue({
+          severity: 'ERROR',
+          code: 'DOWN_PAYMENT_DRAW',
+          message:
+            "Contre-passation d'acompte (503) non supportée en mode écriture (JOURNAL_ENTRY) — différé. Intégrez l'avoir d'acompte en mode facture de service.",
+        }),
+      );
+    } else {
+      const reversal = await resolveAdvanceForCreditNote({
+        direction: invoice.direction,
+        totalInclTax: invoice.totalInclTax ?? 0,
+        correctedInvoiceRef: invoice.correctedInvoiceRef ?? null,
+        supplierPaIdentifier: invoice.supplierPaIdentifier,
+      });
+      if (!reversal.ok) {
+        issues.push(
+          buildIssue({
+            severity: 'ERROR',
+            code: 'DOWN_PAYMENT_DRAW',
+            message: reversal.reason,
+          }),
+        );
+      }
+    }
   }
 
   if (issues.length > 0) {

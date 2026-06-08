@@ -237,12 +237,16 @@ export interface SapDocResult {
 
 /**
  * Crée une Purchase Invoice, Purchase Credit Note ou A/P Down Payment dans SAP B1.
- * docType : 'PurchaseInvoices' | 'PurchaseCreditNotes' | 'APDownPayments'
- * APDownPayments partage la même structure de payload que PurchaseInvoices.
+ * docType : 'PurchaseInvoices' | 'PurchaseCreditNotes' | 'PurchaseDownPayments'
+ *
+ * EntitySet acompte = `PurchaseDownPayments` (confirmé LIVE 2026-06-05 ;
+ * `APDownPayments` n'existe pas dans ce SL → HTTP 400 « Unrecognized resource path »).
+ * Le payload acompte reprend la structure de PurchaseInvoices + `DownPaymentType`
+ * (cf. buildPurchaseDocPayload, paramètre isDownPayment).
  */
 export async function createPurchaseDoc(
   sapSessionCookie: string,
-  docType: 'PurchaseInvoices' | 'PurchaseCreditNotes' | 'APDownPayments',
+  docType: 'PurchaseInvoices' | 'PurchaseCreditNotes' | 'PurchaseDownPayments',
   payload: unknown,
 ): Promise<SapDocResult> {
   let response: Response;
@@ -994,4 +998,305 @@ export async function createSapUdfPaRef(sapSessionCookie: string): Promise<UdfCr
 
   const { message } = parseSapError(body);
   throw new SapSlError(message, sapCode ?? 0, response.status);
+}
+
+// ─── Niveau payé (S/B 2) — paiement sortant + lettrage & suivi U_NOVA_Statut ──
+//
+// Toutes les structures ci-dessous sont confirmées LIVE (lecture seule,
+// scripts/inspect-outgoingpayment-metadata.ts + inspect-bp-paymentmethod-novastatut.ts) :
+//   - OutgoingPayments (EntityType Payment) : DocObjectCode=bopot_OutgoingPayments,
+//     DocType=rSupplier (BoRcptTypes), CardCode, DocCurrency/DocRate ; moyen
+//     virement = TransferAccount + TransferSum + TransferDate ; lettrage =
+//     PaymentInvoices [{ DocEntry, InvoiceType:BoRcptInvTypes, SumApplied }].
+//   - BusinessPartner : PeymentMethodCode (typo SAP volontaire), DefaultBankCode,
+//     HouseBank, HouseBankAccount, HouseBankIBAN.
+//   - PurchaseInvoices : pas d'OpenAmount → montant ouvert = DocTotal − PaidToDate ;
+//     DocumentStatus ∈ { bost_Open, bost_Close }.
+
+/** Moyen de paiement / banque par défaut d'un fournisseur, lu sur sa fiche BP. */
+export interface SapSupplierPaymentConfig {
+  cardCode: string;
+  /** Code méthode de paiement par défaut (SAP `PeymentMethodCode` — typo d'origine). */
+  paymentMethodCode: string | null;
+  defaultBankCode: string | null;
+  houseBank: string | null;
+  houseBankAccount: string | null;
+  houseBankIban: string | null;
+}
+
+/**
+ * Lit la configuration de paiement par défaut d'un fournisseur (lecture seule).
+ * Retourne `null` si le BP est introuvable. Ne lance pas sur SAP indisponible côté
+ * appelant : laisse remonter SapSlError (l'appel paiement doit échouer franchement).
+ */
+export async function fetchSupplierPaymentConfig(
+  sapSessionCookie: string,
+  cardCode: string,
+): Promise<SapSupplierPaymentConfig | null> {
+  const select =
+    'CardCode,PeymentMethodCode,DefaultBankCode,HouseBank,HouseBankAccount,HouseBankIBAN';
+  const filter = `CardCode eq ${`'${odataEscape(cardCode)}'`}`;
+  const url = `${SAP_BASE_URL}/BusinessPartners?$select=${select}&$filter=${encodeURIComponent(filter)}&$top=1`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Cookie: normalizeSapCookieHeader(sapSessionCookie) },
+    });
+  } catch (err) {
+    throw new SapSlError(
+      `SAP injoignable lors de la lecture du moyen de paiement BP : ${String(err)}`,
+      0,
+      502,
+    );
+  }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401)
+      throw new SapSessionExpiredError(`lecture moyen paiement BP ${cardCode}`);
+    const { code, message } = parseSapError(body);
+    throw new SapSlError(
+      `Erreur SAP lecture BP ${cardCode} : ${message}`,
+      code,
+      response.status >= 400 ? 422 : 502,
+    );
+  }
+  const rows = ((body as Record<string, unknown>).value ?? []) as Record<string, unknown>[];
+  if (rows.length === 0) return null;
+  const bp = rows[0];
+  const str = (v: unknown): string | null => {
+    const s = typeof v === 'string' ? v.trim() : '';
+    return s.length > 0 ? s : null;
+  };
+  return {
+    cardCode: String(bp.CardCode ?? cardCode),
+    paymentMethodCode: str(bp.PeymentMethodCode),
+    defaultBankCode: str(bp.DefaultBankCode),
+    houseBank: str(bp.HouseBank),
+    houseBankAccount: str(bp.HouseBankAccount),
+    houseBankIban: str(bp.HouseBankIBAN),
+  };
+}
+
+/** Méthode de paiement SAP (WizardPaymentMethods) : sens + moyen. */
+export interface SapPaymentMethod {
+  paymentMethodCode: string;
+  /** Type SAP : `boptOutgoing` (sortant) | `boptIncoming` (entrant). */
+  type: string | null;
+  /** Moyen SAP : `bopmBankTransfer` | `bopmCheck` | `bopmCash` | `bopmBillOfExchange`… */
+  paymentMeans: string | null;
+}
+
+/**
+ * Lit une méthode de paiement (WizardPaymentMethods) par son code, pour connaître
+ * le sens (sortant) et le moyen (virement/chèque/espèces). Lecture seule.
+ * Retourne `null` si la méthode est introuvable.
+ */
+export async function fetchPaymentMethod(
+  sapSessionCookie: string,
+  paymentMethodCode: string,
+): Promise<SapPaymentMethod | null> {
+  const filter = `PaymentMethodCode eq '${odataEscape(paymentMethodCode)}'`;
+  const url = `${SAP_BASE_URL}/WizardPaymentMethods?$select=PaymentMethodCode,Type,PaymentMeans&$filter=${encodeURIComponent(filter)}&$top=1`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Cookie: normalizeSapCookieHeader(sapSessionCookie) },
+    });
+  } catch (err) {
+    throw new SapSlError(
+      `SAP injoignable lors de la lecture de la méthode de paiement : ${String(err)}`,
+      0,
+      502,
+    );
+  }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError('lecture méthode de paiement');
+    const { code, message } = parseSapError(body);
+    throw new SapSlError(
+      `Erreur SAP lecture méthode paiement : ${message}`,
+      code,
+      response.status >= 400 ? 422 : 502,
+    );
+  }
+  const rows = ((body as Record<string, unknown>).value ?? []) as Record<string, unknown>[];
+  if (rows.length === 0) return null;
+  const m = rows[0];
+  return {
+    paymentMethodCode: String(m.PaymentMethodCode ?? paymentMethodCode),
+    type: typeof m.Type === 'string' ? m.Type : null,
+    paymentMeans: typeof m.PaymentMeans === 'string' ? m.PaymentMeans : null,
+  };
+}
+
+/** État de règlement d'un poste fournisseur SAP, lu en direct (jamais une valeur stockée). */
+export interface SapInvoiceSettlement {
+  docEntry: number;
+  docNum: number;
+  cardCode: string;
+  docTotal: number;
+  paidToDate: number;
+  /** Montant ouvert = DocTotal − PaidToDate (pas d'OpenAmount exposé par le SL). */
+  openAmount: number;
+  documentStatus: string | null;
+  docCurrency: string | null;
+  docRate: number;
+}
+
+/**
+ * Lit l'état de règlement d'une PurchaseInvoices par DocEntry (lecture seule).
+ * Le montant ouvert est calculé (DocTotal − PaidToDate), arrondi à 2 décimales.
+ * Retourne `null` si la facture SAP est introuvable.
+ */
+export async function fetchPurchaseInvoiceSettlement(
+  sapSessionCookie: string,
+  docEntry: number,
+): Promise<SapInvoiceSettlement | null> {
+  const select = 'DocEntry,DocNum,CardCode,DocTotal,PaidToDate,DocumentStatus,DocCurrency,DocRate';
+  const url = `${SAP_BASE_URL}/PurchaseInvoices(${docEntry})?$select=${select}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Cookie: normalizeSapCookieHeader(sapSessionCookie) },
+    });
+  } catch (err) {
+    throw new SapSlError(
+      `SAP injoignable lors de la lecture du poste ${docEntry} : ${String(err)}`,
+      0,
+      502,
+    );
+  }
+  if (response.status === 404) return null;
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError(`lecture poste ${docEntry}`);
+    const { code, message } = parseSapError(body);
+    throw new SapSlError(
+      `Erreur SAP lecture poste ${docEntry} : ${message}`,
+      code,
+      response.status >= 400 ? 422 : 502,
+    );
+  }
+  const o = body as Record<string, unknown>;
+  const docTotal = typeof o.DocTotal === 'number' ? o.DocTotal : Number(o.DocTotal) || 0;
+  const paidToDate = typeof o.PaidToDate === 'number' ? o.PaidToDate : Number(o.PaidToDate) || 0;
+  const openAmount = Math.round((docTotal - paidToDate) * 100) / 100;
+  return {
+    docEntry: (o.DocEntry as number) ?? docEntry,
+    docNum: (o.DocNum as number) ?? docEntry,
+    cardCode: String(o.CardCode ?? ''),
+    docTotal,
+    paidToDate,
+    openAmount,
+    documentStatus: typeof o.DocumentStatus === 'string' ? o.DocumentStatus : null,
+    docCurrency: typeof o.DocCurrency === 'string' ? o.DocCurrency : null,
+    docRate: typeof o.DocRate === 'number' ? o.DocRate : Number(o.DocRate) || 1,
+  };
+}
+
+/**
+ * Crée un paiement fournisseur sortant (OutgoingPayments) dans SAP B1.
+ * ÉCRITURE — n'est appelée qu'en politique `real`, sur action explicite « Payer ».
+ * Le payload (moyen + lettrage PaymentInvoices) est construit par sap-payment.service.
+ */
+export async function createOutgoingPayment(
+  sapSessionCookie: string,
+  payload: unknown,
+): Promise<SapDocResult> {
+  let response: Response;
+  try {
+    response = await fetch(`${SAP_BASE_URL}/OutgoingPayments`, {
+      method: 'POST',
+      headers: sapHeaders(sapSessionCookie),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    throw new SapSlError(
+      `SAP injoignable lors de la création OutgoingPayments : ${String(err)}`,
+      0,
+      502,
+    );
+  }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401) throw new SapSessionExpiredError('création OutgoingPayments');
+    const { code, message } = parseSapError(body);
+    throw new SapSlError(
+      `Erreur SAP OutgoingPayments : ${message}`,
+      code,
+      response.status >= 400 ? 422 : 502,
+    );
+  }
+  const b = body as Record<string, unknown>;
+  return { docEntry: b.DocEntry as number, docNum: b.DocNum as number };
+}
+
+/**
+ * Crée le champ utilisateur U_NOVA_Statut sur la table OPCH (factures fournisseur SAP B1),
+ * support du suivi « niveau payé » (échelle NON_PAYE…SOLDE). Idempotent (code SAP −2035).
+ * Confirmé LIVE : l'UDF est ABSENTE → création nécessaire (mirror de createSapUdfPaRef).
+ */
+export async function createSapUdfNovaStatut(sapSessionCookie: string): Promise<UdfCreateResult> {
+  const response = await fetch(`${SAP_BASE_URL}/UserFieldsMD`, {
+    method: 'POST',
+    headers: sapHeaders(sapSessionCookie),
+    body: JSON.stringify({
+      TableName: 'OPCH',
+      Name: 'NOVA_Statut',
+      Description: 'Niveau payé NOVA (NON_PAYE<PROGRAMME<PARTIEL<PAYE<SOLDE)',
+      Type: 'db_Alpha',
+      Size: 20,
+    }),
+  });
+
+  if (response.status === 201 || response.ok) {
+    return { alreadyExists: false, fieldName: 'U_NOVA_Statut' };
+  }
+  if (response.status === 401) throw new SapSessionExpiredError('création UDF NOVA_Statut');
+
+  const body = await response.json().catch(() => ({}));
+  const sapCode = (body as { error?: { code?: number } })?.error?.code;
+  if (sapCode === -2035 || response.status === 409) {
+    return { alreadyExists: true, fieldName: 'U_NOVA_Statut' };
+  }
+  const { message } = parseSapError(body);
+  throw new SapSlError(message, sapCode ?? 0, response.status);
+}
+
+/**
+ * Réécrit l'UDF U_NOVA_Statut sur une PurchaseInvoices (PATCH). ÉCRITURE de SUIVI
+ * (jamais un paiement). Utilisée par le job de suivi (worker) après consolidation,
+ * uniquement quand la valeur change.
+ */
+export async function patchSapUdfNovaStatut(
+  sapSessionCookie: string,
+  docEntry: number,
+  value: string,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${SAP_BASE_URL}/PurchaseInvoices(${docEntry})`, {
+      method: 'PATCH',
+      headers: sapHeaders(sapSessionCookie),
+      body: JSON.stringify({ U_NOVA_Statut: value }),
+    });
+  } catch (err) {
+    throw new SapSlError(
+      `SAP injoignable lors du PATCH U_NOVA_Statut (${docEntry}) : ${String(err)}`,
+      0,
+      502,
+    );
+  }
+  if (!response.ok) {
+    if (response.status === 401)
+      throw new SapSessionExpiredError(`PATCH U_NOVA_Statut ${docEntry}`);
+    const data = await response.json().catch(() => ({}));
+    const { code, message } = parseSapError(data);
+    throw new SapSlError(
+      `Erreur SAP PATCH U_NOVA_Statut ${docEntry} : ${message}`,
+      code,
+      response.status >= 400 ? 422 : 502,
+    );
+  }
 }

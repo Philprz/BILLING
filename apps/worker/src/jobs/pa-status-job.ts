@@ -29,7 +29,10 @@ export async function runPaStatusJob(): Promise<void> {
   const pending = await prisma.invoice.findMany({
     where: {
       paStatusSentAt: null,
-      status: { in: ['POSTED', 'REJECTED'] },
+      // SUPERSEDED : l'originale remplacée par une rectificative 384. buildPaStatusPayload
+      // dérive SUPERSEDED → issue REJECTED (motif = statusReason « Remplacée par rectificative … »).
+      // Même infra de livraison + retry que POSTED/REJECTED.
+      status: { in: ['POSTED', 'REJECTED', 'SUPERSEDED'] },
     },
     select: {
       id: true,

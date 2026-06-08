@@ -64,4 +64,23 @@ describe('pa-status policy', () => {
     expect(payload.reason).toBeNull();
     expect(payload.sapDocNum).toBe(456);
   });
+
+  it('derives a REJECTED payload for SUPERSEDED invoices (originale remplacée par une 384)', () => {
+    const payload = buildPaStatusPayload({
+      paMessageId: 'MSG-ORIG',
+      docNumberPa: 'DOC-ORIG-42',
+      paSource: 'CANAL-A',
+      status: 'SUPERSEDED',
+      statusReason: 'Remplacée par rectificative DOC-384',
+      sapDocEntry: null,
+      sapDocNum: null,
+    });
+
+    // Aucune valeur d'issue dédiée : SUPERSEDED retombe sur la dérivation REJECTED,
+    // motif porté par statusReason (pas litigeMotif, qui n'est consommé que pour IN_DISPUTE).
+    expect(payload.outcome).toBe('REJECTED');
+    expect(payload.reason).toBe('Remplacée par rectificative DOC-384');
+    expect(payload.sapDocEntry).toBeNull();
+    expect(payload.sapDocNum).toBeNull();
+  });
 });

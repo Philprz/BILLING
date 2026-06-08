@@ -3,11 +3,17 @@ import './env';
 import os from 'os';
 import path from 'path';
 import { prisma } from '@pa-sap-bridge/database';
-import { POLL_INTERVAL_MS, INBOX_PATH, PROCESSED_PATH } from './config';
+import {
+  POLL_INTERVAL_MS,
+  INBOX_PATH,
+  PROCESSED_PATH,
+  PAYMENT_STATUS_POLL_INTERVAL_MS,
+} from './config';
 import { scanInbox } from './sources/local-folder';
 import { fetchSftpFiles } from './sources/sftp.source';
 import { runChannelCycle } from './ingestion/channel-runner';
 import { runPaStatusJob } from './jobs/pa-status-job';
+import { runPaymentStatusJob } from './jobs/payment-status-job';
 import { runRuleCleanupJob } from './jobs/rule-cleanup.job';
 
 function log(msg: string): void {
@@ -26,6 +32,15 @@ async function maybeRunWeeklyCleanup(): Promise<void> {
   if (Date.now() - lastCleanupAt < WEEK_MS) return;
   lastCleanupAt = Date.now();
   await runRuleCleanupJob();
+}
+
+// ── Suivi niveau payé (U_NOVA_Statut) — cadence dédiée ───────────────────────
+let lastPaymentStatusAt = 0;
+
+async function maybeRunPaymentStatusJob(): Promise<void> {
+  if (Date.now() - lastPaymentStatusAt < PAYMENT_STATUS_POLL_INTERVAL_MS) return;
+  lastPaymentStatusAt = Date.now();
+  await runPaymentStatusJob();
 }
 
 // ── Gestion du délai par canal ────────────────────────────────────────────────
@@ -117,6 +132,7 @@ async function runCycle(): Promise<void> {
   await pollLocalChannel();
   await pollDbChannels();
   await runPaStatusJob();
+  await maybeRunPaymentStatusJob();
   await maybeRunWeeklyCleanup();
 }
 

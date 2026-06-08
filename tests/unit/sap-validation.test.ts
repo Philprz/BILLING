@@ -33,6 +33,21 @@ vi.mock('../../apps/api/src/services/chart-of-accounts-cache.service', async (im
   };
 });
 
+// Mock des résolutions d'acompte : on garde les détections réelles
+// (isFinalInvoiceWithDownPayment / isAdvanceCreditNote) et on pilote les
+// résolveurs (F3 + 503) par test.
+const resolveDownPaymentDrawMock = vi.fn();
+const resolveAdvanceForCreditNoteMock = vi.fn();
+vi.mock('../../apps/api/src/services/down-payment.service', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('../../apps/api/src/services/down-payment.service')>();
+  return {
+    ...original,
+    resolveDownPaymentDraw: (...args: unknown[]) => resolveDownPaymentDrawMock(...args),
+    resolveAdvanceForCreditNote: (...args: unknown[]) => resolveAdvanceForCreditNoteMock(...args),
+  };
+});
+
 const { validateInvoiceForSapPost } =
   await import('../../apps/api/src/services/sap-validation.service');
 
@@ -473,6 +488,161 @@ describe('sap-validation.service', () => {
     expect(callCount).toBe(1);
     expect(report.issues.some((i) => i.code === 'MISSING_LEGAL_IDENTIFIER')).toBe(false);
     expect(report.issues.some((i) => i.code === 'MISSING_VAT_IDENTIFIER')).toBe(false);
+  });
+
+  // ─── F3 — déduction d'acompte (DownPaymentsToDraw) ──────────────────────────
+
+  const f3Invoice = {
+    status: 'READY',
+    supplierB1Cardcode: 'F_TEST',
+    files: [{ id: 'f1' }],
+    lines: [validLine],
+    direction: 'INVOICE',
+    prepaidAmount: dec(30),
+    correctedInvoiceRef: 'ACPT-001',
+    supplierPaIdentifier: 'FR123',
+  };
+
+  function primeAccountCacheAndSap() {
+    process.env.SAP_REST_BASE_URL = 'https://sap.test.local/b1s/v1';
+    accountCache.set('601000', {
+      acctCode: '601000',
+      acctName: 'Charges',
+      activeAccount: true,
+      postable: true,
+      accountLevel: 5,
+      groupMask: 6,
+    });
+    vi.stubGlobal('fetch', makeFetchSpy({ bpRecord: bpWithSiretAndVat }));
+  }
+
+  it('passes a rapprochable F3 (resolved down payment) without DOWN_PAYMENT_DRAW issue', async () => {
+    primeAccountCacheAndSap();
+    resolveDownPaymentDrawMock.mockResolvedValue({ ok: true, docEntry: 42, amountToDraw: 30 });
+
+    const report = await validateInvoiceForSapPost(f3Invoice, 'SERVICE_INVOICE', 'B1', {
+      '20.00': 'S1',
+    });
+
+    expect(report.issues.some((i) => i.code === 'DOWN_PAYMENT_DRAW')).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it('flags a non-rapprochable F3 as a blocking DOWN_PAYMENT_DRAW issue', async () => {
+    primeAccountCacheAndSap();
+    resolveDownPaymentDrawMock.mockResolvedValue({ ok: false, reason: 'Acompte 386 introuvable.' });
+
+    const report = await validateInvoiceForSapPost(f3Invoice, 'SERVICE_INVOICE', 'B1', {
+      '20.00': 'S1',
+    });
+
+    expect(report.ok).toBe(false);
+    const issue = report.issues.find((i) => i.code === 'DOWN_PAYMENT_DRAW');
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe('ERROR');
+    expect(issue!.message).toMatch(/introuvable/i);
+  });
+
+  it('blocks an F3 in JOURNAL_ENTRY mode without resolving the draw', async () => {
+    primeAccountCacheAndSap();
+
+    const report = await validateInvoiceForSapPost(f3Invoice, 'JOURNAL_ENTRY', 'B1', {
+      '20.00': 'S1',
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.issues.some((i) => i.code === 'DOWN_PAYMENT_DRAW')).toBe(true);
+    expect(resolveDownPaymentDrawMock).not.toHaveBeenCalled();
+  });
+
+  it('does not flag a normal invoice (no prepaidAmount) as F3', async () => {
+    primeAccountCacheAndSap();
+
+    const report = await validateInvoiceForSapPost(
+      { ...f3Invoice, prepaidAmount: null },
+      'SERVICE_INVOICE',
+      'B1',
+      { '20.00': 'S1' },
+    );
+
+    expect(report.issues.some((i) => i.code === 'DOWN_PAYMENT_DRAW')).toBe(false);
+    expect(resolveDownPaymentDrawMock).not.toHaveBeenCalled();
+    expect(report.ok).toBe(true);
+  });
+
+  // ─── 503 — contre-passation d'acompte (avoir d'acompte) ─────────────────────
+
+  const creditNote503 = {
+    status: 'READY',
+    supplierB1Cardcode: 'F_TEST',
+    files: [{ id: 'f1' }],
+    lines: [validLine],
+    direction: 'ADVANCE_CREDIT_NOTE',
+    totalInclTax: dec(50),
+    correctedInvoiceRef: 'ACPT-001',
+    supplierPaIdentifier: 'FR123',
+  };
+
+  it('passes a rapprochable 503 (resolved advance) without DOWN_PAYMENT_DRAW issue', async () => {
+    primeAccountCacheAndSap();
+    resolveAdvanceForCreditNoteMock.mockResolvedValue({
+      ok: true,
+      advanceDocEntry: 42,
+      advanceInvoiceId: 'adv-1',
+      amount: 50,
+    });
+
+    const report = await validateInvoiceForSapPost(creditNote503, 'SERVICE_INVOICE', 'B1', {
+      '20.00': 'S1',
+    });
+
+    expect(report.issues.some((i) => i.code === 'DOWN_PAYMENT_DRAW')).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it('flags a non-rapprochable 503 as a blocking DOWN_PAYMENT_DRAW issue', async () => {
+    primeAccountCacheAndSap();
+    resolveAdvanceForCreditNoteMock.mockResolvedValue({
+      ok: false,
+      reason: 'Acompte 386 introuvable.',
+    });
+
+    const report = await validateInvoiceForSapPost(creditNote503, 'SERVICE_INVOICE', 'B1', {
+      '20.00': 'S1',
+    });
+
+    expect(report.ok).toBe(false);
+    const issue = report.issues.find((i) => i.code === 'DOWN_PAYMENT_DRAW');
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe('ERROR');
+    expect(issue!.message).toMatch(/introuvable/i);
+  });
+
+  it('blocks a 503 in JOURNAL_ENTRY mode without resolving the reversal', async () => {
+    primeAccountCacheAndSap();
+
+    const report = await validateInvoiceForSapPost(creditNote503, 'JOURNAL_ENTRY', 'B1', {
+      '20.00': 'S1',
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.issues.some((i) => i.code === 'DOWN_PAYMENT_DRAW')).toBe(true);
+    expect(resolveAdvanceForCreditNoteMock).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a simple credit note (381) as a 503', async () => {
+    primeAccountCacheAndSap();
+
+    const report = await validateInvoiceForSapPost(
+      { ...creditNote503, direction: 'CREDIT_NOTE' },
+      'SERVICE_INVOICE',
+      'B1',
+      { '20.00': 'S1' },
+    );
+
+    expect(report.issues.some((i) => i.code === 'DOWN_PAYMENT_DRAW')).toBe(false);
+    expect(resolveAdvanceForCreditNoteMock).not.toHaveBeenCalled();
+    expect(report.ok).toBe(true);
   });
 });
 

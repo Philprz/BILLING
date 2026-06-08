@@ -127,6 +127,13 @@ async function handleCorrectiveInvoice(
       data: {
         status: 'SUPERSEDED',
         statusReason: `Remplacée par rectificative ${parsed.docNumberPa}`,
+        // Réarme la livraison PA : l'originale a déjà reçu un IN_DISPUTE (paStatusSentAt
+        // renseigné). La supersession est un NOUVEL événement de cycle qui doit ré-émettre
+        // l'issue dérivée REJECTED ; on remet le suivi d'envoi à zéro pour que le job
+        // (pa-status-job) la resélectionne malgré l'envoi IN_DISPUTE antérieur.
+        // (Le compteur de retry vit dans audit_log SEND_STATUS_PA/ERROR, pas sur l'invoice :
+        //  aucun champ supplémentaire à réinitialiser, donc aucune migration.)
+        paStatusSentAt: null,
       },
     });
     return tx.invoice.create({

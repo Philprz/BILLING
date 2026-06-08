@@ -17,10 +17,18 @@ import {
   findPurchaseInvoiceByDocNum,
   attachFileToExistingPurchaseInvoice,
   patchBusinessPartnerFiscal,
+  createOutgoingPayment,
   SapSlError,
   type SapPurchaseInvoiceRef,
 } from '../services/sap-sl.service';
 import { buildPurchaseDocPayload, buildJournalEntryPayload } from '../services/sap-invoice-builder';
+import { preparePayment } from '../services/sap-payment.service';
+import {
+  isFinalInvoiceWithDownPayment,
+  resolveDownPaymentDraw,
+  isAdvanceCreditNote,
+  resolveAdvanceForCreditNote,
+} from '../services/down-payment.service';
 import { sendPaStatus } from '../services/pa-status.service';
 import {
   assertLitigeStatusOk,
@@ -370,10 +378,77 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             taxRateMap,
           );
 
-          const hardErrors = validationReport.issues.filter((i) => i.code !== 'INVALID_TAX_CODE');
+          // DOWN_PAYMENT_DRAW (F3) est exclu ici : il est traité par le bloc dédié
+          // ci-dessous (TO_REVIEW + statusReason), pas par le 422 de validation générique.
+          const hardErrors = validationReport.issues.filter(
+            (i) => i.code !== 'INVALID_TAX_CODE' && i.code !== 'DOWN_PAYMENT_DRAW',
+          );
           if (hardErrors.length > 0) {
             results.push({ id, ok: false, error: buildValidationErrorMessage(validationReport) });
             continue;
+          }
+
+          // F3 — déduction de l'acompte (DownPaymentsToDraw). Le bulk poste toujours
+          // en SERVICE_INVOICE. Si l'acompte n'est pas rapprochable → on BLOQUE
+          // (TO_REVIEW), même en simulate : jamais de post à TTC plein.
+          let downPaymentDraw: { docEntry: number; amountToDraw: number } | undefined;
+          if (isFinalInvoiceWithDownPayment(invoice)) {
+            const draw = await resolveDownPaymentDraw(invoice);
+            if (!draw.ok) {
+              await prisma.invoice
+                .update({ where: { id }, data: { status: 'TO_REVIEW', statusReason: draw.reason } })
+                .catch(() => {});
+              await createAuditLogBestEffort({
+                action: 'POST_SAP',
+                entityType: 'INVOICE',
+                entityId: id,
+                sapUser,
+                outcome: 'ERROR',
+                errorMessage: draw.reason,
+                payloadBefore: { status: 'READY' },
+                payloadAfter: { stage: 'F3_DOWN_PAYMENT_UNRESOLVED', bulkAction: true },
+                ...requestMeta,
+              });
+              results.push({ id, ok: false, error: draw.reason });
+              continue;
+            }
+            downPaymentDraw = { docEntry: draw.docEntry, amountToDraw: draw.amountToDraw };
+          }
+
+          // 503 — contre-passation de l'acompte (avoir d'acompte). Même mécanisme
+          // SL que F3 (DownPaymentsToDraw) appliqué à l'avoir. Non rapprochable →
+          // BLOCAGE (TO_REVIEW), jamais d'avoir générique qui mésimpute l'acompte.
+          let advanceReversalLink:
+            | { advanceDocEntry: number; advanceInvoiceId: string }
+            | undefined;
+          if (isAdvanceCreditNote(invoice)) {
+            const reversal = await resolveAdvanceForCreditNote(invoice);
+            if (!reversal.ok) {
+              await prisma.invoice
+                .update({
+                  where: { id },
+                  data: { status: 'TO_REVIEW', statusReason: reversal.reason },
+                })
+                .catch(() => {});
+              await createAuditLogBestEffort({
+                action: 'POST_SAP',
+                entityType: 'INVOICE',
+                entityId: id,
+                sapUser,
+                outcome: 'ERROR',
+                errorMessage: reversal.reason,
+                payloadBefore: { status: 'READY' },
+                payloadAfter: { stage: '503_ADVANCE_REVERSAL_UNRESOLVED', bulkAction: true },
+                ...requestMeta,
+              });
+              results.push({ id, ok: false, error: reversal.reason });
+              continue;
+            }
+            downPaymentDraw = { docEntry: reversal.advanceDocEntry, amountToDraw: reversal.amount };
+            advanceReversalLink = {
+              advanceDocEntry: reversal.advanceDocEntry,
+              advanceInvoiceId: reversal.advanceInvoiceId,
+            };
           }
 
           let sapDocEntry: number;
@@ -385,13 +460,13 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           } else {
             // Routage SAP par direction (BT-3) :
             //   389 SELF_BILLED / 393 FACTORING → PurchaseInvoices (comme 380, via défaut)
-            //   503 ADVANCE_CREDIT_NOTE → PurchaseCreditNotes (par défaut)
-            // TODO 503 : contre-passation APDownPayment (cf. matrice S/B) — différé, route avoir simple.
+            //   503 ADVANCE_CREDIT_NOTE → PurchaseCreditNotes + DownPaymentsToDraw
+            //     (contre-passation de l'acompte 386 ; voir bloc 503 ci-dessus).
             const docType =
               invoice.direction === 'CREDIT_NOTE' || invoice.direction === 'ADVANCE_CREDIT_NOTE'
                 ? 'PurchaseCreditNotes'
                 : invoice.direction === 'ADVANCE_INVOICE'
-                  ? 'APDownPayments'
+                  ? 'PurchaseDownPayments'
                   : 'PurchaseInvoices';
             const { payload, skippedLines } = buildPurchaseDocPayload(
               {
@@ -408,6 +483,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
               invoice.lines,
               0,
               taxRateMap,
+              downPaymentDraw,
+              docType === 'PurchaseDownPayments',
             );
             if (skippedLines.length > 0) {
               results.push({
@@ -440,7 +517,14 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             sapUser,
             outcome: 'OK',
             payloadBefore: { status: 'READY' },
-            payloadAfter: { status: 'POSTED', sapDocEntry, sapDocNum, bulkAction: true },
+            payloadAfter: {
+              status: 'POSTED',
+              sapDocEntry,
+              sapDocNum,
+              bulkAction: true,
+              // Traçabilité 503 → acompte 386 contre-passé (pas de relation DB dédiée).
+              ...(advanceReversalLink ? { advanceReversal: advanceReversalLink } : {}),
+            },
             ...requestMeta,
           });
 
@@ -757,7 +841,11 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
       // Les autres erreurs (supplier, compte comptable, statut) restent bloquantes.
       let effectiveReport = validationReport;
       let hardErrors = effectiveReport.issues.filter(
-        (i) => i.code !== 'INVALID_TAX_CODE' && i.code !== 'INVALID_COST_CENTER',
+        (i) =>
+          i.code !== 'INVALID_TAX_CODE' &&
+          i.code !== 'INVALID_COST_CENTER' &&
+          // F3 : traité par le bloc dédié (2c) en TO_REVIEW, pas par le 422 générique.
+          i.code !== 'DOWN_PAYMENT_DRAW',
       );
 
       // Auto-réparation FederalTaxID : si le seul (ou un des) blocage est l'absence
@@ -823,7 +911,12 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             taxRateMap,
           );
           hardErrors = effectiveReport.issues.filter(
-            (i) => i.code !== 'INVALID_TAX_CODE' && i.code !== 'INVALID_COST_CENTER',
+            (i) =>
+              i.code !== 'INVALID_TAX_CODE' &&
+              i.code !== 'INVALID_COST_CENTER' &&
+              // F3 / 503 : traités par les blocs dédiés (2c/2d) en TO_REVIEW, pas
+              // par le 422 générique — cohérent avec le filtre principal ci-dessus.
+              i.code !== 'DOWN_PAYMENT_DRAW',
           );
         } catch (patchErr) {
           // L'auto-patch a échoué : on retombe sur le 422 normal avec l'erreur d'origine.
@@ -940,6 +1033,114 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
             policy: executionPolicy,
           },
         });
+      }
+
+      // ── 2c. F3 — déduction de l'acompte (DownPaymentsToDraw) ────────────────
+      // Détecté = facture définitive INVOICE portant un prepaidAmount (BT-113).
+      // Bloque (TO_REVIEW) plutôt que de poster un TTC plein (double comptage).
+      // S'applique AUSSI en simulate : la simulation doit signaler le problème.
+      let downPaymentDraw: { docEntry: number; amountToDraw: number } | undefined;
+      let advanceReversalLink: { advanceDocEntry: number; advanceInvoiceId: string } | undefined;
+      if (isFinalInvoiceWithDownPayment(invoice)) {
+        let blockReason: string | null = null;
+        if (integrationMode === 'JOURNAL_ENTRY') {
+          // La déduction d'acompte n'est pas exprimable proprement en écriture
+          // (compte d'avance non modélisé) — lot P1 distinct. On bloque.
+          blockReason =
+            "Déduction d'acompte non supportée en mode écriture (JOURNAL_ENTRY) — différé. Intégrez la facture définitive en mode facture de service.";
+        } else {
+          const draw = await resolveDownPaymentDraw(invoice);
+          if (!draw.ok) {
+            blockReason = draw.reason;
+          } else {
+            downPaymentDraw = { docEntry: draw.docEntry, amountToDraw: draw.amountToDraw };
+          }
+        }
+
+        if (blockReason !== null) {
+          await prisma.invoice
+            .update({ where: { id }, data: { status: 'TO_REVIEW', statusReason: blockReason } })
+            .catch(() => {});
+
+          await createAuditLogBestEffort({
+            action: 'POST_SAP',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: blockReason,
+            payloadBefore: { status: invoice.status, integrationMode: invoice.integrationMode },
+            payloadAfter: {
+              stage: 'F3_DOWN_PAYMENT_BLOCKED',
+              integrationMode,
+              companyDb,
+              simulate: executionPolicy.effectivePostPolicy === 'simulate',
+              policy: executionPolicy,
+            },
+            ...requestMeta,
+          });
+
+          return reply.code(422).send({
+            success: false,
+            error: blockReason,
+            data: { validationReport: effectiveReport, policy: executionPolicy },
+          });
+        }
+      }
+
+      // ── 2d. 503 — contre-passation de l'acompte (avoir d'acompte) ────────────
+      // Détecté = direction ADVANCE_CREDIT_NOTE. Même mécanisme SL que F3
+      // (DownPaymentsToDraw) appliqué à l'avoir, montant = total du 503 (partiel
+      // ou total). JOURNAL_ENTRY → bloqué (le mode écriture inverse le sens du
+      // 503 — lot distinct). Non rapprochable → bloqué (TO_REVIEW), jamais d'avoir
+      // générique. S'applique AUSSI en simulate.
+      if (isAdvanceCreditNote(invoice)) {
+        let blockReason: string | null = null;
+        if (integrationMode === 'JOURNAL_ENTRY') {
+          blockReason =
+            "Contre-passation d'acompte (503) non supportée en mode écriture (JOURNAL_ENTRY) — différé. Intégrez l'avoir d'acompte en mode facture de service.";
+        } else {
+          const reversal = await resolveAdvanceForCreditNote(invoice);
+          if (!reversal.ok) {
+            blockReason = reversal.reason;
+          } else {
+            downPaymentDraw = { docEntry: reversal.advanceDocEntry, amountToDraw: reversal.amount };
+            advanceReversalLink = {
+              advanceDocEntry: reversal.advanceDocEntry,
+              advanceInvoiceId: reversal.advanceInvoiceId,
+            };
+          }
+        }
+
+        if (blockReason !== null) {
+          await prisma.invoice
+            .update({ where: { id }, data: { status: 'TO_REVIEW', statusReason: blockReason } })
+            .catch(() => {});
+
+          await createAuditLogBestEffort({
+            action: 'POST_SAP',
+            entityType: 'INVOICE',
+            entityId: id,
+            sapUser,
+            outcome: 'ERROR',
+            errorMessage: blockReason,
+            payloadBefore: { status: invoice.status, integrationMode: invoice.integrationMode },
+            payloadAfter: {
+              stage: '503_ADVANCE_REVERSAL_BLOCKED',
+              integrationMode,
+              companyDb,
+              simulate: executionPolicy.effectivePostPolicy === 'simulate',
+              policy: executionPolicy,
+            },
+            ...requestMeta,
+          });
+
+          return reply.code(422).send({
+            success: false,
+            error: blockReason,
+            data: { validationReport: effectiveReport, policy: executionPolicy },
+          });
+        }
       }
 
       // ── 3. Fichier à uploader (premier fichier de la facture) ───────────────
@@ -1064,13 +1265,13 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           if (integrationMode === 'SERVICE_INVOICE') {
             // Routage SAP par direction (BT-3) :
             //   389 SELF_BILLED / 393 FACTORING → PurchaseInvoices (comme 380, via défaut)
-            //   503 ADVANCE_CREDIT_NOTE → PurchaseCreditNotes (par défaut)
-            // TODO 503 : contre-passation APDownPayment (cf. matrice S/B) — différé, route avoir simple.
+            //   503 ADVANCE_CREDIT_NOTE → PurchaseCreditNotes + DownPaymentsToDraw
+            //     (contre-passation de l'acompte 386 ; voir bloc 2d ci-dessus).
             const docType =
               invoice.direction === 'CREDIT_NOTE' || invoice.direction === 'ADVANCE_CREDIT_NOTE'
                 ? 'PurchaseCreditNotes'
                 : invoice.direction === 'ADVANCE_INVOICE'
-                  ? 'APDownPayments'
+                  ? 'PurchaseDownPayments'
                   : 'PurchaseInvoices';
 
             const { payload, skippedLines } = buildPurchaseDocPayload(
@@ -1078,6 +1279,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
               cleanedLines,
               sapAttachmentEntry,
               taxRateMap,
+              downPaymentDraw,
+              docType === 'PurchaseDownPayments',
             );
             if (skippedLines.length > 0) {
               throw new SapSlError(
@@ -1230,6 +1433,8 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
         simulate: executionPolicy.effectivePostPolicy === 'simulate',
         policy: executionPolicy,
         validationReport: effectiveReport,
+        // Traçabilité 503 → acompte 386 contre-passé (pas de relation DB dédiée).
+        ...(advanceReversalLink ? { advanceReversal: advanceReversalLink } : {}),
       };
 
       await createAuditLogBestEffort({
@@ -1272,6 +1477,199 @@ export async function invoiceRoutes(app: FastifyInstance): Promise<void> {
           attachmentWarning,
           validationReport: effectiveReport,
           policy: executionPolicy,
+        },
+      });
+    },
+  );
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // POST /api/invoices/:id/pay                      (Niveau payé — matrice S/B 2)
+  // Crée un paiement fournisseur sortant (OutgoingPayments) qui solde le poste,
+  // sur ACTION EXPLICITE utilisateur (jamais automatique), après intégration.
+  //
+  // Sécurité argent :
+  //   - respecte SAP_POST_POLICY : disabled → bloque ; simulate → prévisualise sans
+  //     créer ; real → crée le paiement réel.
+  //   - bloque au moindre doute (BP sans moyen, poste non ouvert, déjà payé, moyen
+  //     non automatisable) ; idempotence stricte (un seul paiement par facture).
+  //   - moyen/banque LUS du BP ; montant = montant ouvert LU EN DIRECT.
+  // ────────────────────────────────────────────────────────────────────────────
+  app.post<{ Params: { id: string }; Body: { simulate?: boolean } }>(
+    '/api/invoices/:id/pay',
+    {
+      preHandler: requireSession,
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          properties: { simulate: { type: 'boolean' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { simulate = false } = request.body ?? {};
+      const { sapCookieHeader, sapUser, companyDb } = request.sapSession!;
+      const requestMeta = getRequestMeta(request);
+      const executionPolicy = resolveSapExecutionPolicy({ simulate });
+
+      const invoice = await prisma.invoice.findUnique({ where: { id } });
+      if (!invoice) {
+        return reply.code(404).send({ success: false, error: 'Facture introuvable' });
+      }
+
+      // disabled → jamais de paiement.
+      if (executionPolicy.effectivePostPolicy === 'disabled') {
+        return reply.code(409).send({
+          success: false,
+          error:
+            "Création de paiement désactivée par la politique d'environnement (SAP_POST_POLICY=disabled).",
+        });
+      }
+
+      // Pré-paiement : lectures seules (poste ouvert, moyen BP) + validations + payload.
+      let prepared;
+      try {
+        prepared = await preparePayment(sapCookieHeader, {
+          id: invoice.id,
+          direction: invoice.direction,
+          status: invoice.status,
+          supplierB1Cardcode: invoice.supplierB1Cardcode,
+          sapDocEntry: invoice.sapDocEntry,
+          sapPaymentDocEntry: invoice.sapPaymentDocEntry,
+        });
+      } catch (err) {
+        const isSapErr = err instanceof SapSlError;
+        const message = isSapErr ? err.sapDetail : err instanceof Error ? err.message : String(err);
+        await createAuditLogBestEffort({
+          action: 'POST_SAP',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: message,
+          payloadAfter: { stage: 'PAYMENT_PREPARE_ERROR', policy: executionPolicy },
+          ...requestMeta,
+        });
+        return reply.code(isSapErr ? err.httpStatus : 502).send({ success: false, error: message });
+      }
+
+      // Blocage motivé (au moindre doute) → jamais de paiement.
+      if (!prepared.ok) {
+        await createAuditLogBestEffort({
+          action: 'POST_SAP',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: prepared.reason,
+          payloadAfter: {
+            stage: 'PAYMENT_BLOCKED',
+            reason: prepared.reason,
+            policy: executionPolicy,
+          },
+          ...requestMeta,
+        });
+        return reply.code(prepared.httpStatus).send({ success: false, error: prepared.reason });
+      }
+
+      // simulate → prévisualisation, AUCUNE création.
+      if (executionPolicy.effectivePostPolicy === 'simulate') {
+        await createAuditLogBestEffort({
+          action: 'POST_SAP',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'OK',
+          payloadAfter: {
+            stage: 'PAYMENT_SIMULATED',
+            policy: executionPolicy,
+            preview: prepared.payload as Prisma.InputJsonObject,
+            openAmount: prepared.settlement.openAmount,
+            means: prepared.means,
+            companyDb,
+          },
+          ...requestMeta,
+        });
+        return reply.send({
+          success: true,
+          data: {
+            simulate: true,
+            preview: prepared.payload,
+            openAmount: prepared.settlement.openAmount,
+            means: prepared.means,
+          },
+        });
+      }
+
+      // real → création réelle du paiement sortant.
+      let paymentResult;
+      try {
+        paymentResult = await createOutgoingPayment(sapCookieHeader, prepared.payload);
+      } catch (err) {
+        const isSapErr = err instanceof SapSlError;
+        const message = isSapErr ? err.sapDetail : err instanceof Error ? err.message : String(err);
+        await createAuditLogBestEffort({
+          action: 'POST_SAP',
+          entityType: 'INVOICE',
+          entityId: id,
+          sapUser,
+          outcome: 'ERROR',
+          errorMessage: message,
+          payloadAfter: {
+            stage: 'PAYMENT_CREATE_ERROR',
+            policy: executionPolicy,
+            payload: prepared.payload as Prisma.InputJsonObject,
+          },
+          ...requestMeta,
+        });
+        return reply.code(isSapErr ? err.httpStatus : 502).send({ success: false, error: message });
+      }
+
+      // Persistance : DocEntry du paiement + niveau payé = SOLDE (poste soldé par le lettrage).
+      const paidAt = new Date();
+      await prisma.invoice.update({
+        where: { id },
+        data: {
+          sapPaymentDocEntry: paymentResult.docEntry,
+          sapPaymentDocNum: paymentResult.docNum,
+          novaPaymentStatus: 'SOLDE',
+          novaPaymentStatusSource: 'SAP',
+          novaPaymentStatusAt: paidAt,
+        },
+      });
+
+      await createAuditLogBestEffort({
+        action: 'POST_SAP',
+        entityType: 'INVOICE',
+        entityId: id,
+        sapUser,
+        outcome: 'OK',
+        payloadAfter: {
+          stage: 'PAYMENT_OK',
+          policy: executionPolicy,
+          sapPaymentDocEntry: paymentResult.docEntry,
+          sapPaymentDocNum: paymentResult.docNum,
+          openAmount: prepared.settlement.openAmount,
+          means: prepared.means,
+          novaPaymentStatus: 'SOLDE',
+          companyDb,
+        },
+        ...requestMeta,
+      });
+
+      const refreshed = await findInvoiceById(id);
+      return reply.send({
+        success: true,
+        data: {
+          sapPaymentDocEntry: paymentResult.docEntry,
+          sapPaymentDocNum: paymentResult.docNum,
+          novaPaymentStatus: 'SOLDE',
+          invoice: refreshed,
         },
       });
     },
