@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   BookmarkPlus,
   Trash2,
@@ -12,6 +12,10 @@ import {
   CheckCircle2,
   XCircle,
   Pencil,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUpDown,
+  FilterX,
 } from 'lucide-react';
 import {
   apiGetMappingRules,
@@ -28,6 +32,59 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button';
 import { AccountSearch } from '../components/ui/AccountSearch';
 import { toast } from '../lib/toast';
+
+type SortDir = 'asc' | 'desc';
+
+// Seuil de cardinalité : au-delà, le filtre colonne reste en saisie « contient »
+// (avec suggestions datalist) ; en deçà, il devient un menu déroulant (égalité exacte).
+const LOW_CARDINALITY_MAX = 8;
+
+interface RuleColumn {
+  id: string;
+  label: string;
+  align?: 'left' | 'right';
+  /** Valeur texte affichée — sert au filtre « contient » ET au tri alphabétique. */
+  text: (r: MappingRule) => string;
+  /** Clé de tri ; par défaut = text. Numérique pour Taux TVA, Confiance, Usages. */
+  sortValue?: (r: MappingRule) => string | number;
+}
+
+// Source unique de vérité pour les colonnes de données (hors colonnes d'action,
+// ni filtrables ni triables). Les accesseurs `text` produisent exactement la donnée
+// brute servant au filtre et au tri (sans le fallback « — » d'affichage).
+const RULE_COLUMNS: RuleColumn[] = [
+  {
+    id: 'scope',
+    label: 'Portée',
+    text: (r) => (r.scope === 'SUPPLIER' ? 'Fournisseur' : 'Global'),
+  },
+  { id: 'supplier', label: 'Fournisseur', text: (r) => r.supplierCardcode ?? '' },
+  { id: 'keyword', label: 'Mot-clé', text: (r) => r.matchKeyword ?? '' },
+  {
+    id: 'taxRate',
+    label: 'Taux TVA',
+    text: (r) => (r.matchTaxRate != null ? String(r.matchTaxRate) : ''),
+    sortValue: (r) => (r.matchTaxRate != null ? r.matchTaxRate : Number.NEGATIVE_INFINITY),
+  },
+  { id: 'account', label: 'Compte', text: (r) => r.accountCode },
+  { id: 'costCenter', label: 'Centre', text: (r) => r.costCenter ?? '' },
+  { id: 'taxCodeB1', label: 'Code TVA B1', text: (r) => r.taxCodeB1 ?? '' },
+  {
+    id: 'confidence',
+    label: 'Confiance',
+    align: 'right',
+    text: (r) => String(r.confidence),
+    sortValue: (r) => r.confidence,
+  },
+  {
+    id: 'usage',
+    label: 'Usages',
+    align: 'right',
+    text: (r) => String(r.usageCount),
+    sortValue: (r) => r.usageCount,
+  },
+  { id: 'active', label: 'Actif', text: (r) => (r.active ? 'Actif' : 'Inactif') },
+];
 
 function ConfidenceBadge({ value }: { value: number }) {
   const color = value >= 80 ? 'text-success' : value >= 50 ? 'text-warning' : 'text-destructive';
@@ -491,6 +548,8 @@ export default function MappingRulesPage() {
   const [importing, setImporting] = useState(false);
   const [vatCodes, setVatCodes] = useState<VatOption[]>([]);
   const [vatLoading, setVatLoading] = useState(false);
+  const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
+  const [sort, setSort] = useState<{ id: string; dir: SortDir } | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -575,6 +634,61 @@ export default function MappingRulesPage() {
   const activeCount = rules.filter((r) => r.active).length;
   const emptyTvaCount = rules.filter((r) => !r.taxCodeB1 || r.taxCodeB1.trim() === '').length;
 
+  // Filtres auto-alimentés (hybride par cardinalité), calculés sur `rules` :
+  // `select` (égalité) si peu de valeurs distinctes, sinon `text` (contient) + datalist.
+  const columnMode = useMemo(() => {
+    const m: Record<string, { mode: 'select' | 'text'; values: string[] }> = {};
+    for (const c of RULE_COLUMNS) {
+      const values = Array.from(
+        new Set(rules.map((r) => c.text(r)).filter((v) => v.trim() !== '')),
+      ).sort((a, b) => a.localeCompare(b, 'fr', { numeric: true }));
+      m[c.id] = { mode: values.length <= LOW_CARDINALITY_MAX ? 'select' : 'text', values };
+    }
+    return m;
+  }, [rules]);
+
+  // Filtres colonne + tri appliqués côté client sur `rules` (pas de recherche serveur).
+  const rows = useMemo(() => {
+    let r = rules.filter((rule) =>
+      RULE_COLUMNS.every((c) => {
+        const f = columnFilters[c.id]?.trim();
+        if (!f) return true;
+        const cell = c.text(rule);
+        return columnMode[c.id]?.mode === 'select'
+          ? cell === f
+          : cell.toLowerCase().includes(f.toLowerCase());
+      }),
+    );
+    if (sort) {
+      const col = RULE_COLUMNS.find((c) => c.id === sort.id);
+      if (col) {
+        const get = col.sortValue ?? col.text;
+        r = [...r].sort((a, b) => {
+          const va = get(a);
+          const vb = get(b);
+          let cmp: number;
+          if (typeof va === 'number' && typeof vb === 'number') cmp = va - vb;
+          else
+            cmp = String(va).localeCompare(String(vb), 'fr', {
+              numeric: true,
+              sensitivity: 'base',
+            });
+          return sort.dir === 'asc' ? cmp : -cmp;
+        });
+      }
+    }
+    return r;
+  }, [rules, columnFilters, sort, columnMode]);
+
+  function toggleSort(id: string) {
+    setSort((prev) =>
+      prev?.id !== id ? { id, dir: 'asc' } : prev.dir === 'asc' ? { id, dir: 'desc' } : null,
+    );
+  }
+
+  const hasColumnFiltersOrSort =
+    Object.values(columnFilters).some((v) => v?.trim()) || Boolean(sort);
+
   return (
     <div className="app-page">
       {editRule && (
@@ -591,7 +705,6 @@ export default function MappingRulesPage() {
       <div className="page-header">
         <div>
           <p className="page-eyebrow">Configuration</p>
-          <h1 className="page-title">Règles de mappage</h1>
           <p className="page-subtitle">
             {rules.length} règle{rules.length !== 1 ? 's' : ''} · {activeCount} active
             {activeCount !== 1 ? 's' : ''}
@@ -669,22 +782,108 @@ export default function MappingRulesPage() {
               <table className="data-table" aria-label="Règles de mappage">
                 <thead>
                   <tr>
-                    <th>Portée</th>
-                    <th>Fournisseur</th>
-                    <th>Mot-clé</th>
-                    <th>Taux TVA</th>
-                    <th>Compte</th>
-                    <th>Centre</th>
-                    <th>Code TVA B1</th>
-                    <th className="text-right">Confiance</th>
-                    <th className="text-right">Usages</th>
-                    <th>Actif</th>
+                    {RULE_COLUMNS.map((c) => {
+                      const active = sort?.id === c.id;
+                      return (
+                        <th
+                          key={c.id}
+                          className={c.align === 'right' ? 'text-right' : undefined}
+                          aria-sort={
+                            active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none'
+                          }
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleSort(c.id)}
+                            className="inline-flex items-center gap-1 transition-colors hover:text-foreground"
+                          >
+                            {c.label}
+                            {active ? (
+                              sort!.dir === 'asc' ? (
+                                <ArrowUp className="h-3 w-3" />
+                              ) : (
+                                <ArrowDown className="h-3 w-3" />
+                              )
+                            ) : (
+                              <ChevronsUpDown className="h-3 w-3 opacity-40" />
+                            )}
+                          </button>
+                        </th>
+                      );
+                    })}
                     <th />
                     <th />
                   </tr>
+                  <tr className="bg-muted/20">
+                    {RULE_COLUMNS.map((c) => (
+                      <th key={c.id} className="p-1">
+                        {columnMode[c.id]?.mode === 'select' ? (
+                          <select
+                            className="app-input h-7 w-full text-xs font-normal"
+                            aria-label={`Filtrer ${c.label}`}
+                            value={columnFilters[c.id] ?? ''}
+                            onChange={(e) =>
+                              setColumnFilters((prev) => ({ ...prev, [c.id]: e.target.value }))
+                            }
+                          >
+                            <option value="">Tous</option>
+                            {columnMode[c.id].values.map((v) => (
+                              <option key={v} value={v}>
+                                {v}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <>
+                            <input
+                              className="app-input h-7 w-full text-xs font-normal"
+                              placeholder="Filtrer…"
+                              aria-label={`Filtrer ${c.label}`}
+                              list={`dl-rule-${c.id}`}
+                              value={columnFilters[c.id] ?? ''}
+                              onChange={(e) =>
+                                setColumnFilters((prev) => ({ ...prev, [c.id]: e.target.value }))
+                              }
+                            />
+                            <datalist id={`dl-rule-${c.id}`}>
+                              {columnMode[c.id]?.values.map((v) => (
+                                <option key={v} value={v} />
+                              ))}
+                            </datalist>
+                          </>
+                        )}
+                      </th>
+                    ))}
+                    <th className="p-1" />
+                    <th className="p-1 text-right">
+                      {hasColumnFiltersOrSort && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setColumnFilters({});
+                            setSort(null);
+                          }}
+                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                          aria-label="Réinitialiser les filtres et le tri"
+                        >
+                          <FilterX className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </th>
+                  </tr>
                 </thead>
                 <tbody>
-                  {rules.map((rule) => (
+                  {rows.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={RULE_COLUMNS.length + 2}
+                        className="py-8 text-center text-sm text-muted-foreground"
+                      >
+                        Aucune règle ne correspond aux filtres de colonne.
+                      </td>
+                    </tr>
+                  )}
+                  {rows.map((rule) => (
                     <tr
                       key={rule.id}
                       className={`group transition-colors hover:bg-muted/20 ${!rule.active ? 'opacity-50' : ''}`}
