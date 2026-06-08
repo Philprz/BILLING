@@ -286,6 +286,7 @@ export interface SapBpFiscalPatch {
   federalTaxId?: string | null;
   licTradNum?: string | null;
   routageCode?: string | null;
+  doublon?: string | null; // U_NOVA_Doublon : 'Y' = signalé, '' = retiré
 }
 
 /**
@@ -306,6 +307,7 @@ export async function patchBusinessPartnerFiscal(
   if (fields.federalTaxId !== undefined) body.FederalTaxID = fields.federalTaxId ?? '';
   if (fields.licTradNum !== undefined) body.LicTradNum = fields.licTradNum ?? '';
   if (fields.routageCode !== undefined) body.U_PA_RoutageCode = fields.routageCode ?? '';
+  if (fields.doublon !== undefined) body.U_NOVA_Doublon = fields.doublon ?? '';
 
   if (Object.keys(body).length === 0) return;
 
@@ -1299,4 +1301,37 @@ export async function patchSapUdfNovaStatut(
       response.status >= 400 ? 422 : 502,
     );
   }
+}
+
+// ─── Création UDF U_NOVA_Doublon sur OCRD ─────────────────────────────────────
+
+/**
+ * Crée le champ utilisateur U_NOVA_Doublon sur la table OCRD (fiches partenaires
+ * SAP B1), support du marquage « fournisseur en doublon ». Idempotent (code SAP −2035).
+ */
+export async function createSapUdfNovaDoublon(sapSessionCookie: string): Promise<UdfCreateResult> {
+  const response = await fetch(`${SAP_BASE_URL}/UserFieldsMD`, {
+    method: 'POST',
+    headers: sapHeaders(sapSessionCookie),
+    body: JSON.stringify({
+      TableName: 'OCRD',
+      Name: 'NOVA_Doublon',
+      Description: 'Marquage NOVA : fournisseur signalé en doublon (Y = signalé)',
+      Type: 'db_Alpha',
+      Size: 1,
+    }),
+  });
+
+  if (response.status === 201 || response.ok) {
+    return { alreadyExists: false, fieldName: 'U_NOVA_Doublon' };
+  }
+  if (response.status === 401) throw new SapSessionExpiredError('création UDF NOVA_Doublon');
+
+  const body = await response.json().catch(() => ({}));
+  const sapCode = (body as { error?: { code?: number } })?.error?.code;
+  if (sapCode === -2035 || response.status === 409) {
+    return { alreadyExists: true, fieldName: 'U_NOVA_Doublon' };
+  }
+  const { message } = parseSapError(body);
+  throw new SapSlError(message, sapCode ?? 0, response.status);
 }

@@ -102,6 +102,10 @@ enum AuditAction {
   INVOICE_LITIGE_LEVE
   /// Rétrogradation d'une facture de READY vers TO_REVIEW (commentaire facultatif)
   INVOICE_RETOUR_A_REVISER
+  /// Rattachement d'un fournisseur doublon (alias) à un maître SAP (auto ou manuel)
+  MERGE_SUPPLIER
+  /// Détachement d'un rattachement (ré-version des factures vers l'alias)
+  UNMERGE_SUPPLIER
 }
 
 /// Type d'entité référencée dans l'audit
@@ -112,6 +116,8 @@ enum AuditEntityType {
   SYSTEM
   /// Ajouté : section 7.3 du CDC (upload de pièce jointe SAP)
   ATTACHMENT
+  /// Fournisseur (rattachement / détachement de doublons)
+  SUPPLIER
 }
 
 enum AuditOutcome {
@@ -339,6 +345,26 @@ model SupplierCache {
   @@index([taxId0], name: "idx_suppliers_cache_tax_id0")
   @@index([validFor], name: "idx_suppliers_cache_valid_for")
   @@map("suppliers_cache")
+}
+
+// ============================================================
+// Table : supplier_merges
+// Rattachement durable d'un CardCode doublon (alias) vers le bon
+// fournisseur SAP (maître, validFor:true). Survit aux resync :
+// la liste et l'auto-matching excluent les aliasCardcode.
+// ============================================================
+model SupplierMerge {
+  id             String   @id @default(uuid()) @db.Uuid
+  /// CardCode du doublon rattaché (un alias n'a qu'un seul maître).
+  aliasCardcode  String   @unique @map("alias_cardcode")
+  /// CardCode du fournisseur SAP maître (validFor:true au moment du rattachement).
+  masterCardcode String   @map("master_cardcode")
+  reason         String?
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([masterCardcode], name: "idx_supplier_merges_master")
+  @@map("supplier_merges")
 }
 
 // ============================================================

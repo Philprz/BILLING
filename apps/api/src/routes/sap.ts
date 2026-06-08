@@ -6,6 +6,7 @@ import {
   SapSlError,
   createSapUdfPaRef,
   createSapUdfNovaStatut,
+  createSapUdfNovaDoublon,
 } from '../services/sap-sl.service';
 import {
   listCachedAccounts,
@@ -50,6 +51,29 @@ export async function sapRoutes(app: FastifyInstance): Promise<void> {
       const { sapCookieHeader } = request.sapSession!;
       try {
         const result = await createSapUdfNovaStatut(sapCookieHeader);
+        return reply.send({ success: true, data: result });
+      } catch (err) {
+        const msg =
+          err instanceof SapSlError
+            ? err.sapDetail
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        const code = err instanceof SapSlError ? err.httpStatus : 502;
+        return reply.code(code).send({ success: false, error: msg });
+      }
+    },
+  );
+
+  // ── POST /api/sap/setup/udf-nova-doublon ──────────────────────────────────
+  // Crée l'UDF U_NOVA_Doublon sur OCRD (marquage doublon fournisseur). Idempotent.
+  app.post(
+    '/api/sap/setup/udf-nova-doublon',
+    { preHandler: requireSession },
+    async (request, reply) => {
+      const { sapCookieHeader } = request.sapSession!;
+      try {
+        const result = await createSapUdfNovaDoublon(sapCookieHeader);
         return reply.send({ success: true, data: result });
       } catch (err) {
         const msg =

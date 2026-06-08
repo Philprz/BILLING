@@ -1,8 +1,19 @@
 import type { FastifyInstance } from 'fastify';
-import { findSuppliers } from '../repositories/supplier.repository';
+import {
+  findSuppliers,
+  updateSupplierCacheFiscal,
+  mergeSuppliers,
+  findReconcilePlan,
+  listSupplierMerges,
+  detachSupplier,
+} from '../repositories/supplier.repository';
 import { requireSession } from '../middleware/require-session';
 import { createAuditLogBestEffort, prisma } from '@pa-sap-bridge/database';
-import { createBusinessPartner, SapSlError } from '../services/sap-sl.service';
+import {
+  createBusinessPartner,
+  patchBusinessPartnerFiscal,
+  SapSlError,
+} from '../services/sap-sl.service';
 import {
   getSuppliersSyncStatus,
   syncSuppliersFromSap,
@@ -324,6 +335,337 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
         });
 
         return reply.code(httpStatus).send({ success: false, error: msg });
+      }
+    },
+  );
+
+  // ── PATCH /api/suppliers/:cardCode/fiscal ──────────────────────────────────
+  // Correction des identifiants fiscaux (TVA / SIRET / Identifiant PA) poussée
+  // vers SAP B1, puis miroir dans le cache local. Ne jamais inventer de valeur :
+  // un champ absent n'est pas écrasé, un format invalide est refusé (422).
+  app.patch<{
+    Params: { cardCode: string };
+    Body: { federalTaxId?: string; licTradNum?: string; routageCode?: string };
+  }>(
+    '/api/suppliers/:cardCode/fiscal',
+    {
+      preHandler: requireSession,
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            federalTaxId: { type: 'string', maxLength: 32 },
+            licTradNum: { type: 'string', maxLength: 32 },
+            routageCode: { type: 'string', maxLength: 50 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { cardCode } = request.params;
+      const { federalTaxId, licTradNum, routageCode } = request.body;
+      const { sapCookieHeader } = request.sapSession!;
+
+      // Validation format : on n'envoie pas un champ invalide (jamais de valeur inventée).
+      const cleanFederalTaxId = federalTaxId?.trim();
+      const cleanLicTradNum = licTradNum?.trim();
+      const cleanRoutageCode = routageCode?.trim();
+
+      const fields: { federalTaxId?: string; licTradNum?: string; routageCode?: string } = {};
+      if (cleanFederalTaxId !== undefined) {
+        if (cleanFederalTaxId === '' || FR_VAT_RE.test(cleanFederalTaxId.toUpperCase())) {
+          fields.federalTaxId = cleanFederalTaxId.toUpperCase();
+        } else {
+          return reply
+            .code(422)
+            .send({ success: false, error: 'Format TVA invalide (attendu FRxx + 9 chiffres)' });
+        }
+      }
+      if (cleanLicTradNum !== undefined) {
+        if (cleanLicTradNum === '' || SIRET_RE.test(cleanLicTradNum)) {
+          fields.licTradNum = cleanLicTradNum;
+        } else {
+          return reply
+            .code(422)
+            .send({ success: false, error: 'Format SIRET invalide (attendu 14 chiffres)' });
+        }
+      }
+      if (cleanRoutageCode !== undefined) fields.routageCode = cleanRoutageCode;
+
+      try {
+        await patchBusinessPartnerFiscal(sapCookieHeader, cardCode, fields);
+        // Met à jour le cache local (mêmes colonnes que create-in-sap : federaltaxid,
+        // taxId0 ← SIRET/LicTradNum, pa_identifier ← routageCode).
+        const updated = await updateSupplierCacheFiscal(cardCode, {
+          federaltaxid: fields.federalTaxId,
+          taxId0: fields.licTradNum,
+          pa_identifier: fields.routageCode,
+        });
+        return reply.send({ success: true, data: updated });
+      } catch (err) {
+        const code = err instanceof SapSlError ? err.httpStatus : 502;
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.code(code).send({ success: false, error: msg });
+      }
+    },
+  );
+
+  // ── POST /api/suppliers/merge ──────────────────────────────────────────────
+  // Rattachement manuel (groupes ambigus, ≥ 2 fiches SAP) : re-pointe les factures
+  // des alias vers le maître, mémorise le mapping, pose le flag U_NOVA_Doublon sur
+  // les alias RÉELS (validFor:true) en best-effort. AUCUNE fusion SAP.
+  app.post<{
+    Body: { masterCardcode: string; aliasCardcodes: string[]; reason?: string };
+  }>(
+    '/api/suppliers/merge',
+    {
+      preHandler: requireSession,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['masterCardcode', 'aliasCardcodes'],
+          properties: {
+            masterCardcode: { type: 'string', minLength: 1, maxLength: 15 },
+            aliasCardcodes: {
+              type: 'array',
+              minItems: 1,
+              items: { type: 'string', minLength: 1, maxLength: 15 },
+            },
+            reason: { type: 'string', maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { masterCardcode, aliasCardcodes, reason } = request.body;
+      const { sapCookieHeader, sapUser } = request.sapSession!;
+
+      // Principe verrouillé : le maître DOIT être une fiche SAP active (validFor:true).
+      const master = await prisma.supplierCache.findUnique({
+        where: { cardcode: masterCardcode },
+        select: { validFor: true },
+      });
+      if (!master || !master.validFor) {
+        return reply
+          .code(422)
+          .send({ success: false, error: 'Le maître doit être une fiche SAP active (validFor).' });
+      }
+      const aliases = aliasCardcodes.filter((c) => c && c !== masterCardcode);
+      if (aliases.length === 0) {
+        return reply
+          .code(422)
+          .send({ success: false, error: 'Aucun alias à rattacher (hors maître).' });
+      }
+
+      try {
+        const result = await mergeSuppliers({
+          masterCardcode,
+          aliasCardcodes: aliases,
+          reason,
+          createdBy: sapUser,
+        });
+
+        // Pose le flag U_NOVA_Doublon='Y' sur les alias RÉELS (validFor:true) — best-effort.
+        // Les orphelins (validFor:false) n'ont pas de BP SAP : on les ignore pour le flag.
+        const realAliases = await prisma.supplierCache.findMany({
+          where: { cardcode: { in: aliases }, validFor: true },
+          select: { cardcode: true },
+        });
+        for (const a of realAliases) {
+          try {
+            await patchBusinessPartnerFiscal(sapCookieHeader, a.cardcode, { doublon: 'Y' });
+          } catch (flagErr) {
+            request.log.warn(
+              `[SUPPLIER-MERGE] Flag U_NOVA_Doublon non posé sur ${a.cardcode} (rattachement conservé) : ${
+                flagErr instanceof Error ? flagErr.message : String(flagErr)
+              }`,
+            );
+          }
+        }
+
+        // Trace d'audit — payloadAfter.repoints = source de vérité pour une ré-version.
+        await createAuditLogBestEffort({
+          action: 'MERGE_SUPPLIER',
+          entityType: 'SUPPLIER',
+          entityId: masterCardcode,
+          sapUser,
+          outcome: 'OK',
+          payloadAfter: {
+            masterCardcode,
+            mode: 'manual',
+            reason: reason ?? null,
+            repoints: result.repoints,
+            invoicesRepointed: result.invoicesRepointed,
+          },
+          ...getRequestMeta(request),
+        });
+
+        return reply.send({
+          success: true,
+          data: {
+            merged: result.merged,
+            invoicesRepointed: result.invoicesRepointed,
+          },
+        });
+      } catch (err) {
+        const code = err instanceof SapSlError ? err.httpStatus : 502;
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.code(code).send({ success: false, error: msg });
+      }
+    },
+  );
+
+  // ── POST /api/suppliers/reconcile ──────────────────────────────────────────
+  // Dry-run par défaut : construit le plan (groupes à maître SAP UNIQUE) en lecture
+  // seule. `dryRun:true` → aperçu sans écriture. `dryRun:false` → exécute chaque
+  // rattachement (mode auto) + audit. Le plan d'exécution est TOUJOURS recalculé
+  // serveur (jamais un plan transmis par le client).
+  app.post<{ Body: { dryRun?: boolean } }>(
+    '/api/suppliers/reconcile',
+    {
+      preHandler: requireSession,
+      schema: {
+        body: {
+          type: 'object',
+          properties: { dryRun: { type: 'boolean' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const dryRun = request.body?.dryRun ?? false;
+      const { sapUser } = request.sapSession!;
+      try {
+        const plan = await findReconcilePlan();
+
+        if (dryRun) {
+          const invoicesToRepoint = plan.reduce((sum, p) => sum + p.invoicesToRepoint, 0);
+          return reply.send({
+            success: true,
+            data: { plan, groups: plan.length, invoicesToRepoint },
+          });
+        }
+
+        let groupsReconciled = 0;
+        let invoicesRepointed = 0;
+        for (const entry of plan) {
+          const res = await mergeSuppliers({
+            masterCardcode: entry.masterCardcode,
+            aliasCardcodes: entry.aliases.map((a) => a.cardcode),
+            reason: 'auto-reconcile',
+          });
+          if (res.merged > 0) {
+            groupsReconciled++;
+            invoicesRepointed += res.invoicesRepointed;
+            await createAuditLogBestEffort({
+              action: 'MERGE_SUPPLIER',
+              entityType: 'SUPPLIER',
+              entityId: entry.masterCardcode,
+              sapUser,
+              outcome: 'OK',
+              payloadAfter: {
+                masterCardcode: entry.masterCardcode,
+                mode: 'auto',
+                reason: 'auto-reconcile',
+                repoints: res.repoints,
+                invoicesRepointed: res.invoicesRepointed,
+              },
+              ...getRequestMeta(request),
+            });
+          }
+        }
+        return reply.send({ success: true, data: { groupsReconciled, invoicesRepointed } });
+      } catch (err) {
+        const code = err instanceof SapSlError ? err.httpStatus : 502;
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.code(code).send({ success: false, error: msg });
+      }
+    },
+  );
+
+  // ── GET /api/suppliers/merges ──────────────────────────────────────────────
+  // Liste des rattachements actifs (alias → maître), enrichis du cardname.
+  app.get('/api/suppliers/merges', { preHandler: requireSession }, async (_request, reply) => {
+    try {
+      const items = await listSupplierMerges();
+      return reply.send({ success: true, data: items });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.code(502).send({ success: false, error: msg });
+    }
+  });
+
+  // ── DELETE /api/suppliers/merge/:aliasCardcode ─────────────────────────────
+  // Détachement : ré-version des factures (via l'audit MERGE_SUPPLIER) vers l'alias,
+  // retrait du flag SAP (best-effort), suppression du mapping, audit UNMERGE.
+  app.delete<{ Params: { aliasCardcode: string } }>(
+    '/api/suppliers/merge/:aliasCardcode',
+    { preHandler: requireSession },
+    async (request, reply) => {
+      const { aliasCardcode } = request.params;
+      const { sapCookieHeader, sapUser } = request.sapSession!;
+      try {
+        const merge = await prisma.supplierMerge.findUnique({ where: { aliasCardcode } });
+        if (!merge) {
+          return reply.code(404).send({ success: false, error: 'Rattachement introuvable.' });
+        }
+        const { masterCardcode } = merge;
+
+        // Retrouver les factures repointées depuis la dernière trace MERGE_SUPPLIER.
+        const auditRows = await prisma.auditLog.findMany({
+          where: { action: 'MERGE_SUPPLIER', entityType: 'SUPPLIER' },
+          orderBy: { occurredAt: 'desc' },
+          take: 200,
+          select: { payloadAfter: true },
+        });
+        let invoiceIds: string[] = [];
+        for (const row of auditRows) {
+          const repoints = (
+            row.payloadAfter as { repoints?: { aliasCardcode: string; invoiceIds: string[] }[] }
+          )?.repoints;
+          const match = Array.isArray(repoints)
+            ? repoints.find((r) => r.aliasCardcode === aliasCardcode)
+            : undefined;
+          if (match) {
+            invoiceIds = Array.isArray(match.invoiceIds) ? match.invoiceIds : [];
+            break;
+          }
+        }
+
+        const { invoicesReverted } = await detachSupplier({
+          aliasCardcode,
+          masterCardcode,
+          invoiceIds,
+        });
+
+        // Retirer le flag SAP (best-effort) — ignore si l'alias n'est pas dans SAP.
+        try {
+          await patchBusinessPartnerFiscal(sapCookieHeader, aliasCardcode, { doublon: '' });
+        } catch (flagErr) {
+          request.log.warn(
+            `[SUPPLIER-UNMERGE] Flag U_NOVA_Doublon non retiré sur ${aliasCardcode} : ${
+              flagErr instanceof Error ? flagErr.message : String(flagErr)
+            }`,
+          );
+        }
+
+        await createAuditLogBestEffort({
+          action: 'UNMERGE_SUPPLIER',
+          entityType: 'SUPPLIER',
+          entityId: aliasCardcode,
+          sapUser,
+          outcome: 'OK',
+          payloadAfter: { aliasCardcode, masterCardcode, invoicesReverted },
+          ...getRequestMeta(request),
+        });
+
+        return reply.send({
+          success: true,
+          data: { aliasCardcode, masterCardcode, invoicesReverted },
+        });
+      } catch (err) {
+        const code = err instanceof SapSlError ? err.httpStatus : 502;
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.code(code).send({ success: false, error: msg });
       }
     },
   );

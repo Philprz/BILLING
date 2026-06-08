@@ -89,3 +89,102 @@ export async function apiCreateSupplierInSap(
     body: JSON.stringify(payload),
   });
 }
+
+/**
+ * Pousse une correction d'identifiants fiscaux (TVA / SIRET / Identifiant PA) vers
+ * SAP B1 puis le cache local. N'envoie que les champs fournis (jamais de valeur inventée).
+ */
+export async function apiPatchSupplierFiscal(
+  cardCode: string,
+  fields: { federalTaxId?: string; licTradNum?: string; routageCode?: string },
+): Promise<SupplierCache> {
+  return apiFetch<SupplierCache>(`/api/suppliers/${encodeURIComponent(cardCode)}/fiscal`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(fields),
+  });
+}
+
+/**
+ * Rattache des fiches doublons (alias) au bon fournisseur SAP (maître) : re-pointe
+ * les factures, mémorise le mapping, pose le flag U_NOVA_Doublon sur les alias réels.
+ */
+export async function apiMergeSuppliers(
+  masterCardcode: string,
+  aliasCardcodes: string[],
+  reason?: string,
+): Promise<{ merged: number; invoicesRepointed: number }> {
+  return apiFetch('/api/suppliers/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ masterCardcode, aliasCardcodes, reason }),
+  });
+}
+
+export interface ReconcilePlanAlias {
+  cardcode: string;
+  cardname: string;
+  validFor: boolean;
+  invoiceCount: number;
+}
+
+export interface ReconcilePlanEntry {
+  masterCardcode: string;
+  masterName: string;
+  aliases: ReconcilePlanAlias[];
+  invoicesToRepoint: number;
+}
+
+/**
+ * Aperçu (dry-run, lecture seule) de la réconciliation auto : plan des groupes à
+ * maître SAP unique. Aucune écriture côté serveur.
+ */
+export async function apiReconcilePreview(): Promise<{
+  plan: ReconcilePlanEntry[];
+  groups: number;
+  invoicesToRepoint: number;
+}> {
+  return apiFetch('/api/suppliers/reconcile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dryRun: true }),
+  });
+}
+
+/**
+ * Exécute la réconciliation auto (plan recalculé serveur) : rattache les groupes à
+ * maître SAP unique. Idempotent.
+ */
+export async function apiReconcileExecute(): Promise<{
+  groupsReconciled: number;
+  invoicesRepointed: number;
+}> {
+  return apiFetch('/api/suppliers/reconcile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dryRun: false }),
+  });
+}
+
+export interface SupplierMergeItem {
+  aliasCardcode: string;
+  aliasName: string | null;
+  masterCardcode: string;
+  masterName: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+
+/** Liste des rattachements actifs (alias → maître). */
+export async function apiListSupplierMerges(): Promise<SupplierMergeItem[]> {
+  return apiFetch('/api/suppliers/merges');
+}
+
+/** Détache un rattachement : ré-version des factures vers l'alias, suppression du mapping. */
+export async function apiDetachSupplier(
+  aliasCardcode: string,
+): Promise<{ aliasCardcode: string; masterCardcode: string; invoicesReverted: number }> {
+  return apiFetch(`/api/suppliers/merge/${encodeURIComponent(aliasCardcode)}`, {
+    method: 'DELETE',
+  });
+}

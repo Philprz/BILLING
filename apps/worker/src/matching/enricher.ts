@@ -13,8 +13,15 @@ import type { RuleInput, LineInput } from './rule-engine';
 // ─── Chargement des données de référence ──────────────────────────────────────
 
 async function loadSuppliers() {
+  // Exclure les alias rattachés (table supplier_merges) : matchSupplier doit router
+  // les factures vers le maître SAP, jamais vers une fiche doublon absorbée.
+  const aliasRows = await prisma.supplierMerge.findMany({ select: { aliasCardcode: true } });
+  const aliasCardcodes = aliasRows.map((r) => r.aliasCardcode);
   return prisma.supplierCache.findMany({
-    where: { validFor: true },
+    where: {
+      validFor: true,
+      ...(aliasCardcodes.length ? { cardcode: { notIn: aliasCardcodes } } : {}),
+    },
     select: {
       cardcode: true,
       cardname: true,
